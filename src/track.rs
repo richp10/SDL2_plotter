@@ -285,21 +285,24 @@ fn simplified_indices(points: &[TrackPoint]) -> Vec<usize> {
 }
 
 fn midpoint_by_distance(points: &[TrackPoint], start: usize, end: usize) -> usize {
-	let distances: Vec<f64> = (start..end)
+	let total_distance = (start..end)
 		.map(|index| {
 			distance_meters(
 				(points[index].lon, points[index].lat),
 				(points[index + 1].lon, points[index + 1].lat),
 			)
 		})
-		.collect();
-	let half_distance = distances.iter().sum::<f64>() / 2.0;
+		.sum::<f64>();
+	let half_distance = total_distance / 2.0;
 	let mut accumulated = 0.0;
 
-	for (offset, distance) in distances.into_iter().enumerate() {
-		accumulated += distance;
+	for index in start + 1..end {
+		accumulated += distance_meters(
+			(points[index - 1].lon, points[index - 1].lat),
+			(points[index].lon, points[index].lat),
+		);
 		if accumulated >= half_distance {
-			return start + offset + 1;
+			return index;
 		}
 	}
 
@@ -461,6 +464,19 @@ mod tests {
 		assert!(retained.contains(&3));
 		assert_eq!(retained.first(), Some(&0));
 		assert_eq!(retained.last(), Some(&4));
+	}
+
+	#[test]
+	fn simplification_splits_inside_segment_with_long_final_leg() {
+		let points = [(0.0, 0.0), (0.0002, 0.0), (0.02, 0.0)]
+			.into_iter()
+			.map(|(lon, lat)| {
+				let (nx, ny) = project_norm(lon, lat);
+				TrackPoint { lon, lat, nx, ny }
+			})
+			.collect::<Vec<_>>();
+
+		assert_eq!(simplified_indices(&points), vec![0, 1, 2]);
 	}
 
     #[test]

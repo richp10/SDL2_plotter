@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use crate::mbtiles_renderer::MBTilesRenderer;
 use crate::screen::Map;
 
-const TARGET_TIMEOUT: Duration = Duration::from_secs(180);
+const TARGET_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Clone, Debug)]
 pub struct AisTarget {
@@ -43,6 +43,23 @@ impl AisTarget {
                 .unwrap_or(&self.context)
                 .to_string()
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn target_expires_after_five_minutes_without_updates() {
+        let now = Instant::now();
+        let mut target = AisTarget::new("vessels.test".to_string());
+
+        target.last_update = now - Duration::from_secs(299);
+        assert!(target.is_fresh(now));
+
+        target.last_update = now - TARGET_TIMEOUT;
+        assert!(!target.is_fresh(now));
     }
 }
 

@@ -4,6 +4,7 @@ use sdl2::render::WindowCanvas;
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
+use std::time::{Duration, Instant};
 use chrono::Local;
 
 use crate::mbtiles_renderer::{project_norm, MBTilesRenderer};
@@ -12,6 +13,7 @@ const MIN_TRACK_DISTANCE_METERS: f64 = 20.0;
 const SIMPLIFICATION_TOLERANCE_METERS: f64 = 20.0;
 const MAX_SIMPLIFIED_SEGMENT_METERS: f64 = 1_500.0;
 const EARTH_RADIUS_METERS: f64 = 6_371_000.0;
+const CHECKPOINT_INTERVAL: Duration = Duration::from_secs(15);
 
 #[derive(Debug)]
 struct TrackPoint {
@@ -23,6 +25,8 @@ struct TrackPoint {
 
 pub struct Track {
     points: Vec<TrackPoint>,
+    save_pending: bool,
+    last_save: Instant,
 	}
 
 impl Track 
@@ -32,6 +36,8 @@ impl Track
         let mut track = Self
 			{
 			points: Vec::new(), 
+			save_pending: false,
+			last_save: Instant::now(),
 			};
 
 		//let path = Path::new(file);
@@ -56,10 +62,60 @@ impl Track
 		{
 		self.points.clear();
 		self.points.shrink_to_fit();
+		self.save_pending = true;
 		}
 
 	pub fn point_count(&self) -> usize {
 		self.points.len()
+	}
+
+	pub fn save_pending(&self) -> bool {
+		self.save_pending
+	}
+
+	pub fn checkpoint_due(&self) -> bool {
+		self.save_pending && self.last_save.elapsed() >= CHECKPOINT_INTERVAL
+	}
+
+	pub fn save_default_track(&mut self, path: &Path) {
+		self.last_save = Instant::now();
+		crate::diagnostics::record(
+			"INFO",
+			format!(
+				"Sauvegarde de la trace démarrée: {} points vers {}",
+				self.point_count(),
+				path.display()
+			),
+		);
+
+		if self.points.is_empty() {
+			if self.save_pending {
+				match std::fs::remove_file(path) {
+					Ok(()) => crate::diagnostics::record("INFO", "Trace vide supprimée après effacement"),
+					Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+					Err(error) => {
+						crate::diagnostics::record(
+							"ERROR",
+							format!("Impossible de supprimer la trace effacée: {error}"),
+						);
+						return;
+					}
+				}
+				self.save_pending = false;
+			}
+			return;
+		}
+
+		match self.save(path) {
+			Ok(()) => {
+				self.save_pending = false;
+				crate::diagnostics::record("INFO", "Trace sauvegardée avec succès");
+			}
+			Err(error) => {
+				crate::diagnostics::record("ERROR", format!("Erreur sauvegarde trace: {error}"));
+				eprintln!("Erreur sauvegarde : {error}");
+			}
+		}
 	}
 
 	pub fn load(&mut self, path: &Path) -> io::Result<()>
@@ -122,6 +178,7 @@ impl Track
 			}
 		}
 		self.push_point(pos);
+		self.save_pending = true;
 		true
 		}
 		

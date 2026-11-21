@@ -17,6 +17,8 @@ pub struct State {
     pub display_route       : bool,
     pub display_track       : bool,
     pub display_ais         : bool,
+    #[serde(default)]
+    pub course_up           : bool,
 }
 
 impl State 
@@ -44,6 +46,7 @@ impl State
                 display_route: true,
                 display_track: true,
                 display_ais : true,
+                course_up: false,
                 })
             }
             Err(error) => Err(error),
@@ -81,6 +84,33 @@ pub fn list_maps(dir: &str) -> Vec<String> {
         .collect();
     maps.sort();
     maps
+}
+
+#[cfg(test)]
+mod tests {
+    use super::State;
+
+    #[test]
+    fn older_state_files_default_to_north_up() {
+        let state: State = serde_json::from_str(
+            r#"{
+                "follow": false,
+                "goto": false,
+                "map": "chart.mbtiles",
+                "position": null,
+                "zoom": 8,
+                "map_offset": [0, 0],
+                "nav_id": 0,
+                "display_waypoint": true,
+                "display_route": true,
+                "display_track": true,
+                "display_ais": true
+            }"#,
+        )
+        .unwrap();
+
+        assert!(!state.course_up);
+    }
 }
 
  #[allow(dead_code)]

@@ -117,6 +117,8 @@ impl Plotter<'_> {
                 topbar::EDIT_MESURE => Some(AppAction::SetMode(Mode::Measurement)),
                 topbar::CLEAR_ROUTE => Some(AppAction::ClearRoute),
                 topbar::FOLLOW => Some(AppAction::ToggleFollow),
+                topbar::FOLLOW_ON => Some(AppAction::FollowOn),
+                topbar::FOLLOW_OFF => Some(AppAction::FollowOff),
                 topbar::PREVIOUS => Some(AppAction::PreviousWaypoint),
                 topbar::GOTO => Some(AppAction::ToggleGoto),
                 topbar::NEXT => Some(AppAction::NextWaypoint),
@@ -133,6 +135,8 @@ impl Plotter<'_> {
                 topbar::HIDE_ROUTE => Some(AppAction::HideRoute),
                 topbar::SHOW_AIS => Some(AppAction::ShowAis),
                 topbar::HIDE_AIS => Some(AppAction::HideAis),
+                topbar::NORTH_UP => Some(AppAction::SetCourseUp(false)),
+                topbar::COURSE_UP => Some(AppAction::SetCourseUp(true)),
                 _ => self
                     .charts_name
                     .iter()
@@ -381,7 +385,13 @@ impl Plotter<'_> {
             if p.moved && self.is_draging {
                 self.xdrag += xrel;
                 self.ydrag += yrel;
-                map.drag_map(texture, self.xdrag, self.ydrag)?;
+                map.drag_map(
+                    texture,
+                    self.xdrag,
+                    self.ydrag,
+                    self.renderer.render_rect(),
+                    self.renderer.rotation_degrees(),
+                )?;
                 self.mouse = Mouse::Hand;
             }
         }

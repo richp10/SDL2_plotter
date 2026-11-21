@@ -61,13 +61,13 @@ async fn run() -> anyhow::Result<()> {
 	diagnostics::record("INFO", "Fenêtre SDL initialisée");
 
 	let texture_creator = map.canvas.texture_creator();
+	let (texture_width, texture_height) =
+		mbtiles_renderer::MBTilesRenderer::texture_dimensions(map.screen_width, map.screen_height);
 	let mut texture = texture_creator
-		.create_texture_streaming(PixelFormatEnum::RGBA32, map.screen_width, map.screen_height)
+		.create_texture_streaming(PixelFormatEnum::RGBA32, texture_width, texture_height)
 		.map_err(anyhow::Error::msg)?;
-	let pitch = (map.screen_width * 4) as usize;
-
 	let mut plotter =
 		app::Plotter::new(&sdl.context, &sdl.ttf_context, map.screen_width, map.screen_height)?;
 	diagnostics::record("INFO", "Application initialisée");
-	plotter.main_loop(&mut sdl.event_pump, &mut map, &mut texture, pitch)
+	plotter.main_loop(&mut sdl.event_pump, &mut map, &mut texture)
 }

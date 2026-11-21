@@ -22,6 +22,14 @@ impl Plotter<'_> {
                 self.state.follow = !self.state.follow;
                 self.center_map_on_visible_center();
             }
+            AppAction::FollowOn => {
+                self.state.follow = true;
+                self.center_map_on_visible_center();
+            }
+            AppAction::FollowOff => {
+                self.state.follow = false;
+                self.center_map_on_visible_center();
+            }
             AppAction::ToggleGoto => {
                 self.state.goto = !self.state.goto;
                 self.state.nav_id = 0;
@@ -90,6 +98,7 @@ impl Plotter<'_> {
             AppAction::ShowTrack => self.state.display_track = true,
             AppAction::HideAis => self.state.display_ais = false,
             AppAction::ShowAis => self.state.display_ais = true,
+            AppAction::SetCourseUp(enabled) => self.state.course_up = enabled,
         }
 
         self.dirty = true;

@@ -139,21 +139,56 @@ impl<'ttf> Map<'ttf> {
             }
         }
 
-    pub fn show_map(&mut self, texture:&Texture) -> Result<(), String> {
-        self.canvas.copy(texture, None, None)?;
+    pub fn show_map(
+        &mut self,
+        texture: &Texture,
+        source_rect: Rect,
+        rotation_degrees: f64,
+    ) -> Result<(), String> {
+        let dst = Rect::new(
+            (self.screen_width as i32 - source_rect.width() as i32) / 2,
+            (self.screen_height as i32 - source_rect.height() as i32) / 2,
+            source_rect.width(),
+            source_rect.height(),
+        );
+        self.canvas
+            .copy_ex(
+                texture,
+                Some(source_rect),
+                Some(dst),
+                rotation_degrees,
+                None,
+                false,
+                false,
+            )?;
         Ok(())
         }
         
-    pub fn drag_map(&mut self, texture:&Texture,x:i32,y:i32) -> Result<(), String> {
+    pub fn drag_map(
+        &mut self,
+        texture: &Texture,
+        x: i32,
+        y: i32,
+        source_rect: Rect,
+        rotation_degrees: f64,
+    ) -> Result<(), String> {
         let dst_rect = Rect::new(
-            x,
-            y,
-            self.screen_width,
-            self.screen_height,
+            (self.screen_width as i32 - source_rect.width() as i32) / 2 + x,
+            (self.screen_height as i32 - source_rect.height() as i32) / 2 + y,
+            source_rect.width(),
+            source_rect.height(),
         );
         self.canvas.set_draw_color(BACKGROUND_MAP);
         self.canvas.clear();
-        self.canvas.copy(texture, None, Some(dst_rect))?;
+        self.canvas.copy_ex(
+            texture,
+            Some(source_rect),
+            Some(dst_rect),
+            rotation_degrees,
+            None,
+            false,
+            false,
+        )?;
         self.canvas.present();
         Ok(())
         }

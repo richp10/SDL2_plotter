@@ -34,6 +34,8 @@ enum AppAction {
     SetMode(Mode),
     CycleMode,
     ToggleFollow,
+	FollowOn,
+	FollowOff,
     ToggleGoto,
     ClearRoute,
     PreviousWaypoint,
@@ -55,6 +57,7 @@ enum AppAction {
     HideTrack,
     ShowAis,
     HideAis,
+    SetCourseUp(bool),
 }
 
 impl AppAction {
@@ -63,6 +66,8 @@ impl AppAction {
             Self::SetMode(_) => "SetMode",
             Self::CycleMode => "CycleMode",
             Self::ToggleFollow => "ToggleFollow",
+			Self::FollowOn => "On",
+			Self::FollowOff => "Off",
             Self::ToggleGoto => "ToggleGoto",
             Self::ClearRoute => "ClearRoute",
             Self::PreviousWaypoint => "PreviousWaypoint",
@@ -84,6 +89,7 @@ impl AppAction {
             Self::HideTrack => "HideTrack",
             Self::ShowAis => "ShowAis",
             Self::HideAis => "HideAis",
+            Self::SetCourseUp(_) => "SetCourseUp",
         }
     }
 }
@@ -237,7 +243,6 @@ impl<'ttf> Plotter<'ttf> {
         event_pump: &mut sdl2::EventPump,
         map: &mut screen::Map<'_>,
         texture: &mut sdl2::render::Texture,
-        pitch: usize,
     ) -> anyhow::Result<()> {
         let mut last_diagnostics = Instant::now();
         let mut loop_count: u64 = 0;
@@ -341,10 +346,13 @@ impl<'ttf> Plotter<'ttf> {
                     self.last_ais_cleanup = now;
                 }
             }
+            if self.renderer.advance_zoom_animation() {
+                self.dirty = true;
+            }
             //////////////////////   Display /////////////////////////
             if self.dirty && !self.is_draging {
                 let display_started = Instant::now();
-                self.display(map, texture, pitch)
+                self.display(map, texture)
                     .map_err(anyhow::Error::msg)?;
                 rendered_frames += 1;
                 let elapsed = display_started.elapsed();

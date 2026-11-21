@@ -9,8 +9,17 @@ impl Plotter<'_> {
         &mut self,
         map: &mut screen::Map<'_>,
         texture: &mut Texture,
-        pitch: usize,
     ) -> anyhow::Result<()> {
+        let rotation = if self.state.course_up
+            && self.boat.position_valid
+            && self.boat.course_over_ground.is_finite()
+        {
+            self.boat.course_over_ground
+        } else {
+            0.0
+        };
+        self.renderer.set_rotation(rotation);
+
         if self.state.position == None {
             self.state.position = Some(
                 self.renderer
@@ -29,11 +38,22 @@ impl Plotter<'_> {
                 .ok_or(anyhow::anyhow!("position de la carte inconnue"))?,
         };
 
-        let pixels = self.renderer.get_raw_rgba(lon, lat, self.state.map_offset);
+        let (pixels, texture_rect) = self
+            .renderer
+            .get_raw_rgba(lon, lat, self.state.map_offset);
         texture
-            .update(None, &pixels, pitch)
+            .update(
+                Some(texture_rect),
+                &pixels,
+                (texture_rect.width() * 4) as usize,
+            )
             .map_err(|error| anyhow::anyhow!(error))?;
-        map.show_map(texture).map_err(anyhow::Error::msg)?;
+        map.show_map(
+            texture,
+            texture_rect,
+            self.renderer.rotation_degrees(),
+        )
+            .map_err(anyhow::Error::msg)?;
 
         if self.mode == Mode::Measurement {
             self.mesure.show(&self.renderer, map);

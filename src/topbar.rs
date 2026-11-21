@@ -8,7 +8,7 @@ const COLOR: Color = Color::RGBA(220, 220, 220, 200);
 const HOVER_COLOR: Color = Color::RGB(170, 195, 230);
 const BORDER_COLOR: Color = Color::RGB(120, 120, 120);
 
-const ITEM_WIDTH: u32   = 80; // largeur d'un titre dans la barre
+const ITEM_WIDTH: u32   = 96; // largeur d'un titre dans la barre
 const MENU_WIDTH: u32   = 170; // largeur d'un menu déroulant
 const ENTRY_HEIGHT: u32 = 28; // hauteur d'une entrée du menu
 const HEIGHT: u32       = 32; // hauteur de la barre
@@ -34,6 +34,10 @@ pub const SHOW_ROUTE: &str  = "Show Route";
 pub const HIDE_ROUTE: &str  = "Hide Route";
 pub const SHOW_AIS: &str    = "Show Ais";
 pub const HIDE_AIS: &str    = "Hide Ais";
+pub const NORTH_UP: &str    = "North Up";
+pub const COURSE_UP: &str   = "Course Up";
+pub const FOLLOW_ON: &str   = "On";
+pub const FOLLOW_OFF: &str  = "Off";
 
 const FONT_FILE: &str = "assets/Montserrat-Regular.ttf";
 const FONT_SIZE: u16 = 16;
@@ -105,6 +109,18 @@ impl<'ttf> Topbar<'ttf> {
                 entries: vec![
                     SHOW_AIS.into(),
                     HIDE_AIS.into(),
+                    ] },
+            Menu {
+                title: "Orientation",
+                entries: vec![
+                    NORTH_UP.into(),
+                    COURSE_UP.into(),
+                    ] },
+            Menu {
+                title: "Follow",
+                entries: vec![
+                    FOLLOW_ON.into(),
+                    FOLLOW_OFF.into(),
                     ] },
             ];
 

@@ -80,7 +80,13 @@ pub fn show_targets(
             continue;
         }
 
-        map.show_ais_target(point.x, point.y, target.course_over_ground)?;
+        map.show_ais_target(
+            point.x,
+            point.y,
+            target
+                .course_over_ground
+                .map(|course| renderer.course_to_screen(course)),
+        )?;
         map.show_text(&target.label(), point.x + 10, point.y - 10)?;
     }
 

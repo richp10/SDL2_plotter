@@ -135,6 +135,7 @@ pub(crate) struct Plotter<'ttf> {
 	charts_name: Vec<String>,
 	press: Option<Press>,
 	selected: Option<usize>,
+	dragging_measure_start: bool,
 	mouse: Mouse,
 	state_rx: watch::Receiver<BoatState>,
     track_rx: tokio::sync::mpsc::UnboundedReceiver<(f64, f64)>,
@@ -225,6 +226,7 @@ impl<'ttf> Plotter<'ttf> {
 					charts_name, 
 					press: None, 
 					selected: None,
+					dragging_measure_start: false,
 					mouse: Mouse::Hand,
 					state_rx, 
 					track_rx, 
@@ -558,6 +560,40 @@ impl<'ttf> Plotter<'ttf> {
 		Ok(())
 		}
 
+	fn handle_mouse_motion_measurement(
+		&mut self,
+		x: i32,
+		y: i32,
+		xrel: i32,
+		yrel: i32,
+		map: &mut screen::Map<'_>,
+		texture: &sdl2::render::Texture,
+	) -> Result<(), String> {
+		let over_mark1 = self.mesure.find_mark1_at(&self.renderer, x, y, 12);
+		if let Some(p) = self.press.as_mut() {
+			if self.dragging_measure_start {
+				let (dx, dy) = (x - p.x, y - p.y);
+				if dx * dx + dy * dy > MOVE_TOLERANCE * MOVE_TOLERANCE {
+					p.moved = true;
+				}
+				if p.moved {
+					let dx = map.screen_width as i32 / 2 - x;
+					let dy = map.screen_height as i32 / 2 - y;
+					self.mesure.modify_mark1(&self.renderer, dx, dy);
+					self.mouse = Mouse::Move;
+					self.dirty = true;
+				}
+			} else {
+					self.handle_move_map(x, y, xrel, yrel, map, texture)?;
+			}
+		} else if over_mark1 {
+			self.mouse = Mouse::Move;
+		} else {
+			self.mouse = Mouse::Cross;
+		}
+		Ok(())
+		}
+
 	fn handle_click_mesure(&mut self,map: &mut screen::Map<'_>,x :i32, y: i32){
 
 			println!("Mesure click");
@@ -716,7 +752,17 @@ impl<'ttf> Plotter<'ttf> {
 				let fast = keymod.intersects(Mod::LSHIFTMOD | Mod::RSHIFTMOD);
 				let distance = if fast { 1000 } else { 100 };
 				let action = match *keycode {
-					sdl2::keyboard::Keycode::Escape => Some(AppAction::Quit),
+					sdl2::keyboard::Keycode::Escape => {
+						match self.mode {
+							Mode::Measurement => {
+								self.mesure.clear();
+								self.dirty = true;
+								None
+								} 
+							Mode::EditRoute => {None}
+							Mode::EditWaypoint => {None}
+							}
+						}
 					sdl2::keyboard::Keycode::Up => Some(AppAction::Pan(0, distance)),
 					sdl2::keyboard::Keycode::Down => Some(AppAction::Pan(0, -distance)),
 					sdl2::keyboard::Keycode::Left => Some(AppAction::Pan(distance, 0)),
@@ -889,6 +935,13 @@ impl<'ttf> Plotter<'ttf> {
 							}
 						else {			// clic sur la carte géré par MouseMotion
 							self.drag_start = (x as i32, y as i32);
+							self.dragging_measure_start = self.mode == Mode::Measurement
+								&& self.mesure.find_mark1_at(
+									&self.renderer,
+									x as i32,
+									y as i32,
+									12,
+								);
 							self.press = Some(Press { start: Instant::now(), x: x as i32, y: y as i32, moved: false, long_fired: false });
 							}
 			}
@@ -897,7 +950,11 @@ impl<'ttf> Plotter<'ttf> {
 			//println!("Handle mouse up {} {}",x,y);
 			if let Some(p) = self.press.take(){ // fin du deplacement de la carte
 				if p.moved{
-					if self.is_draging  { // drag map
+					if self.dragging_measure_start {
+						self.dragging_measure_start = false;
+						self.dirty = true;
+						self.mouse = Mouse::Move;
+					} else if self.is_draging  { // drag map
 						println!("finish drag map");
 						let dx = x - self.drag_start.0;
 						let dy = y - self.drag_start.1;
@@ -919,7 +976,12 @@ impl<'ttf> Plotter<'ttf> {
 					}
 				}
 				else if  !p.long_fired {
-					self.handle_short_click(map, x, y);
+					if self.dragging_measure_start {
+						self.dragging_measure_start = false;
+						self.mouse = Mouse::Move;
+					} else {
+						self.handle_short_click(map, x, y);
+					}
 					}
 				}
 			}
@@ -1024,7 +1086,7 @@ impl<'ttf> Plotter<'ttf> {
 				match self.mode {
 					Mode::EditRoute 	=> self.handle_mouse_motion_edit_route(x, y, xrel, yrel, map, texture)?,
 					Mode::EditWaypoint 	=> self.handle_mouse_motion_edit_waypoint(x, y, xrel, yrel, map, texture)?,
-					Mode::Measurement 	=> self.handle_move_map(x, y, xrel, yrel, map, texture)?,
+					Mode::Measurement 	=> self.handle_mouse_motion_measurement(x, y, xrel, yrel, map, texture)?,
 					};
 				}
 			Ok(())

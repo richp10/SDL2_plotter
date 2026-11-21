@@ -31,20 +31,43 @@ impl Mesure
 					    self.mark2 = None;
 					    (self.distance, self.bearing) = (0.0, 0.0);
 						}
-					// Étape 2 : premier point posé -> deuxième point
-					(Some((lon1, lat1)), None) => {
+					// Étapes suivantes : poser ou déplacer le point d'arrivée
+					(Some((lon1, lat1)), _) => {
 					    let (lon2, lat2) = renderer.screen_to_gps(dx, dy);
 					    self.mark2 = Some((lon2, lat2));
 					    self.distance_and_bearing(lat1, lon1, lat2, lon2);
 					    println!("{:.1} Mn  {:.0}°", self.distance, self.bearing);
 						}
-					// Étape 3 : les deux posés -> on efface
-					(Some(_), Some(_)) => {
-					    self.mark1 = None;
-					    self.mark2 = None;
-					    (self.distance, self.bearing) = (0.0, 0.0);
-						}
 				   }
+		}
+
+	pub fn clear(&mut self)
+		{
+		self.mark1 = None;
+		self.mark2 = None;
+		(self.distance, self.bearing) = (0.0, 0.0);
+		}
+
+	pub fn find_mark1_at(&self, renderer: &MBTilesRenderer, x: i32, y: i32, tolerance: i32) -> bool
+		{
+		let Some((px, py)) = self.get_pt1(renderer) else {
+			return false;
+			};
+		let dx = px - x;
+		let dy = py - y;
+		dx * dx + dy * dy <= tolerance * tolerance
+		}
+
+	pub fn modify_mark1(&mut self, renderer: &MBTilesRenderer, dx: i32, dy: i32)
+		{
+		let (lon1, lat1) = renderer.screen_to_gps(dx, dy);
+		self.mark1 = Some((lon1, lat1));
+		if let Some((lon2, lat2)) = self.mark2 {
+			self.distance_and_bearing(lat1, lon1, lat2, lon2);
+			}
+		else {
+			(self.distance, self.bearing) = (0.0, 0.0);
+			}
 		}
 		
 	pub fn show(

@@ -1,4 +1,5 @@
 mod gpx;
+const DEFAULT_ROUTE:&str = "default/route.gpx";
  
 use crate::mbtiles_renderer::MBTilesRenderer;
 use crate::screen::Map;
@@ -19,7 +20,7 @@ impl Route
 	{
 	pub fn new() -> Result<Self, String> 
 		{
-		let track: Vec<(f64, f64)> = match gpx::load_gpx("route.gpx") 
+		let track: Vec<(f64, f64)> = match gpx::load_gpx(DEFAULT_ROUTE) 
 			{
 			Ok(r) => 
 				{
@@ -80,7 +81,7 @@ impl Route
 		}
 			
 	pub fn save(&mut self) {
-		match gpx::save_gpx("route.gpx", "Plotter", &self.track) {
+		match gpx::save_gpx(DEFAULT_ROUTE, "Plotter", &self.track) {
 						Ok(())  => println!("route sauvée : {} points", self.track.len()),
 						Err(e)  => eprintln!("erreur de sauvegarde : {e}"),
 						}

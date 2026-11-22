@@ -5,7 +5,7 @@ use std::{fs, io, path::Path};
 use crate::mbtiles_renderer::MBTilesRenderer;
 use crate::screen::Map;
 
-const WAYPOINTS_FILE: &str = "waypoints";
+const WAYPOINTS_FILE: &str = "default/waypoints.json";
 
 #[derive(Serialize, Deserialize)]
 struct Waypoint {

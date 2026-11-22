@@ -15,9 +15,9 @@ mod actions;
 mod input;
 mod render;
 
-const STATE_FILE: &str = "state.json";
+const STATE_FILE: &str = "default/state.json";
 const DEFAULT_TRACK_DIR: &str = "track/";
-const DEFAULT_TRACK_PATH: &str = "track/default.gpx";
+const DEFAULT_TRACK_PATH: &str = "default/track.gpx";
 const LONG_CLICK: Duration = Duration::from_millis(500);
 const MOVE_TOLERANCE: i32 = 5;
 const DIAGNOSTICS_INTERVAL: Duration = Duration::from_secs(10);

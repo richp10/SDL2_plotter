@@ -25,6 +25,8 @@ mod stream;
 
 use sdl2::pixels::PixelFormatEnum;
 
+const DEFAULT_PLOTTER:&str = "default/plotter.toml";
+
 #[derive(Debug, PartialEq, Clone, Copy, Default)]
 pub enum Mode {
 	EditRoute,
@@ -55,7 +57,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn run() -> anyhow::Result<()> {
-	let config = config::AppConfig::load_or_create(std::path::Path::new("plotter.toml"))?;
+	let config = config::AppConfig::load_or_create(std::path::Path::new(DEFAULT_PLOTTER))?;
 	let mut sdl = screen::MoteurSdl::init().map_err(anyhow::Error::msg)?;
 	diagnostics::record("INFO", "SDL initialisé");
 	let mut map = screen::Map::new(

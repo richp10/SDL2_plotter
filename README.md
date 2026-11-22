@@ -1,6 +1,15 @@
 # SDL2 Plotter
 
 SDL2 Plotter is a marine navigation application written in Rust. It displays MBTiles charts, vessel data and AIS targets received from a Signal K server, together with routes, tracks and waypoints.
+The principles that led me to write this program are:
+
+1/ Optimize code execution using a compiled language (Rust)
+2/ To be able to install the code on a desktop-less Linux distribution (such as Dietpi) using the SDL library
+3/ To optimize the user interface as much as possible
+4/ Enable remote viewing on a tablet via a web page for the cockpit
+
+SDL2 Plotter can run in a desktop Linux environment, but the idea is to create a dedicated, minimalist Linux distribution with rock-solid navigation that's easy to use for everyone at the chart table.
+
 
 ## Features
 

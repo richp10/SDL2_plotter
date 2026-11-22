@@ -334,8 +334,9 @@ mod tests {
     }
 
     #[test]
-    fn shipped_configuration_is_valid() {
-        let config: AppConfig = toml::from_str(include_str!("../plotter.toml")).unwrap();
+    fn default_configuration_round_trips() {
+        let serialized = toml::to_string(&AppConfig::default()).unwrap();
+        let config: AppConfig = toml::from_str(&serialized).unwrap();
         config.validate().unwrap();
     }
 

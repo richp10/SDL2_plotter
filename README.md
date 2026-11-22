@@ -58,7 +58,7 @@ cargo build --release
 
 ## Configuration
 
-At first launch, `plotter.toml` is created with default values. It can then be edited without recompiling the application.
+At first launch, `default/plotter.toml` is created with default values. It can then be edited without recompiling the application.
 
 ### Signal K
 
@@ -86,7 +86,7 @@ directory = "map"
 default = "assets/OSM.mbtiles"
 ```
 
-Available charts are `.mbtiles` files stored in `directory`. The current chart selection is saved in `state.json`.
+Available charts are `.mbtiles` files stored in `directory`. The current chart selection is saved in `default/state.json`.
 
 ### Window
 
@@ -128,7 +128,7 @@ prefetch_margin = 2
 checkpoint_interval_seconds = 15
 ```
 
-The current track is loaded from `track/default.gpx` and saved periodically.
+The current track is loaded from `default/track.gpx` and saved periodically. Additional saved tracks are stored in `track/`.
 
 ### Network streaming
 
@@ -159,11 +159,12 @@ http://RPI_ADDRESS:8080/stream
 
 ## Runtime files
 
-- `plotter.toml`: configuration editable without recompiling
-- `state.json`: position, zoom and dynamic preferences
-- `route.gpx`: current route
-- `waypoints`: waypoint list
-- `track/default.gpx`: current track
+- `default/plotter.toml`: configuration editable without recompiling
+- `default/state.json`: position, zoom and dynamic preferences
+- `default/route.gpx`: current route
+- `default/waypoints.json`: waypoint list
+- `default/track.gpx`: current track
+- `track/`: additional saved tracks
 - `plotter.log`: log and diagnostics
 
 ## Architecture

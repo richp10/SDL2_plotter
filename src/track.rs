@@ -13,6 +13,7 @@ const MIN_TRACK_DISTANCE_METERS: f64 = 20.0;
 const SIMPLIFICATION_TOLERANCE_METERS: f64 = 20.0;
 const MAX_SIMPLIFIED_SEGMENT_METERS: f64 = 1_500.0;
 const EARTH_RADIUS_METERS: f64 = 6_371_000.0;
+#[cfg(test)]
 const DEFAULT_CHECKPOINT_INTERVAL: Duration = Duration::from_secs(15);
 
 #[derive(Debug)]
@@ -32,6 +33,7 @@ pub struct Track {
 
 impl Track 
 	{
+    #[cfg(test)]
     pub fn new(path: &Path) -> io::Result<Self> {
         Self::with_checkpoint_interval(path, DEFAULT_CHECKPOINT_INTERVAL)
     }

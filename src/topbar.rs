@@ -2,6 +2,7 @@ use sdl2::pixels::Color;
 use sdl2::rect::Rect;
 use sdl2::render::{BlendMode, WindowCanvas};
 use sdl2::ttf::{Font, Sdl2TtfContext};
+use crate::config::FontConfig;
 
 
 const COLOR: Color = Color::RGBA(220, 220, 220, 200);
@@ -17,7 +18,6 @@ pub const EDIT_ROUTE: &str  = "Edit Route";
 pub const EDIT_WP: &str     = "Edit Waypoint";
 pub const EDIT_MESURE: &str = "Measurement";
 pub const CLEAR_ROUTE: &str = "Clear Route";
-pub const FOLLOW: &str      = "Follow Boat";
 pub const GOTO: &str        = "From Boat";
 pub const PREVIOUS: &str    = "Previous Wp";
 pub const NEXT: &str        = "Next Wp";
@@ -39,10 +39,6 @@ pub const COURSE_UP: &str   = "Course Up";
 pub const FOLLOW_ON: &str   = "On";
 pub const FOLLOW_OFF: &str  = "Off";
 
-const FONT_FILE: &str = "assets/Montserrat-Regular.ttf";
-const FONT_SIZE: u16 = 16;
-
-
 struct Menu {
     title: &'static str,
     entries: Vec<String>,
@@ -58,8 +54,13 @@ pub struct Topbar<'ttf> {
 }
 
 impl<'ttf> Topbar<'ttf> {
-    pub fn new(ttf_context: &'ttf Sdl2TtfContext, width: u32, names :Vec<String>) -> Result<Self, String> {
-        let font = ttf_context.load_font(FONT_FILE, FONT_SIZE)?;
+    pub fn new(
+        ttf_context: &'ttf Sdl2TtfContext,
+        width: u32,
+        names: Vec<String>,
+        font_config: &FontConfig,
+    ) -> Result<Self, String> {
+        let font = ttf_context.load_font(&font_config.file, font_config.ui_size)?;
 
 
         println!("names : {:?}", names);
@@ -70,14 +71,6 @@ impl<'ttf> Topbar<'ttf> {
                     ] },
             Menu { title: "Charts", entries: names.clone()
                      },
-            Menu {
-                title: "Mode",
-                entries: vec![
-                    EDIT_MESURE.into(),
-                    EDIT_ROUTE.into(),
-                    EDIT_WP.into(),
-                    FOLLOW.into(),
-                    ] },
             Menu {
                 title: "Route",
                 entries: vec![
@@ -109,6 +102,13 @@ impl<'ttf> Topbar<'ttf> {
                 entries: vec![
                     SHOW_AIS.into(),
                     HIDE_AIS.into(),
+                    ] },
+            Menu {
+                title: "Mode",
+                entries: vec![
+                    EDIT_MESURE.into(),
+                    EDIT_ROUTE.into(),
+                    EDIT_WP.into(),
                     ] },
             Menu {
                 title: "Orientation",

@@ -13,7 +13,7 @@ const MIN_TRACK_DISTANCE_METERS: f64 = 20.0;
 const SIMPLIFICATION_TOLERANCE_METERS: f64 = 20.0;
 const MAX_SIMPLIFIED_SEGMENT_METERS: f64 = 1_500.0;
 const EARTH_RADIUS_METERS: f64 = 6_371_000.0;
-const CHECKPOINT_INTERVAL: Duration = Duration::from_secs(15);
+const DEFAULT_CHECKPOINT_INTERVAL: Duration = Duration::from_secs(15);
 
 #[derive(Debug)]
 struct TrackPoint {
@@ -27,17 +27,23 @@ pub struct Track {
     points: Vec<TrackPoint>,
     save_pending: bool,
     last_save: Instant,
+    checkpoint_interval: Duration,
 	}
 
 impl Track 
 	{
-    pub fn new(path: &Path) -> io::Result<Self>
+    pub fn new(path: &Path) -> io::Result<Self> {
+        Self::with_checkpoint_interval(path, DEFAULT_CHECKPOINT_INTERVAL)
+    }
+
+    pub fn with_checkpoint_interval(path: &Path, checkpoint_interval: Duration) -> io::Result<Self>
 		{
         let mut track = Self
 			{
 			points: Vec::new(), 
 			save_pending: false,
 			last_save: Instant::now(),
+			checkpoint_interval,
 			};
 
 		//let path = Path::new(file);
@@ -74,7 +80,7 @@ impl Track
 	}
 
 	pub fn checkpoint_due(&self) -> bool {
-		self.save_pending && self.last_save.elapsed() >= CHECKPOINT_INTERVAL
+		self.save_pending && self.last_save.elapsed() >= self.checkpoint_interval
 	}
 
 	pub fn save_default_track(&mut self, path: &Path) {

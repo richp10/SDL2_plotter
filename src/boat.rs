@@ -33,17 +33,32 @@ impl BoatState
             &self,
 			renderer    : &MBTilesRenderer,
 			map         : &mut Map)
+        -> Result<(), String>
         {
         if !self.position_valid {
-            return;
+            return Ok(());
         }
         //println!("show longitude : {} / latitude : {}",self.longitude,self.latitude);
         let pt = renderer.gps_to_point((self.longitude, self.latitude));
-        let _ = map.show_boat(pt.x as i16, pt.y as i16);	
+        if pt.x < 0
+            || pt.y < 0
+            || pt.x as u32 > map.screen_width
+            || pt.y as u32 > map.screen_height
+        {
+            crate::diagnostics::record(
+                "WARN",
+                format!(
+                    "Marqueur bateau hors écran: lon={:.6}, lat={:.6}, écran=({}, {})",
+                    self.longitude, self.latitude, pt.x, pt.y
+                ),
+            );
+        }
+        map.show_boat(pt.x as i16, pt.y as i16)?;
         if self.speed_over_ground > MINIMUM_SPEED
             {
-            let _ = map.show_cog(renderer.course_to_screen(self.course_over_ground), pt);
+            map.show_cog(renderer.course_to_screen(self.course_over_ground), pt)?;
             }
+        Ok(())
         }
         
     pub fn position(self) -> (f64, f64)

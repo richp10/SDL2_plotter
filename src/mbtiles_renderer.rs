@@ -6,16 +6,13 @@ use lru::LruCache;
 use rusqlite::{Connection, OpenFlags};
 use sdl2::rect::{Point, Rect};
 use std::time::{Duration, Instant};
+use crate::config::RenderingConfig;
 
 const RAYON_TERRE	:f64   = 6378137.0;
 const TILE_SIZE     :u32   = 256;
-const CACHE_SIZE    :usize = 512;
-const PREFETCH_MARGIN: i64 = 2; // nombre de tuiles chargées autour de la vue
 const ZOOM_ANIMATION_DURATION: Duration = Duration::from_millis(240);
 const ROTATION_MARGIN: u32 = 4;
 const MAP_BACKGROUND: Rgba<u8> = Rgba([245, 245, 245, 255]);
-
-use crate::MAP_WORLD;
 
 /// Cached tile: `None` means "tile fetched but could not be decoded / did not exist".
 type CachedTile = Option<RgbaImage>;
@@ -39,6 +36,8 @@ pub struct MBTilesRenderer {
     tile_format: String,
     conn: Connection,
     cache: LruCache<(i32, i64, i64), CachedTile>,
+    rendering_config: RenderingConfig,
+    default_map: String,
     pub resolution : f64,
     /// Centre (en coordonnées "pixel monde") utilisé lors du dernier rendu.
     /// Sert de référence pour convertir d'autres coordonnées GPS (waypoints,
@@ -53,6 +52,8 @@ impl MBTilesRenderer {
         zoom: i32,
         width: u32,
         height: u32,
+        config: &RenderingConfig,
+        default_map: &str,
     ) -> rusqlite::Result<Self> 
         {
         let (render_width, render_height) = Self::texture_dimensions(width, height);
@@ -78,7 +79,9 @@ impl MBTilesRenderer {
             metadata: HashMap::new(),
             tile_format: "png".to_string(),
             conn,
-            cache: LruCache::new(NonZeroUsize::new(CACHE_SIZE.max(1)).unwrap()),
+            cache: LruCache::new(NonZeroUsize::new(config.tile_cache_size.max(1)).unwrap()),
+            rendering_config: config.clone(),
+            default_map: default_map.to_string(),
             resolution: 1.0,
             last_center: (0.0, 0.0),
             available_zooms: Vec::new(),
@@ -95,7 +98,8 @@ impl MBTilesRenderer {
 
     pub fn texture_dimensions(width: u32, height: u32) -> (u32, u32) {
         let side = ((width as f64).hypot(height as f64)).ceil() as u32 + ROTATION_MARGIN;
-        (side, side)
+        let scaled_side = side * 2 + ROTATION_MARGIN;
+        (scaled_side, scaled_side)
     }
 
     pub fn rotation_degrees(&self) -> f64 {
@@ -117,6 +121,23 @@ impl MBTilesRenderer {
         )
     }
 
+    pub fn texture_rect(&self) -> Rect {
+        let display_rect = self.render_rect();
+        let zoom_scale = 2.0_f64.powf(self.display_zoom - self.source_zoom() as f64);
+        let (width, height) = source_dimensions(display_rect.width(), display_rect.height(), zoom_scale);
+        Rect::new(
+            (self.render_width - width) as i32 / 2,
+            (self.render_height - height) as i32 / 2,
+            width,
+            height,
+        )
+    }
+
+    pub fn display_dimensions(&self) -> (u32, u32) {
+        let rect = self.render_rect();
+        (rect.width(), rect.height())
+    }
+
     /// Charge au plus `budget` tuiles manquantes. Renvoie true s'il reste du travail.
     pub fn prefetch_step(&mut self, budget: usize) -> bool {
         let source_zoom = self.source_zoom();
@@ -129,10 +150,10 @@ impl MBTilesRenderer {
         let origin_x = source_center_x - view_width as f64 / zoom_scale / 2.0;
         let origin_y = source_center_y - view_height as f64 / zoom_scale / 2.0;
 
-        let first_tx = (origin_x / tile_size).floor() as i64 - PREFETCH_MARGIN;
-        let first_ty = (origin_y / tile_size).floor() as i64 - PREFETCH_MARGIN;
-        let last_tx = ((origin_x + view_width as f64 / zoom_scale) / tile_size).floor() as i64 + PREFETCH_MARGIN;
-        let last_ty = ((origin_y + view_height as f64 / zoom_scale) / tile_size).floor() as i64 + PREFETCH_MARGIN;
+        let first_tx = (origin_x / tile_size).floor() as i64 - self.rendering_config.prefetch_margin;
+        let first_ty = (origin_y / tile_size).floor() as i64 - self.rendering_config.prefetch_margin;
+        let last_tx = ((origin_x + view_width as f64 / zoom_scale) / tile_size).floor() as i64 + self.rendering_config.prefetch_margin;
+        let last_ty = ((origin_y + view_height as f64 / zoom_scale) / tile_size).floor() as i64 + self.rendering_config.prefetch_margin;
 
         let mut loaded = 0;
         for tx in first_tx..=last_tx 
@@ -245,7 +266,8 @@ impl MBTilesRenderer {
                 }
             else{
                 println!("zomm mini");
-                let _ = self.change_map(MAP_WORLD);
+                let fallback_map = self.default_map.clone();
+                let _ = self.change_map(&fallback_map);
                 }
             }
         println!("zomm : {}",self.zoom);
@@ -259,7 +281,14 @@ impl MBTilesRenderer {
         // On construit le nouveau renderer d'abord : si ça échoue, self n'est pas touché.
         // Le cache est neuf (donc vide), les métadonnées et les zooms sont rechargés,
         // et le zoom courant est ramené dans [min_zoom, max_zoom] de la nouvelle carte.
-        let mut new_renderer = Self::new(mbtiles_path, self.zoom, self.width, self.height)?;
+        let mut new_renderer = Self::new(
+            mbtiles_path,
+            self.zoom,
+            self.width,
+            self.height,
+            &self.rendering_config,
+            &self.default_map,
+        )?;
 
         // On garde un last_center cohérent avec le (possible) nouveau zoom
         new_renderer.last_center = new_renderer.project(lon, lat);
@@ -494,28 +523,14 @@ impl MBTilesRenderer {
     fn render_view(&mut self, center_x: f64, center_y: f64) -> (RgbaImage, Rect) {
         let source_zoom = self.source_zoom();
         let zoom_scale = 2.0_f64.powf(self.display_zoom - source_zoom as f64);
-        let rect = self.render_rect();
-        let view_width = rect.width();
-        let view_height = rect.height();
-        let view = if (zoom_scale - 1.0).abs() < f64::EPSILON {
-            self.render_tiles(source_zoom, center_x, center_y, view_width, view_height)
-        } else {
-            let source_width = (view_width as f64 / zoom_scale).ceil() as u32 + 2;
-            let source_height = (view_height as f64 / zoom_scale).ceil() as u32 + 2;
-            let source = self.render_tiles(
-                source_zoom,
-                center_x / zoom_scale,
-                center_y / zoom_scale,
-                source_width,
-                source_height,
-            );
-            imageops::resize(
-                &source,
-                view_width,
-                view_height,
-                imageops::FilterType::Triangle,
-            )
-        };
+        let rect = self.texture_rect();
+        let view = self.render_tiles(
+            source_zoom,
+            center_x / zoom_scale,
+            center_y / zoom_scale,
+            rect.width(),
+            rect.height(),
+        );
         (view, rect)
     }
 
@@ -613,6 +628,16 @@ fn source_zoom_for(display_zoom: f64, available_zooms: &[i32], fallback: i32) ->
     }
 }
 
+fn source_dimensions(width: u32, height: u32, zoom_scale: f64) -> (u32, u32) {
+    if (zoom_scale - 1.0).abs() < f64::EPSILON {
+        return (width, height);
+    }
+    (
+        (width as f64 / zoom_scale).ceil() as u32 + 2,
+        (height as f64 / zoom_scale).ceil() as u32 + 2,
+    )
+}
+
 fn smooth_zoom_progress(progress: f64) -> f64 {
     progress * progress * (3.0 - 2.0 * progress)
 }
@@ -663,7 +688,14 @@ mod tests {
     fn texture_dimensions_cover_full_screen_after_rotation() {
         let (width, height) = MBTilesRenderer::texture_dimensions(1600, 800);
         assert_eq!(width, height);
-        assert!(width as f64 >= 1600.0_f64.hypot(800.0));
+        assert!(width >= 2 * 1600.0_f64.hypot(800.0) as u32);
+    }
+
+    #[test]
+    fn texture_source_dimensions_follow_zoom_scale() {
+        assert_eq!(source_dimensions(1600, 800, 1.0), (1600, 800));
+        assert_eq!(source_dimensions(1600, 800, 2.0), (802, 402));
+        assert_eq!(source_dimensions(1600, 800, 0.5), (3202, 1602));
     }
 
     #[test]

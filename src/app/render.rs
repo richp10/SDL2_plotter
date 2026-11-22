@@ -51,6 +51,8 @@ impl Plotter<'_> {
         map.show_map(
             texture,
             texture_rect,
+            self.renderer.display_dimensions().0,
+            self.renderer.display_dimensions().1,
             self.renderer.rotation_degrees(),
         )
             .map_err(anyhow::Error::msg)?;
@@ -63,7 +65,9 @@ impl Plotter<'_> {
             self.display_route(map);
         }
 
-        self.boat.show(&self.renderer, map);
+        self.boat
+            .show(&self.renderer, map)
+            .map_err(anyhow::Error::msg)?;
 
         if self.state.display_ais {
             crate::ais::show_targets(&self.ais_targets, &self.renderer, map)
@@ -81,9 +85,15 @@ impl Plotter<'_> {
                 .map_err(anyhow::Error::msg)?;
         }
 
-        self.topbar.show(&mut map.canvas);
-        self.display_buttombar(map);
         map.night_layer(0).map_err(anyhow::Error::msg)?;
+        self.display_buttombar(map);
+        if let Some(streamer) = &self.streamer {
+            streamer
+                .capture(&map.canvas)
+                .map_err(anyhow::Error::msg)?;
+        }
+        self.topbar.show(&mut map.canvas);
+        map.canvas.present();
 
         Ok(())
     }

@@ -13,26 +13,9 @@ use tokio::sync::watch;
 
 use crate::boat::BoatState;
 use crate::ais::AisTarget;
+use crate::config::{SignalKConfig, SignalKPaths};
 pub type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
-pub const SIGNALK_URL :&str = "192.168.3.2";
-
-const POSITION_PATH :&str = "navigation.position";
-const COG_PATH      :&str = "navigation.courseOverGroundLastMinute";
-const SOG_PATH      :&str = "navigation.speedOverGroundLastMinute";
-const AIS_POSITION_PATH: &str = "navigation.position";
-const AIS_NAME_PATH: &str = "name";
-const AIS_COG_PATH: &str = "navigation.courseOverGroundTrue";
-const AIS_SOG_PATH: &str = "navigation.speedOverGround";
-
-
-const SUBSCRIBED_PATHS: [&str; 3] = 
-    [
-    POSITION_PATH,
-    COG_PATH,
-    SOG_PATH,
-    ];
-    
 /// Les donnees SignalK collectees au fil de l'eau
 #[derive(Debug, Default, Clone)]
 pub struct SignalKData {
@@ -51,13 +34,13 @@ pub struct SignalKClient {
     pub targets: HashMap<String, AisTarget>,
     self_context: Option<String>,
     url: String,
+    paths: SignalKPaths,
 }
 
 impl SignalKClient {
     /// Se connecte (avec retry automatique) et cree le client
-    pub async fn connect() -> Self {
-        let url = "ws://".to_owned() + SIGNALK_URL + "/signalk/v1/stream?subscribe=none";
-        let ws_stream = wait_for_signalk_connection(&url).await;
+    pub async fn connect(config: SignalKConfig) -> Self {
+        let ws_stream = wait_for_signalk_connection(&config.url).await;
         let (write, read) = ws_stream.split();
 
         SignalKClient {
@@ -66,7 +49,8 @@ impl SignalKClient {
             data: SignalKData::default(),
             targets: HashMap::new(),
             self_context: None,
-            url: url.to_string(),
+            url: config.url,
+            paths: config.paths,
         }
     }
 
@@ -163,7 +147,12 @@ impl SignalKClient {
         }
      
         crate::diagnostics::record("INFO", "Souscription SignalK aux données bateau et AIS");
-        let deltas: Vec<Delta> = SUBSCRIBED_PATHS
+        let self_paths = [
+            self.paths.position.as_str(),
+            self.paths.course_over_ground.as_str(),
+            self.paths.speed_over_ground.as_str(),
+        ];
+        let deltas: Vec<Delta> = self_paths
             .iter()
             .map(|path| Delta {
                 path: path.to_string(),
@@ -182,10 +171,10 @@ impl SignalKClient {
         self.write.send(Message::Text(json_string.into())).await?; 
 
         let ais_paths = [
-            AIS_POSITION_PATH,
-            AIS_NAME_PATH,
-            AIS_COG_PATH,
-            AIS_SOG_PATH,
+            self.paths.ais_position.as_str(),
+            self.paths.ais_name.as_str(),
+            self.paths.ais_course_over_ground.as_str(),
+            self.paths.ais_speed_over_ground.as_str(),
         ];
         let ais_payload = Subscribe {
             context: "vessels.*".to_string(),
@@ -216,8 +205,7 @@ impl SignalKClient {
                         let val = &value["value"];
                         if let Some(path) = value["path"].as_str() {
                             if is_self_context(context, self.self_context.as_deref()) {
-                                match path {
-                                    POSITION_PATH => {
+                                if path == self.paths.position {
                                         if let (Some(latitude), Some(longitude)) =
                                             (val["latitude"].as_f64(), val["longitude"].as_f64())
                                         {
@@ -232,13 +220,13 @@ impl SignalKClient {
                                                 self_position_updated = true;
                                             }
                                         }
-                                    }
-                                    COG_PATH => self.data.cog = val.as_f64().unwrap_or(self.data.cog),
-                                    SOG_PATH => self.data.sog = val.as_f64().unwrap_or(self.data.sog),
-                                    _ => {}
+                                } else if path == self.paths.course_over_ground {
+                                    self.data.cog = val.as_f64().unwrap_or(self.data.cog);
+                                } else if path == self.paths.speed_over_ground {
+                                    self.data.sog = val.as_f64().unwrap_or(self.data.sog);
                                 }
                             } else {
-                                update_ais_target(&mut self.targets, context, path, val);
+                                update_ais_target(&mut self.targets, &self.paths, context, path, val);
                             }
                         }
                     }
@@ -261,6 +249,7 @@ fn is_self_context(context: &str, self_context: Option<&str>) -> bool {
 
 fn update_ais_target(
     targets: &mut HashMap<String, AisTarget>,
+    paths: &SignalKPaths,
     context: &str,
     path: &str,
     value: &Value,
@@ -273,8 +262,7 @@ fn update_ais_target(
         .entry(context.to_string())
         .or_insert_with(|| AisTarget::new(context.to_string()));
 
-    match path {
-        AIS_POSITION_PATH => {
+    if path == paths.ais_position {
             if let (Some(latitude), Some(longitude)) =
                 (value["latitude"].as_f64(), value["longitude"].as_f64())
             {
@@ -286,23 +274,20 @@ fn update_ais_target(
                     target.position = Some((longitude, latitude));
                 }
             }
+    } else if path == paths.ais_name {
+        if let Some(name) = value.as_str().filter(|name| !name.trim().is_empty()) {
+            target.name = Some(name.to_string());
         }
-        AIS_NAME_PATH => {
-            if let Some(name) = value.as_str().filter(|name| !name.trim().is_empty()) {
-                target.name = Some(name.to_string());
-            }
+    } else if path == paths.ais_course_over_ground {
+        if let Some(course) = value.as_f64().filter(|course| course.is_finite()) {
+            target.course_over_ground = Some(course);
         }
-        AIS_COG_PATH => {
-            if let Some(course) = value.as_f64().filter(|course| course.is_finite()) {
-                target.course_over_ground = Some(course);
-            }
+    } else if path == paths.ais_speed_over_ground {
+        if let Some(speed) = value.as_f64().filter(|speed| speed.is_finite() && *speed >= 0.0) {
+            target.speed_over_ground = Some(speed);
         }
-        AIS_SOG_PATH => {
-            if let Some(speed) = value.as_f64().filter(|speed| speed.is_finite() && *speed >= 0.0) {
-                target.speed_over_ground = Some(speed);
-            }
-        }
-        _ => return,
+    } else {
+        return;
     }
     target.update_received();
 }
@@ -355,10 +340,11 @@ pub async fn signalk_task(
     track_tx: tokio::sync::mpsc::UnboundedSender<(f64, f64)>,
     ais_tx: watch::Sender<Vec<AisTarget>>,
     status_tx: watch::Sender<String>,
+    config: SignalKConfig,
 ) {
-    crate::diagnostics::record("INFO", format!("Tâche SignalK démarrée, serveur={SIGNALK_URL}"));
-    let _ = status_tx.send(format!("Connecting to Signalk {}...", SIGNALK_URL));
-    let mut signalk = SignalKClient::connect().await;
+    crate::diagnostics::record("INFO", format!("Tâche SignalK démarrée, serveur={}", config.url));
+    let _ = status_tx.send(format!("Connecting to Signalk {}...", config.url));
+    let mut signalk = SignalKClient::connect(config).await;
     if !signalk.check_connect().await {
         crate::diagnostics::record("WARN", "La vérification initiale SignalK n'a pas abouti");
     }
@@ -401,16 +387,24 @@ mod tests {
     fn decodes_ais_target_and_ignores_own_vessel() {
         let context = "vessels.urn:mrn:imo:mmsi:123456789";
         let mut targets = HashMap::new();
+        let paths = SignalKPaths {
+            ais_position: "custom.position".into(),
+            ais_name: "custom.name".into(),
+            ais_course_over_ground: "custom.course".into(),
+            ais_speed_over_ground: "custom.speed".into(),
+            ..SignalKPaths::default()
+        };
 
         update_ais_target(
             &mut targets,
+            &paths,
             context,
-            AIS_POSITION_PATH,
+            &paths.ais_position,
             &json!({"latitude": -17.7, "longitude": 178.1}),
         );
-        update_ais_target(&mut targets, context, AIS_NAME_PATH, &json!("Example"));
-        update_ais_target(&mut targets, context, AIS_COG_PATH, &json!(1.25));
-        update_ais_target(&mut targets, context, AIS_SOG_PATH, &json!(4.5));
+        update_ais_target(&mut targets, &paths, context, &paths.ais_name, &json!("Example"));
+        update_ais_target(&mut targets, &paths, context, &paths.ais_course_over_ground, &json!(1.25));
+        update_ais_target(&mut targets, &paths, context, &paths.ais_speed_over_ground, &json!(4.5));
 
         let target = targets.get(context).unwrap();
         assert_eq!(target.position, Some((178.1, -17.7)));
@@ -420,14 +414,16 @@ mod tests {
 
         update_ais_target(
             &mut targets,
+            &paths,
             context,
-            AIS_POSITION_PATH,
+            &paths.ais_position,
             &json!({"latitude": 91.0, "longitude": 181.0}),
         );
         update_ais_target(
             &mut targets,
+            &paths,
             "vessels.self",
-            AIS_POSITION_PATH,
+            &paths.ais_position,
             &json!({"latitude": 0.0, "longitude": 0.0}),
         );
 

@@ -8,26 +8,7 @@ use sdl2::pixels::Color;
 use sdl2::rect::{Rect};
 use sdl2::rect::Point;
 use sdl2::mouse::{Cursor, SystemCursor};
-
-const FULL_SCREEN   :bool = false;
-const FONT_FILE     :&str = "assets/Montserrat-Regular.ttf";
-const FONT_SIZE     :u16  = 28;
-const WINDOW_WIDTH  :u32  = 1600;
-const WINDOW_HEIGHT :u32  = 800;
-const TITLE         :&str = "KALYMNOS";
-const BOAT_SIZE     :i16  = 6;
-const MARK_SIZE     :i16  = 6;
-const BOAT_CIRCLE   :i16  = 50;
-const ROUTE_WIDTH   :u8   = 3;
-const COG_SIZE      :f64  = 250.0;
-const COG_THICK     :u8   = 4; 
-
-const BOAT_COLOR     : Color = gfx_color(0, 0, 255, 255);
-const MESURE_COLOR   : Color = gfx_color(0, 0, 255, 255);
-const ROUTE_COLOR    : Color = gfx_color(255, 0, 0, 255);
-const COG_COLOR      : Color = gfx_color(0, 0, 255, 255);
-const AIS_COLOR      : Color = Color::RGB(255, 140, 0);
-const BACKGROUND_MAP : Color = gfx_color(250, 250, 250, 255);
+use crate::config::{AppearanceConfig, FontConfig, WindowConfig};
 
 pub struct MoteurSdl {
     pub context     : Sdl,
@@ -55,23 +36,30 @@ pub struct Map<'ttf> {
     pub cursor_arrow    : Cursor,
     pub cursor_wait     : Cursor,
     pub cursor_size     : Cursor,
+    appearance          : AppearanceConfig,
     }
 
 impl<'ttf> Map<'ttf> {
-    pub fn new(ttf_context: &'ttf Sdl2TtfContext, context: &Sdl ) -> Result<Self, String> {
+    pub fn new(
+        ttf_context: &'ttf Sdl2TtfContext,
+        context: &Sdl,
+        window_config: &WindowConfig,
+        font_config: &FontConfig,
+        appearance: &AppearanceConfig,
+    ) -> Result<Self, String> {
 
-        let font = ttf_context.load_font(FONT_FILE, FONT_SIZE)?;
+        let font = ttf_context.load_font(&font_config.file, font_config.window_size)?;
         
         let video_subsystem = context.video().unwrap();
-        let window = match FULL_SCREEN 
+        let window = match window_config.fullscreen
             {
             false => video_subsystem
-                .window(TITLE, WINDOW_WIDTH, WINDOW_HEIGHT)
+                .window(&window_config.title, window_config.width, window_config.height)
                 .position_centered()
                 .build()
                 .unwrap(),
             true => video_subsystem
-                .window(TITLE, WINDOW_WIDTH, WINDOW_HEIGHT)
+                .window(&window_config.title, window_config.width, window_config.height)
                 .position_centered()
                 .fullscreen_desktop()
                 .build()
@@ -79,9 +67,9 @@ impl<'ttf> Map<'ttf> {
             };
         
         let display_mode     = video_subsystem.current_display_mode(0).unwrap();
-        let (screen_width,screen_height) = match FULL_SCREEN
+        let (screen_width,screen_height) = match window_config.fullscreen
             {
-            false => { (WINDOW_WIDTH,WINDOW_HEIGHT) }
+            false => { (window_config.width,window_config.height) }
             true  => { (display_mode.w as u32,display_mode.h as u32) }
             };
             
@@ -92,11 +80,22 @@ impl<'ttf> Map<'ttf> {
         let cursor_wait   = Cursor::from_system(SystemCursor::Wait)?;
         let cursor_size   = Cursor::from_system(SystemCursor::SizeAll)?;
         cursor_hand.set();
-        Ok(Map { font, canvas, screen_width, screen_height, cursor_hand, cursor_cross, cursor_arrow, cursor_wait, cursor_size })
+        Ok(Map {
+            font,
+            canvas,
+            screen_width,
+            screen_height,
+            cursor_hand,
+            cursor_cross,
+            cursor_arrow,
+            cursor_wait,
+            cursor_size,
+            appearance: appearance.clone(),
+        })
         }
 
     pub fn draw_mid_handles(&mut self, pts: &[Point])  {
-        self.canvas.set_draw_color(ROUTE_COLOR);
+        self.canvas.set_draw_color(configured_color(self.appearance.route_color));
         for p in pts 
             {
             let r = sdl2::rect::Rect::new(p.x - 4, p.y - 4, 12, 12);
@@ -107,17 +106,17 @@ impl<'ttf> Map<'ttf> {
     pub fn show_cog(&mut self, mut radians :f64, pos : Point) -> Result<(), String> {
 
         radians -= std::f64::consts::PI / 2.0;
-        let x1 = pos.x as f64 + ((radians.cos() * COG_SIZE));
-        let y1 = pos.y as f64 + ((radians.sin() * COG_SIZE));
+        let x1 = pos.x as f64 + (radians.cos() * self.appearance.cog_length);
+        let y1 = pos.y as f64 + (radians.sin() * self.appearance.cog_length);
 
-        let _  = self.canvas.thick_line(
+        self.canvas.thick_line(
                     pos.x as i16, 
                     pos.y as i16, 
                     x1 as i16, 
                     y1 as i16, 
-                    COG_THICK, // Épaisseur de 4 pixels
-                    COG_COLOR, 
-                    );
+                    self.appearance.cog_width,
+                    configured_color(self.appearance.cog_color),
+                    )?;
         Ok(())
         }
     
@@ -128,14 +127,19 @@ impl<'ttf> Map<'ttf> {
             let _ = self.canvas.thick_line(
                 a.x as i16, a.y as i16,
                 b.x as i16, b.y as i16,
-                ROUTE_WIDTH,
-                ROUTE_COLOR,
+                self.appearance.route_width,
+                configured_color(self.appearance.route_color),
             );
             }
-        self.canvas.set_draw_color(ROUTE_COLOR);
+        self.canvas.set_draw_color(configured_color(self.appearance.route_color));
         for pt in pts
             {
-            let _ = self.canvas.filled_circle( pt.x as i16, pt.y as i16, BOAT_SIZE, ROUTE_COLOR);
+            let _ = self.canvas.filled_circle(
+                pt.x as i16,
+                pt.y as i16,
+                self.appearance.route_point_size,
+                configured_color(self.appearance.route_color),
+            );
             }
         }
 
@@ -143,13 +147,15 @@ impl<'ttf> Map<'ttf> {
         &mut self,
         texture: &Texture,
         source_rect: Rect,
+        display_width: u32,
+        display_height: u32,
         rotation_degrees: f64,
     ) -> Result<(), String> {
         let dst = Rect::new(
-            (self.screen_width as i32 - source_rect.width() as i32) / 2,
-            (self.screen_height as i32 - source_rect.height() as i32) / 2,
-            source_rect.width(),
-            source_rect.height(),
+            (self.screen_width as i32 - display_width as i32) / 2,
+            (self.screen_height as i32 - display_height as i32) / 2,
+            display_width,
+            display_height,
         );
         self.canvas
             .copy_ex(
@@ -170,15 +176,18 @@ impl<'ttf> Map<'ttf> {
         x: i32,
         y: i32,
         source_rect: Rect,
+        display_width: u32,
+        display_height: u32,
         rotation_degrees: f64,
     ) -> Result<(), String> {
         let dst_rect = Rect::new(
-            (self.screen_width as i32 - source_rect.width() as i32) / 2 + x,
-            (self.screen_height as i32 - source_rect.height() as i32) / 2 + y,
-            source_rect.width(),
-            source_rect.height(),
+            (self.screen_width as i32 - display_width as i32) / 2 + x,
+            (self.screen_height as i32 - display_height as i32) / 2 + y,
+            display_width,
+            display_height,
         );
-        self.canvas.set_draw_color(BACKGROUND_MAP);
+        self.canvas
+            .set_draw_color(configured_color(self.appearance.map_background_color));
         self.canvas.clear();
         self.canvas.copy_ex(
             texture,
@@ -194,9 +203,23 @@ impl<'ttf> Map<'ttf> {
         }
                
     pub fn show_boat(&mut self,x:i16,y:i16) -> Result<(), String> {
-        
-        self.canvas.filled_circle( x, y, BOAT_SIZE, BOAT_COLOR)?;
-        self.canvas.circle( x, y, BOAT_CIRCLE, BOAT_COLOR)?;
+        let boat_color = configured_color(self.appearance.boat_color);
+        self.canvas.set_blend_mode(BlendMode::Blend);
+        self.canvas.set_draw_color(boat_color);
+        draw_filled_circle(
+            &mut self.canvas,
+            i32::from(x),
+            i32::from(y),
+            i32::from(self.appearance.boat_size),
+            boat_color,
+        )?;
+        draw_circle(
+            &mut self.canvas,
+            i32::from(x),
+            i32::from(y),
+            i32::from(self.appearance.boat_circle_radius),
+            boat_color,
+        )?;
         Ok(())
         }
 
@@ -207,40 +230,57 @@ impl<'ttf> Map<'ttf> {
         course_over_ground: Option<f64>,
     ) -> Result<(), String> {
         if let Some(course) = course_over_ground.filter(|course| course.is_finite()) {
-            let end_x = x + (course.sin() * 28.0).round() as i32;
-            let end_y = y - (course.cos() * 28.0).round() as i32;
+            let end_x = x + (course.sin() * f64::from(self.appearance.ais_course_length)).round() as i32;
+            let end_y = y - (course.cos() * f64::from(self.appearance.ais_course_length)).round() as i32;
             let _ = self.canvas.thick_line(
                 x as i16,
                 y as i16,
                 end_x as i16,
                 end_y as i16,
-                3,
-                AIS_COLOR,
+                self.appearance.ais_course_width,
+                configured_color(self.appearance.ais_color),
             );
         }
-        self.canvas.filled_circle(x as i16, y as i16, 7, AIS_COLOR)?;
-        self.canvas.circle(x as i16, y as i16, 9, Color::BLACK)?;
+        self.canvas.filled_circle(
+            x as i16,
+            y as i16,
+            self.appearance.ais_size,
+            configured_color(self.appearance.ais_color),
+        )?;
+        self.canvas.circle(
+            x as i16,
+            y as i16,
+            self.appearance.ais_outline_size,
+            configured_color(self.appearance.ais_outline_color),
+        )?;
         Ok(())
     }
 
     pub fn show_mark(&mut self,x:i16,y:i16) -> Result<(), String> {
-
-        self.canvas.filled_circle( x, y, MARK_SIZE, MESURE_COLOR)?;
+        draw_filled_circle(
+            &mut self.canvas,
+            i32::from(x),
+            i32::from(y),
+            i32::from(self.appearance.mark_size),
+            configured_color(self.appearance.measure_color),
+        )?;
         Ok(())
         }
     
     pub fn show_line(&mut self, x1: i16, y1: i16, x2: i16, y2: i16) -> Result<(), String>{
-        self.canvas.set_draw_color(Color::RGB(0, 0, 255));
+        self.canvas
+            .set_draw_color(configured_color(self.appearance.line_color));
         self.canvas.draw_line(Point::new(x1 as i32, y1 as i32), Point::new(x2 as i32, y2 as i32))
         }
         
     pub fn night_layer( &mut self, opacity : u8 ) -> Result<(), String> {
         self.canvas.set_blend_mode(BlendMode::Blend);
-        self.canvas.set_draw_color(Color::RGBA(255, 0, 0, opacity));
+        let [red, green, blue, _] = self.appearance.night_overlay_color;
+        self.canvas
+            .set_draw_color(Color::RGBA(red, green, blue, opacity));
 
         let ecran_total = Rect::new(0, 0, self.screen_width, self.screen_height);
         self.canvas.fill_rect(ecran_total).unwrap();
-        self.canvas.present();
         Ok(())
         }
     
@@ -302,7 +342,61 @@ impl<'ttf> Map<'ttf> {
     }
     
     
-const fn gfx_color(r: u8, g: u8, b: u8, a: u8) -> Color {
-        Color::RGBA(a, b, g, r) 
+fn configured_color([red, green, blue, alpha]: [u8; 4]) -> Color {
+    Color::RGBA(red, green, blue, alpha)
+}
+
+fn draw_filled_circle(
+    canvas: &mut WindowCanvas,
+    center_x: i32,
+    center_y: i32,
+    radius: i32,
+    color: Color,
+) -> Result<(), String> {
+    canvas.set_draw_color(color);
+    let radius = radius.max(1);
+    for dy in -radius..=radius {
+        let dx = ((radius * radius - dy * dy).max(0) as f64).sqrt().floor() as i32;
+        canvas.draw_line(
+            Point::new(center_x - dx, center_y + dy),
+            Point::new(center_x + dx, center_y + dy),
+        )?;
+    }
+    Ok(())
+}
+
+fn draw_circle(
+    canvas: &mut WindowCanvas,
+    center_x: i32,
+    center_y: i32,
+    radius: i32,
+    color: Color,
+) -> Result<(), String> {
+    canvas.set_draw_color(color);
+    let radius = radius.max(1);
+    let mut points = Vec::with_capacity(4 * radius as usize);
+    let mut x = radius;
+    let mut y = 0;
+    let mut error = 1 - radius;
+
+    while x >= y {
+        points.push(Point::new(center_x + x, center_y + y));
+        points.push(Point::new(center_x + y, center_y + x));
+        points.push(Point::new(center_x - y, center_y + x));
+        points.push(Point::new(center_x - x, center_y + y));
+        points.push(Point::new(center_x - x, center_y - y));
+        points.push(Point::new(center_x - y, center_y - x));
+        points.push(Point::new(center_x + y, center_y - x));
+        points.push(Point::new(center_x + x, center_y - y));
+
+        y += 1;
+        if error <= 0 {
+            error += 2 * y + 1;
+        } else {
+            x -= 1;
+            error += 2 * (y - x) + 1;
         }
+    }
+    canvas.draw_points(points.as_slice())
+}
     

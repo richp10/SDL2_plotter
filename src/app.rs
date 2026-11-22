@@ -1,9 +1,9 @@
 use crate::boat::BoatState;
 use crate::{
     ais, buttombar, mbtiles_renderer, mesure, route, screen, signalk, state, topbar, track,
-    waypoints,
+    waypoints, config::AppConfig,
 };
-use crate::{Mode, MAP_WORLD};
+use crate::Mode;
 use mbtiles_renderer::MBTilesRenderer;
 use sdl2::event::Event;
 use sdl2::ttf::Sdl2TtfContext;
@@ -149,6 +149,7 @@ pub(crate) struct Plotter<'ttf> {
     status_rx: watch::Receiver<String>,
     ais_targets: Vec<ais::AisTarget>,
     last_ais_cleanup: Instant,
+    streamer: Option<crate::stream::Streamer>,
 }
 
 impl<'ttf> Plotter<'ttf> {
@@ -157,6 +158,8 @@ impl<'ttf> Plotter<'ttf> {
         ttf_context: &'ttf Sdl2TtfContext,
         width: u32,
         height: u32,
+        config: &AppConfig,
+        streamer: Option<crate::stream::Streamer>,
     ) -> anyhow::Result<Self> {
         let text_input = sdl_context
             .video()
@@ -167,9 +170,15 @@ impl<'ttf> Plotter<'ttf> {
         let (track_tx, track_rx) = tokio::sync::mpsc::unbounded_channel();
         let (ais_tx, ais_rx) = watch::channel(Vec::new());
         let (status_tx, status_rx) = watch::channel(String::new());
-        tokio::spawn(signalk::signalk_task(state_tx, track_tx, ais_tx, status_tx));
+        tokio::spawn(signalk::signalk_task(
+            state_tx,
+            track_tx,
+            ais_tx,
+            status_tx,
+            config.signalk.clone(),
+        ));
 
-        let charts_path = state::list_maps("map");
+        let charts_path = state::list_maps(&config.charts.directory);
         let charts_name: Vec<String> = charts_path
             .iter()
             .map(|path| {
@@ -180,20 +189,27 @@ impl<'ttf> Plotter<'ttf> {
                     .to_string()
             })
             .collect();
-        let initial_map = charts_path
-            .first()
-            .cloned()
-            .unwrap_or_else(|| MAP_WORLD.to_string());
-        let state = state::State::new(STATE_FILE, initial_map).map_err(anyhow::Error::msg)?;
-        let renderer = MBTilesRenderer::new(&state.map.clone(), state.zoom, width, height)?;
-
-        let topbar = topbar::Topbar::new(ttf_context, width, charts_name.clone())
+        let state = state::State::new(STATE_FILE, config.charts.default.clone())
             .map_err(anyhow::Error::msg)?;
-        let buttombar = buttombar::Buttombar::new(ttf_context, width, height)
+        let renderer = MBTilesRenderer::new(
+            &state.map,
+            state.zoom,
+            width,
+            height,
+            &config.rendering,
+            &config.charts.default,
+        )?;
+
+        let topbar = topbar::Topbar::new(ttf_context, width, charts_name.clone(), &config.fonts)
+            .map_err(anyhow::Error::msg)?;
+        let buttombar = buttombar::Buttombar::new(ttf_context, width, height, &config.fonts)
             .expect("failed to build buttombar bar");
         let route = route::Route::new().map_err(anyhow::Error::msg)?;
         let mesure = mesure::Mesure::new().map_err(anyhow::Error::msg)?;
-        let track = track::Track::new(Path::new(DEFAULT_TRACK_PATH))?;
+        let track = track::Track::with_checkpoint_interval(
+            Path::new(DEFAULT_TRACK_PATH),
+            Duration::from_secs(config.track.checkpoint_interval_seconds),
+        )?;
         crate::diagnostics::record(
             "INFO",
             format!(
@@ -235,6 +251,7 @@ impl<'ttf> Plotter<'ttf> {
             status_rx,
             ais_targets: Vec::new(),
             last_ais_cleanup: Instant::now(),
+            streamer,
         })
     }
 
@@ -317,6 +334,16 @@ impl<'ttf> Plotter<'ttf> {
             //////////////////////   Position update  /////////////////////////
             if self.state_rx.has_changed()? {
                 let boat = *self.state_rx.borrow_and_update();
+                if self.boat.position_valid != boat.position_valid {
+                    crate::diagnostics::record(
+                        "INFO",
+                        if boat.position_valid {
+                            "Position du bateau reçue; marqueur activé"
+                        } else {
+                            "Position du bateau invalide; marqueur masqué"
+                        },
+                    );
+                }
                 self.boat = boat;
 
                 if self.state.follow && valid_boat_position(&boat) {

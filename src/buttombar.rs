@@ -5,11 +5,10 @@ use sdl2::{ttf::{Sdl2TtfContext, Font}};
 use sdl2::rect::{Rect};
 use sdl2::render::{TextureQuery,WindowCanvas};
 use sdl2::pixels::Color;
+use crate::config::FontConfig;
 
 const COLOR    : Color = gfx_color(200, 220, 220, 220);
 
-const FONT_FILE    	:&str = "assets/Montserrat-Regular.ttf";
-const FONT_SIZE    	:u16  = 16;
 const HEIGHT	    :u32  = 32;
 
 
@@ -24,9 +23,14 @@ pub struct Buttombar <'ttf>
 
 impl <'ttf>Buttombar <'ttf>
 	{
-	pub fn new(ttf_context: &'ttf Sdl2TtfContext, width : u32, height :u32) -> Result<Self, String>
+	pub fn new(
+		ttf_context: &'ttf Sdl2TtfContext,
+		width: u32,
+		height: u32,
+		font_config: &FontConfig,
+	) -> Result<Self, String>
 		{
-		let font = ttf_context.load_font(FONT_FILE, FONT_SIZE)?;
+		let font = ttf_context.load_font(&font_config.file, font_config.ui_size)?;
 		Ok(Buttombar { font : font, width : width, height : height })
 				
 		}

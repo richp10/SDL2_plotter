@@ -20,10 +20,10 @@ mod track;
 mod waypoints;
 mod app;
 mod diagnostics;
+mod config;
+mod stream;
 
 use sdl2::pixels::PixelFormatEnum;
-
-const MAP_WORLD: &str = "assets/OSM.mbtiles";
 
 #[derive(Debug, PartialEq, Clone, Copy, Default)]
 pub enum Mode {
@@ -55,9 +55,17 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn run() -> anyhow::Result<()> {
+	let config = config::AppConfig::load_or_create(std::path::Path::new("plotter.toml"))?;
 	let mut sdl = screen::MoteurSdl::init().map_err(anyhow::Error::msg)?;
 	diagnostics::record("INFO", "SDL initialisé");
-	let mut map = screen::Map::new(&sdl.ttf_context, &sdl.context).map_err(anyhow::Error::msg)?;
+	let mut map = screen::Map::new(
+		&sdl.ttf_context,
+		&sdl.context,
+		&config.window,
+		&config.fonts,
+		&config.appearance,
+	)
+	.map_err(anyhow::Error::msg)?;
 	diagnostics::record("INFO", "Fenêtre SDL initialisée");
 
 	let texture_creator = map.canvas.texture_creator();
@@ -66,8 +74,21 @@ async fn run() -> anyhow::Result<()> {
 	let mut texture = texture_creator
 		.create_texture_streaming(PixelFormatEnum::RGBA32, texture_width, texture_height)
 		.map_err(anyhow::Error::msg)?;
+	texture.set_scale_mode(sdl2::render::ScaleMode::Linear);
+	let streamer = if config.streaming.enabled {
+		Some(stream::Streamer::start(&config.streaming)?)
+	} else {
+		None
+	};
 	let mut plotter =
-		app::Plotter::new(&sdl.context, &sdl.ttf_context, map.screen_width, map.screen_height)?;
+		app::Plotter::new(
+			&sdl.context,
+			&sdl.ttf_context,
+			map.screen_width,
+			map.screen_height,
+			&config,
+			streamer,
+		)?;
 	diagnostics::record("INFO", "Application initialisée");
 	plotter.main_loop(&mut sdl.event_pump, &mut map, &mut texture)
 }

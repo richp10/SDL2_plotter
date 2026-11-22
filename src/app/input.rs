@@ -116,7 +116,6 @@ impl Plotter<'_> {
                 topbar::EDIT_WP => Some(AppAction::SetMode(Mode::EditWaypoint)),
                 topbar::EDIT_MESURE => Some(AppAction::SetMode(Mode::Measurement)),
                 topbar::CLEAR_ROUTE => Some(AppAction::ClearRoute),
-                topbar::FOLLOW => Some(AppAction::ToggleFollow),
                 topbar::FOLLOW_ON => Some(AppAction::FollowOn),
                 topbar::FOLLOW_OFF => Some(AppAction::FollowOff),
                 topbar::PREVIOUS => Some(AppAction::PreviousWaypoint),
@@ -389,7 +388,9 @@ impl Plotter<'_> {
                     texture,
                     self.xdrag,
                     self.ydrag,
-                    self.renderer.render_rect(),
+                    self.renderer.texture_rect(),
+                    self.renderer.display_dimensions().0,
+                    self.renderer.display_dimensions().1,
                     self.renderer.rotation_degrees(),
                 )?;
                 self.mouse = Mouse::Hand;

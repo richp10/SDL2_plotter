@@ -1,16 +1,22 @@
-use std::fs::File;
 use std::fs;
+use std::fs::File;
 use std::io::{BufWriter, Write};
+use std::path::Path;
 
 fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
-        }
+}
 
-
-pub fn save_gpx(path: &str, name: &str, route: &[(f64, f64)]) -> std::io::Result<()> {
+pub fn save_route_gpx(path: &Path, name: &str, route: &[(f64, f64)]) -> std::io::Result<()> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent)?;
+    }
     let mut w = BufWriter::new(File::create(path)?);
 
     writeln!(w, r#"<?xml version="1.0" encoding="UTF-8"?>"#)?;
@@ -18,22 +24,19 @@ pub fn save_gpx(path: &str, name: &str, route: &[(f64, f64)]) -> std::io::Result
         w,
         r#"<gpx version="1.1" creator="ma_carte" xmlns="http://www.topografix.com/GPX/1/1">"#
     )?;
-    writeln!(w, "  <trk>")?;
+    writeln!(w, "  <rte>")?;
     writeln!(w, "    <name>{}</name>", xml_escape(name))?;
-    writeln!(w, "    <trkseg>")?;
 
     for &(lon, lat) in route {
-        // GPX attend lat puis lon (attention : l'inverse de votre tuple)
-        writeln!(w, r#"      <trkpt lat="{:.6}" lon="{:.6}"/>"#, lat, lon)?;
+        writeln!(w, r#"    <rtept lat="{:.6}" lon="{:.6}"/>"#, lat, lon)?;
     }
 
-    writeln!(w, "    </trkseg>")?;
-    writeln!(w, "  </trk>")?;
+    writeln!(w, "  </rte>")?;
     writeln!(w, "</gpx>")?;
     w.flush()
 }
 
-pub fn load_gpx(path: &str) -> std::io::Result<Vec<(f64, f64)>> {
+pub fn load_gpx(path: &Path) -> std::io::Result<Vec<(f64, f64)>> {
     let text = fs::read_to_string(path)?;
     let mut route = Vec::new();
 
@@ -53,4 +56,33 @@ fn parse_attr(tag: &str, name: &str) -> Option<f64> {
     let start = tag.find(&key)? + key.len();
     let end = tag[start..].find('"')? + start;
     tag[start..end].parse().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn exports_route_points_using_gpx_route_elements() {
+        let unique_id = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "desktop_plotter_route_export_{}_{}.gpx",
+            std::process::id(),
+            unique_id
+        ));
+        let points = [(-122.3, 47.5), (-122.2, 47.6)];
+
+        save_route_gpx(&path, "Test route", &points).unwrap();
+        let contents = fs::read_to_string(&path).unwrap();
+
+        assert!(contents.contains("<rte>"));
+        assert!(contents.contains("<rtept"));
+        assert!(!contents.contains("<trk>"));
+        assert_eq!(load_gpx(&path).unwrap(), points);
+        fs::remove_file(path).unwrap();
     }
+}

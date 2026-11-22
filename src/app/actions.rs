@@ -2,7 +2,7 @@ use std::path::Path;
 
 use chrono::Local;
 
-use super::{AppAction, Plotter, DEFAULT_TRACK_DIR};
+use super::{AppAction, Plotter};
 use crate::Mode;
 
 impl Plotter<'_> {
@@ -36,7 +36,10 @@ impl Plotter<'_> {
             }
             AppAction::ClearRoute => {
                 self.state.goto = false;
-                self.route.clear();
+                if let Err(error) = self.route.clear() {
+                    crate::diagnostics::record("ERROR", format!("Erreur sauvegarde route: {error}"));
+                    eprintln!("Erreur sauvegarde route : {error}");
+                }
             }
             AppAction::PreviousWaypoint => {
                 self.state.nav_id = self.state.nav_id.saturating_sub(1);
@@ -49,13 +52,28 @@ impl Plotter<'_> {
             AppAction::ClearTrack => {
                 self.track.reset();
             }
-            AppAction::SaveTrack => {
+            AppAction::ExportRouteGpx => {
                 let now = Local::now();
-                let path = Path::new(DEFAULT_TRACK_DIR)
+                let path = Path::new("export")
+                    .join(format!("Route-{}.gpx", now.format("%Y-%m-%d_%H-%M-%S")));
+                match self.route.export_gpx(&path) {
+                    Ok(()) => println!("Route exportée : {}", path.display()),
+                    Err(error) => {
+                        crate::diagnostics::record("ERROR", format!("Erreur export route GPX: {error}"));
+                        eprintln!("Erreur export route GPX : {error}");
+                    }
+                }
+            }
+            AppAction::ExportTrackGpx => {
+                let now = Local::now();
+                let path = Path::new("export")
                     .join(format!("Track-{}.gpx", now.format("%Y-%m-%d_%H-%M-%S")));
-                match self.track.save(&path) {
-                    Ok(()) => println!("Trace sauvegardée : {}", path.display()),
-                    Err(error) => eprintln!("Erreur sauvegarde : {error}"),
+                match self.track.export_gpx(&path) {
+                    Ok(()) => println!("Trace exportée : {}", path.display()),
+                    Err(error) => {
+                        crate::diagnostics::record("ERROR", format!("Erreur export trace GPX: {error}"));
+                        eprintln!("Erreur export trace GPX : {error}");
+                    }
                 }
             }
             AppAction::ClearWaypoints => self.waypoints.reset(),

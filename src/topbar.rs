@@ -23,7 +23,8 @@ pub const PREVIOUS: &str    = "Previous Wp";
 pub const NEXT: &str        = "Next Wp";
 pub const QUITTE: &str      = "Exit";
 pub const CLEAR_TRACK: &str = "Clear Track";
-pub const SAVE_TRACK: &str  = "Save Track";
+pub const EXPORT_ROUTE_GPX: &str = "Export Route GPX";
+pub const EXPORT_TRACK_GPX: &str = "Export Track GPX";
 pub const CLEAR_WP: &str    = "Clear Waypoint";
 pub const SAVE_WP: &str     = "Save Waypoint";
 pub const SHOW_WP: &str     = "Show Waypoint";
@@ -75,6 +76,7 @@ impl<'ttf> Topbar<'ttf> {
                 title: "Route",
                 entries: vec![
                     CLEAR_ROUTE.into(),
+                    EXPORT_ROUTE_GPX.into(),
                     GOTO.into(),
                     PREVIOUS.into(),
                     NEXT.into(),
@@ -85,7 +87,7 @@ impl<'ttf> Topbar<'ttf> {
                 title: "Track",
                 entries: vec![
                     CLEAR_TRACK.into(),
-                    SAVE_TRACK.into(),
+                    EXPORT_TRACK_GPX.into(),
                     SHOW_TRACK.into(),
                     HIDE_TRACK.into(),
                     ] },

@@ -16,7 +16,7 @@ SDL2 Plotter can run in a desktop Linux environment, but the idea is to create a
 - Local MBTiles charts
 - North Up and Course Up display modes
 - Automatic vessel following
-- Persistent GPX tracks
+- Persistent JSON routes and tracks, with explicit GPX export
 - Routes and waypoints
 - Distance and bearing measurements
 - AIS target display
@@ -121,14 +121,16 @@ tile_cache_size = 512
 prefetch_margin = 2
 ```
 
-### Track
+### Routes and tracks
 
 ```toml
 [track]
 checkpoint_interval_seconds = 15
 ```
 
-The current track is loaded from `default/track.gpx` and saved periodically. Additional saved tracks are stored in `track/`.
+Routes and the current track are stored as versioned JSON in `default/route.json` and `default/track.json`. The track is checkpointed periodically; GPX export is available from the Route and Track menus, and timestamped exports are written to `export/`.
+
+On first launch after upgrading, an existing `default/route.gpx` or `default/track.gpx` is migrated to its corresponding JSON file. The original GPX file is left unchanged.
 
 ### Network streaming
 
@@ -161,10 +163,11 @@ http://RPI_ADDRESS:8080/stream
 
 - `default/plotter.toml`: configuration editable without recompiling
 - `default/state.json`: position, zoom and dynamic preferences
-- `default/route.gpx`: current route
+- `default/route.json`: current route
 - `default/waypoints.json`: waypoint list
-- `default/track.gpx`: current track
-- `track/`: additional saved tracks
+- `default/track.json`: current track
+- `default/route.gpx` and `default/track.gpx`: legacy files retained after migration
+- `export/`: timestamped GPX route and track exports
 - `plotter.log`: log and diagnostics
 
 ## Architecture

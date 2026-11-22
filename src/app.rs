@@ -16,8 +16,7 @@ mod input;
 mod render;
 
 const STATE_FILE: &str = "default/state.json";
-const DEFAULT_TRACK_DIR: &str = "track/";
-const DEFAULT_TRACK_PATH: &str = "default/track.gpx";
+const DEFAULT_TRACK_PATH: &str = "default/track.json";
 const LONG_CLICK: Duration = Duration::from_millis(500);
 const MOVE_TOLERANCE: i32 = 5;
 const DIAGNOSTICS_INTERVAL: Duration = Duration::from_secs(10);
@@ -42,7 +41,8 @@ enum AppAction {
     NextWaypoint,
     Quit,
     ClearTrack,
-    SaveTrack,
+    ExportRouteGpx,
+    ExportTrackGpx,
     ClearWaypoints,
     SaveWaypoints,
     ChangeChart(usize),
@@ -74,7 +74,8 @@ impl AppAction {
             Self::NextWaypoint => "NextWaypoint",
             Self::Quit => "Quit",
             Self::ClearTrack => "ClearTrack",
-            Self::SaveTrack => "SaveTrack",
+            Self::ExportRouteGpx => "ExportRouteGpx",
+            Self::ExportTrackGpx => "ExportTrackGpx",
             Self::ClearWaypoints => "ClearWaypoints",
             Self::SaveWaypoints => "SaveWaypoints",
             Self::ChangeChart(_) => "ChangeChart",

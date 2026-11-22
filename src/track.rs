@@ -35,7 +35,22 @@ impl Track
 	{
     #[cfg(test)]
     pub fn new(path: &Path) -> io::Result<Self> {
-        Self::with_checkpoint_interval(path, DEFAULT_CHECKPOINT_INTERVAL)
+		if path.extension().is_some_and(|extension| extension == "gpx") {
+			let mut track = Self {
+				points: Vec::new(),
+				save_pending: false,
+				last_save: Instant::now(),
+				checkpoint_interval: DEFAULT_CHECKPOINT_INTERVAL,
+			};
+			match Self::load_gpx(path) {
+				Ok(positions) => track.set_points(positions),
+				Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+				Err(error) => return Err(error),
+			}
+			Ok(track)
+		} else {
+			Self::with_checkpoint_interval(path, DEFAULT_CHECKPOINT_INTERVAL)
+		}
     }
 
     pub fn with_checkpoint_interval(path: &Path, checkpoint_interval: Duration) -> io::Result<Self>
@@ -48,19 +63,17 @@ impl Track
 			checkpoint_interval,
 			};
 
-		//let path = Path::new(file);
-		match track.load(path)
-			{
-			Ok(()) => println!("Trace chargée : {} / {} points", path.display(), track.points.len()),
-			Err(e) if e.kind() == io::ErrorKind::NotFound =>
-				println!("Aucune trace par défaut trouvée : {}", path.display()),
-			Err(e) if e.kind() == io::ErrorKind::InvalidData =>
-				eprintln!(
-					"Trace GPX invalide ({}), démarrage avec une trace vierge : {e}",
-					path.display()
-				),
-			Err(e) => return Err(e),
-			}
+		let legacy_path = path.with_extension("gpx");
+		let migrating = !path.exists() && legacy_path.exists();
+		let positions = crate::geo_data::read_or_migrate(path, &legacy_path, Self::load_gpx)?;
+		track.set_points(positions);
+		println!("Trace chargée : {} / {} points", path.display(), track.points.len());
+		if migrating {
+			crate::diagnostics::record(
+				"INFO",
+				format!("Trace migrée de {} vers {}", legacy_path.display(), path.display()),
+			);
+		}
 
 		Ok(track)
 		}
@@ -126,44 +139,38 @@ impl Track
 		}
 	}
 
-	pub fn load(&mut self, path: &Path) -> io::Result<()>
-		{
+	fn load_gpx(path: &Path) -> io::Result<Vec<(f64, f64)>> {
 		let text = std::fs::read_to_string(path)?;
-		let mut points = Vec::new();
-
-		for chunk in text.split('<').skip(1)
-			{
+		let mut positions = Vec::new();
+		for chunk in text.split('<').skip(1) {
 			let tag = chunk.split('>').next().unwrap_or("").trim();
-			if !is_track_point_tag(tag)
-				{
+			if !is_track_point_tag(tag) {
 				continue;
-				}
-
+			}
 			let lat = parse_gpx_attr(tag, "lat")
 				.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "latitude GPX manquante ou invalide"))?;
 			let lon = parse_gpx_attr(tag, "lon")
 				.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "longitude GPX manquante ou invalide"))?;
-			if !lat.is_finite() || !(-90.0..=90.0).contains(&lat)
-				{
+			if !lat.is_finite() || !(-90.0..=90.0).contains(&lat) {
 				return Err(io::Error::new(io::ErrorKind::InvalidData, "latitude GPX hors limites"));
-				}
-			if !lon.is_finite() || !(-180.0..=180.0).contains(&lon)
-				{
+			}
+			if !lon.is_finite() || !(-180.0..=180.0).contains(&lon) {
 				return Err(io::Error::new(io::ErrorKind::InvalidData, "longitude GPX hors limites"));
-				}
-
-			let (nx, ny) = project_norm(lon, lat);
-			points.push(TrackPoint { lon, lat, nx, ny });
 			}
-
-		if points.is_empty()
-			{
-			return Err(io::Error::new(io::ErrorKind::InvalidData, "aucun point de trace GPX"));
-			}
-
-		self.points = points;
-		Ok(())
+			positions.push((lon, lat));
 		}
+		Ok(positions)
+	}
+
+	fn set_points(&mut self, positions: Vec<(f64, f64)>) {
+		self.points = positions
+			.into_iter()
+			.map(|(lon, lat)| {
+				let (nx, ny) = project_norm(lon, lat);
+				TrackPoint { lon, lat, nx, ny }
+			})
+			.collect();
+	}
 		
 	fn push_point(&mut self, pos: (f64, f64)) 
 		{
@@ -217,20 +224,18 @@ impl Track
 		let _ = canvas.draw_lines(pts.as_slice());
 		}
 	
-	// Sauvegarde la trace dans le fichier indiqué, en créant son dossier parent au besoin.
-    pub fn save(&mut self, path: &Path) -> io::Result<()>
-		{
-		if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty())
-			{
-			std::fs::create_dir_all(parent)?;
-			}
-        if self.points.is_empty() 
-			{
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "trace vide"));
-			}
+	pub fn save(&self, path: &Path) -> io::Result<()> {
+		let positions = self.points.iter().map(|point| (point.lon, point.lat)).collect::<Vec<_>>();
+		crate::geo_data::write(path, &positions)
+	}
 
-        let now = Local::now();
-
+	pub fn export_gpx(&self, path: &Path) -> io::Result<()> {
+		if self.points.is_empty() {
+			return Err(io::Error::new(io::ErrorKind::InvalidInput, "trace vide"));
+		}
+		if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+			fs::create_dir_all(parent)?;
+		}
 		let file_name = path
 			.file_name()
 			.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "nom de fichier GPX manquant"))?;
@@ -239,30 +244,31 @@ impl Track
 			file_name.to_string_lossy(),
 			std::process::id()
 		));
-        let mut w = BufWriter::new(File::create(&temp_path)?);
-        writeln!(w, r#"<?xml version="1.0" encoding="UTF-8"?>"#)?;
-        writeln!(w, r#"<gpx version="1.1" creator="boat-tracker" xmlns="http://www.topografix.com/GPX/1/1">"#)?;
-        writeln!(w, "  <trk>")?;
-        writeln!(w, "    <name>Track {}</name>", now.format("%Y-%m-%d %H:%M:%S"))?;
-        writeln!(w, "    <trkseg>")?;
-        for index in simplified_indices(&self.points)
-			{
-			let p = &self.points[index];
-            writeln!(w, r#"      <trkpt lat="{:.6}" lon="{:.6}"/>"#, p.lat, p.lon)?;
+		let result = (|| {
+			let now = Local::now();
+			let mut writer = BufWriter::new(File::create(&temp_path)?);
+			writeln!(writer, r#"<?xml version="1.0" encoding="UTF-8"?>"#)?;
+			writeln!(writer, r#"<gpx version="1.1" creator="boat-tracker" xmlns="http://www.topografix.com/GPX/1/1">"#)?;
+			writeln!(writer, "  <trk>")?;
+			writeln!(writer, "    <name>Track {}</name>", now.format("%Y-%m-%d %H:%M:%S"))?;
+			writeln!(writer, "    <trkseg>")?;
+			for index in simplified_indices(&self.points) {
+				let point = &self.points[index];
+				writeln!(writer, r#"      <trkpt lat="{:.6}" lon="{:.6}"/>"#, point.lat, point.lon)?;
 			}
-        writeln!(w, "    </trkseg>")?;
-        writeln!(w, "  </trk>")?;
-        writeln!(w, "</gpx>")?;
-        w.flush()?;
-		w.get_ref().sync_all()?;
-		drop(w);
-		if let Err(error) = fs::rename(&temp_path, path) {
-			let _ = fs::remove_file(&temp_path);
-			return Err(error);
+			writeln!(writer, "    </trkseg>")?;
+			writeln!(writer, "  </trk>")?;
+			writeln!(writer, "</gpx>")?;
+			writer.flush()?;
+			writer.get_ref().sync_all()?;
+			drop(writer);
+			fs::rename(&temp_path, path)
+		})();
+		if result.is_err() {
+			let _ = fs::remove_file(temp_path);
 		}
-
-        Ok(())
-        }
+		result
+	}
 	}
 
 fn is_track_point_tag(tag: &str) -> bool
@@ -474,7 +480,7 @@ mod tests {
 			.unwrap()
 			.as_nanos();
 		let path = std::env::temp_dir().join(format!(
-			"desktop_plotter_track_save_{}_{}.gpx",
+			"desktop_plotter_track_save_{}_{}.json",
 			std::process::id(),
 			unique_id
 		));
@@ -492,6 +498,56 @@ mod tests {
 			std::process::id()
 		)).exists());
 		std::fs::remove_file(path).unwrap();
+	}
+
+	#[test]
+	fn migrates_legacy_gpx_to_json_without_modifying_gpx() {
+		let unique_id = SystemTime::now()
+			.duration_since(UNIX_EPOCH)
+			.unwrap()
+			.as_nanos();
+		let dir = std::env::temp_dir().join(format!(
+			"desktop_plotter_track_migration_{}_{}",
+			std::process::id(),
+			unique_id
+		));
+		let json_path = dir.join("track.json");
+		let gpx_path = dir.join("track.gpx");
+		let source = r#"<gpx><trk><trkseg><trkpt lat="47.5" lon="-122.3"/><trkpt lat="47.6" lon="-122.2"/></trkseg></trk></gpx>"#;
+		std::fs::create_dir_all(&dir).unwrap();
+		std::fs::write(&gpx_path, source).unwrap();
+
+		let track = Track::with_checkpoint_interval(&json_path, Duration::from_secs(60)).unwrap();
+
+		assert_eq!(track.point_count(), 2);
+		assert_eq!(crate::geo_data::read(&json_path).unwrap(), vec![(-122.3, 47.5), (-122.2, 47.6)]);
+		assert_eq!(std::fs::read_to_string(&gpx_path).unwrap(), source);
+		std::fs::remove_dir_all(dir).unwrap();
+	}
+
+	#[test]
+	fn exports_track_as_gpx_separately_from_native_json() {
+		let unique_id = SystemTime::now()
+			.duration_since(UNIX_EPOCH)
+			.unwrap()
+			.as_nanos();
+		let dir = std::env::temp_dir().join(format!(
+			"desktop_plotter_track_export_{}_{}",
+			std::process::id(),
+			unique_id
+		));
+		let json_path = dir.join("track.json");
+		let gpx_path = dir.join("export/track.gpx");
+		let mut track = Track::with_checkpoint_interval(&json_path, Duration::from_secs(60)).unwrap();
+		track.add((-122.3, 47.5));
+		track.add((-122.2, 47.6));
+		track.save(&json_path).unwrap();
+		track.export_gpx(&gpx_path).unwrap();
+
+		let exported = std::fs::read_to_string(&gpx_path).unwrap();
+		assert!(exported.contains("<trkpt"));
+		assert_eq!(crate::geo_data::read(&json_path).unwrap().len(), 2);
+		std::fs::remove_dir_all(dir).unwrap();
 	}
 
 	#[test]
@@ -555,7 +611,7 @@ mod tests {
             std::process::id(),
             unique_id
         ));
-        let path = dir.join("track").join("default.gpx");
+        let path = dir.join("track").join("default.json");
 
         let mut track = Track::new(Path::new("missing-track.gpx")).unwrap();
         track.add((-122.3, 47.5));

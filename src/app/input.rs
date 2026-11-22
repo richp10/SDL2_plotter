@@ -123,7 +123,8 @@ impl Plotter<'_> {
                 topbar::NEXT => Some(AppAction::NextWaypoint),
                 topbar::QUITTE => Some(AppAction::Quit),
                 topbar::CLEAR_TRACK => Some(AppAction::ClearTrack),
-                topbar::SAVE_TRACK => Some(AppAction::SaveTrack),
+                topbar::EXPORT_ROUTE_GPX => Some(AppAction::ExportRouteGpx),
+                topbar::EXPORT_TRACK_GPX => Some(AppAction::ExportTrackGpx),
                 topbar::CLEAR_WP => Some(AppAction::ClearWaypoints),
                 topbar::SAVE_WP => Some(AppAction::SaveWaypoints),
                 topbar::SHOW_WP => Some(AppAction::ShowWaypoints),
@@ -254,7 +255,12 @@ impl Plotter<'_> {
                     self.mouse = Mouse::Cross;
                 } else {
                     match self.mode {
-                        Mode::EditRoute => self.route.save(),
+                        Mode::EditRoute => {
+                            if let Err(error) = self.route.save() {
+                                crate::diagnostics::record("ERROR", format!("Erreur sauvegarde route: {error}"));
+                                eprintln!("Erreur sauvegarde route : {error}");
+                            }
+                        }
                         Mode::EditWaypoint => {
                             if let Err(error) = self.waypoints.save() {
                                 eprintln!("Erreur sauvegarde des waypoints : {error}");
@@ -454,7 +460,10 @@ impl Plotter<'_> {
             }
             self.mouse = Mouse::Cross;
         }
-        self.route.save();
+        if let Err(error) = self.route.save() {
+            crate::diagnostics::record("ERROR", format!("Erreur sauvegarde route: {error}"));
+            eprintln!("Erreur sauvegarde route : {error}");
+        }
         self.dirty = true;
     }
 
@@ -480,7 +489,10 @@ impl Plotter<'_> {
     fn handle_long_click_edit_route(&mut self, x: i32, y: i32) {
         if let Some(i) = self.route.find_point_at(&self.renderer, (x, y), 8) {
             self.route.remove(i);
-            self.route.save();
+            if let Err(error) = self.route.save() {
+                crate::diagnostics::record("ERROR", format!("Erreur sauvegarde route: {error}"));
+                eprintln!("Erreur sauvegarde route : {error}");
+            }
             self.dirty = true;
             self.mouse = Mouse::Cross;
         }

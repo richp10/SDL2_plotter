@@ -1,10 +1,13 @@
 mod gpx;
-const DEFAULT_ROUTE:&str = "default/route.gpx";
+const DEFAULT_ROUTE: &str = "default/route.json";
+const LEGACY_ROUTE: &str = "default/route.gpx";
  
 use crate::mbtiles_renderer::MBTilesRenderer;
 use crate::screen::Map;
 use crate::gps;
 use crate::Mode;
+use std::io;
+use std::path::Path;
 use sdl2::rect::Point;
  
  #[derive(Debug)]
@@ -20,19 +23,22 @@ impl Route
 	{
 	pub fn new() -> Result<Self, String> 
 		{
-		let track: Vec<(f64, f64)> = match gpx::load_gpx(DEFAULT_ROUTE) 
-			{
-			Ok(r) => 
-				{
-				println!("route chargée : {} points", r.len());
-				r
-				}
-			Err(e) => 
-				{
-				eprintln!("pas de route chargée ({e}), départ avec une route vide");
-				Vec::new()
-				}
-			};
+		let json_path = Path::new(DEFAULT_ROUTE);
+		let legacy_path = Path::new(LEGACY_ROUTE);
+		let migrating = !json_path.exists() && legacy_path.exists();
+		let track = crate::geo_data::read_or_migrate(
+			json_path,
+			legacy_path,
+			gpx::load_gpx,
+		)
+		.map_err(|error| format!("impossible de charger la route: {error}"))?;
+		if migrating {
+			crate::diagnostics::record(
+				"INFO",
+				format!("Route migrée de {LEGACY_ROUTE} vers {DEFAULT_ROUTE}"),
+			);
+		}
+		println!("route chargée : {} points", track.len());
 
 		let mut route = Route 
 			{
@@ -80,17 +86,20 @@ impl Route
 		format!("route : {:.1} Mn", self.longueur)
 		}
 			
-	pub fn save(&mut self) {
-		match gpx::save_gpx(DEFAULT_ROUTE, "Plotter", &self.track) {
-						Ok(())  => println!("route sauvée : {} points", self.track.len()),
-						Err(e)  => eprintln!("erreur de sauvegarde : {e}"),
-						}
+		pub fn save(&self) -> io::Result<()> {
+			crate::geo_data::write(Path::new(DEFAULT_ROUTE), &self.track)
+		}
+
+		pub fn export_gpx(&self, path: &Path) -> io::Result<()> {
+			gpx::save_route_gpx(path, "Plotter", &self.track)
 		}
 		
-	pub fn clear(&mut self){
+		pub fn clear(&mut self) -> io::Result<()> {
 		self.track.clear();
+			self.distance.clear();
+			self.restante.clear();
 		self.longueur = 0.0;
-		self.save();
+			self.save()
 		}
 		
 	pub fn remove(&mut self, i:usize) {

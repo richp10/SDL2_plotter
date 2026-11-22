@@ -22,6 +22,7 @@ mod app;
 mod diagnostics;
 mod config;
 mod stream;
+mod geo_data;
 
 use sdl2::pixels::PixelFormatEnum;
 

@@ -1,6 +1,10 @@
 use sdl2::gfx::primitives::DrawRenderer;
 use serde::{Deserialize, Serialize};
-use std::{fs, io, path::Path};
+use std::{
+    fs::{self, File},
+    io::{self, BufWriter, Write},
+    path::Path,
+};
 
 use crate::mbtiles_renderer::MBTilesRenderer;
 use crate::screen::Map;
@@ -124,6 +128,46 @@ impl Waypoints {
         self.save_to(Path::new(WAYPOINTS_FILE))
     }
 
+    pub fn export_gpx(&self, path: &Path) -> io::Result<()> {
+        if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+            fs::create_dir_all(parent)?;
+        }
+        let file_name = path
+            .file_name()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "nom de fichier GPX manquant"))?;
+        let temp_path = path.with_file_name(format!(
+            ".{}.{}.tmp",
+            file_name.to_string_lossy(),
+            std::process::id()
+        ));
+        let result = (|| {
+            let mut writer = BufWriter::new(File::create(&temp_path)?);
+            writeln!(writer, r#"<?xml version="1.0" encoding="UTF-8"?>"#)?;
+            writeln!(
+                writer,
+                r#"<gpx version="1.1" creator="SDL2 Plotter" xmlns="http://www.topografix.com/GPX/1/1">"#
+            )?;
+            for waypoint in &self.waypoints {
+                writeln!(
+                    writer,
+                    r#"  <wpt lat="{:.6}" lon="{:.6}"><name>{}</name></wpt>"#,
+                    waypoint.lat,
+                    waypoint.lon,
+                    escape_xml(&waypoint.name)
+                )?;
+            }
+            writeln!(writer, "</gpx>")?;
+            writer.flush()?;
+            writer.get_ref().sync_all()?;
+            drop(writer);
+            fs::rename(&temp_path, path)
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(temp_path);
+        }
+        result
+    }
+
     fn save_to(&self, path: &Path) -> io::Result<()> {
         let json = serde_json::to_string_pretty(&self.waypoints)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
@@ -131,6 +175,13 @@ impl Waypoints {
         Ok(())
     }
 
+}
+
+fn escape_xml(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 #[cfg(test)]
@@ -190,5 +241,24 @@ mod tests {
             waypoints.load_from(&path).unwrap_err().kind(),
             io::ErrorKind::NotFound
         );
+    }
+
+    #[test]
+    fn exports_named_waypoints_as_gpx_and_escapes_xml() {
+        let path = std::env::temp_dir().join(format!(
+            "plotter-waypoints-export-{}.gpx",
+            std::process::id()
+        ));
+        let mut waypoints = Waypoints {
+            waypoints: Vec::new(),
+        };
+        waypoints.add((-122.3, 47.5), "A & B <C>".to_string());
+
+        waypoints.export_gpx(&path).unwrap();
+        let contents = fs::read_to_string(&path).unwrap();
+
+        assert!(contents.contains(r#"<wpt lat="47.500000" lon="-122.300000">"#));
+        assert!(contents.contains("<name>A &amp; B &lt;C&gt;</name>"));
+        fs::remove_file(path).unwrap();
     }
 }

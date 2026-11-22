@@ -126,7 +126,7 @@ impl Plotter<'_> {
                 topbar::EXPORT_ROUTE_GPX => Some(AppAction::ExportRouteGpx),
                 topbar::EXPORT_TRACK_GPX => Some(AppAction::ExportTrackGpx),
                 topbar::CLEAR_WP => Some(AppAction::ClearWaypoints),
-                topbar::SAVE_WP => Some(AppAction::SaveWaypoints),
+                topbar::EXPORT_WP_GPX => Some(AppAction::ExportWaypointsGpx),
                 topbar::SHOW_WP => Some(AppAction::ShowWaypoints),
                 topbar::HIDE_WP => Some(AppAction::HideWaypoints),
                 topbar::SHOW_TRACK => Some(AppAction::ShowTrack),

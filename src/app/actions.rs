@@ -77,9 +77,19 @@ impl Plotter<'_> {
                 }
             }
             AppAction::ClearWaypoints => self.waypoints.reset(),
-            AppAction::SaveWaypoints => {
-                if let Err(error) = self.waypoints.save() {
-                    eprintln!("Erreur sauvegarde des waypoints : {error}");
+            AppAction::ExportWaypointsGpx => {
+                let now = Local::now();
+                let path = Path::new("export")
+                    .join(format!("Waypoints-{}.gpx", now.format("%Y-%m-%d_%H-%M-%S")));
+                match self.waypoints.export_gpx(&path) {
+                    Ok(()) => println!("Waypoints exportés : {}", path.display()),
+                    Err(error) => {
+                        crate::diagnostics::record(
+                            "ERROR",
+                            format!("Erreur export waypoints GPX: {error}"),
+                        );
+                        eprintln!("Erreur export waypoints GPX : {error}");
+                    }
                 }
             }
             AppAction::ChangeChart(index) => {

@@ -128,7 +128,7 @@ prefetch_margin = 2
 checkpoint_interval_seconds = 15
 ```
 
-Routes and the current track are stored as versioned JSON in `default/route.json` and `default/track.json`. The track is checkpointed periodically; GPX export is available from the Route and Track menus, and timestamped exports are written to `export/`.
+Routes and the current track are stored as versioned JSON in `default/route.json` and `default/track.json`. The track is checkpointed periodically. GPX exports for routes, tracks and waypoints are available from their respective menus and written to `export/`.
 
 On first launch after upgrading, an existing `default/route.gpx` or `default/track.gpx` is migrated to its corresponding JSON file. The original GPX file is left unchanged.
 
@@ -167,7 +167,7 @@ http://RPI_ADDRESS:8080/stream
 - `default/waypoints.json`: waypoint list
 - `default/track.json`: current track
 - `default/route.gpx` and `default/track.gpx`: legacy files retained after migration
-- `export/`: timestamped GPX route and track exports
+- `export/`: timestamped GPX route, track and waypoint exports
 - `plotter.log`: log and diagnostics
 
 ## Architecture

@@ -77,12 +77,6 @@ pub fn write(path: &Path, points: &[(f64, f64)]) -> io::Result<()> {
         ));
     }
 
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        std::fs::create_dir_all(parent)?;
-    }
     let file = GeoDataFile {
         version: FORMAT_VERSION,
         points: points
@@ -95,6 +89,21 @@ pub fn write(path: &Path, points: &[(f64, f64)]) -> io::Result<()> {
     };
     let contents = serde_json::to_vec_pretty(&file)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    atomic_write(path, &contents)
+}
+
+/// Writes `contents` to `path` so that a crash or power cut leaves either the
+/// previous file or the complete new one, never a truncated mix. The data
+/// goes to a temporary file in the same directory, is flushed to disk, and
+/// is then renamed over the destination. Missing parent directories are
+/// created.
+pub fn atomic_write(path: &Path, contents: &[u8]) -> io::Result<()> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)?;
+    }
     let file_name = path
         .file_name()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing file name"))?;
@@ -107,7 +116,7 @@ pub fn write(path: &Path, points: &[(f64, f64)]) -> io::Result<()> {
     let result = (|| {
         use std::io::Write;
         let mut output = std::fs::File::create(&temp_path)?;
-        output.write_all(&contents)?;
+        output.write_all(contents)?;
         output.sync_all()?;
         drop(output);
         std::fs::rename(&temp_path, path)

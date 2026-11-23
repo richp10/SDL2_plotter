@@ -172,8 +172,7 @@ impl Waypoints {
     fn save_to(&self, path: &Path) -> io::Result<()> {
         let json = serde_json::to_string_pretty(&self.waypoints)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        fs::write(path, json)?;
-        Ok(())
+        crate::geo_data::atomic_write(path, json.as_bytes())
     }
 
 }
@@ -210,6 +209,37 @@ mod tests {
         assert_eq!(loaded.waypoints[0].name, "Mouillage");
 
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn save_creates_missing_parent_directories_and_leaves_no_temp_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "plotter-waypoints-dir-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = dir.join("default").join("waypoints.json");
+        let mut waypoints = Waypoints {
+            waypoints: Vec::new(),
+        };
+        waypoints.add((178.1, -17.7), "Mouillage".to_string());
+
+        waypoints.save_to(&path).unwrap();
+
+        let mut loaded = Waypoints {
+            waypoints: Vec::new(),
+        };
+        loaded.load_from(&path).unwrap();
+        assert_eq!(loaded.waypoints.len(), 1);
+        let leftovers: Vec<_> = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(leftovers, vec!["waypoints.json".to_string()]);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

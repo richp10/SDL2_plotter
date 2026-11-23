@@ -1,4 +1,5 @@
 use crate::config::{AppearanceConfig, FontConfig, WindowConfig};
+use crate::overlay::Draw;
 use sdl2::gfx::primitives::DrawRenderer;
 use sdl2::mouse::{Cursor, SystemCursor};
 use sdl2::pixels::Color;
@@ -167,7 +168,36 @@ impl<'ttf> Screen<'ttf> {
         })
     }
 
-    pub fn draw_mid_handles(&mut self, pts: &[Point]) -> Result<(), String> {
+    /// Executes a plan from `overlay::plan`. Decorations (track, handles,
+    /// route lines) swallow their own errors so one failed primitive never
+    /// aborts the frame; markers and text propagate.
+    pub fn paint(&mut self, draws: &[Draw]) -> Result<(), String> {
+        for draw in draws {
+            match draw {
+                Draw::Route(points) => self.show_route(points),
+                Draw::Handles(points) => {
+                    let _ = self.draw_mid_handles(points);
+                }
+                Draw::Track(points) => {
+                    let _ = self.show_track(points);
+                }
+                Draw::Boat { at, course } => {
+                    self.show_boat(at.x, at.y)?;
+                    if let Some(course) = course {
+                        self.show_cog(*course, *at)?;
+                    }
+                }
+                Draw::Ais { at, course } => self.show_ais_target(at.x, at.y, *course)?,
+                Draw::Waypoint(at) => self.show_waypoint(*at)?,
+                Draw::Mark(at) => self.show_mark(at.x, at.y)?,
+                Draw::Line(a, b) => self.show_line(*a, *b)?,
+                Draw::Text { at, text } => self.show_text(text, at.x, at.y)?,
+            }
+        }
+        Ok(())
+    }
+
+    fn draw_mid_handles(&mut self, pts: &[Point]) -> Result<(), String> {
         self.canvas
             .set_draw_color(configured_color(self.appearance.route_color));
         for p in pts {
@@ -181,13 +211,7 @@ impl<'ttf> Screen<'ttf> {
         ClipRect::for_screen(self.screen_width, self.screen_height)
     }
 
-    /// The point as `i16` coordinates when it is near enough to the screen
-    /// to be drawn with the SDL2_gfx primitives, otherwise `None`.
-    pub fn point_i16(&self, point: Point) -> Option<(i16, i16)> {
-        self.clip().point_i16(point)
-    }
-
-    pub fn show_cog(&mut self, mut radians: f64, pos: Point) -> Result<(), String> {
+    fn show_cog(&mut self, mut radians: f64, pos: Point) -> Result<(), String> {
         radians -= std::f64::consts::PI / 2.0;
         let x1 = pos.x as f64 + (radians.cos() * self.appearance.cog_length);
         let y1 = pos.y as f64 + (radians.sin() * self.appearance.cog_length);
@@ -207,7 +231,7 @@ impl<'ttf> Screen<'ttf> {
         Ok(())
     }
 
-    pub fn show_route(&mut self, pts: &[Point]) {
+    fn show_route(&mut self, pts: &[Point]) {
         let clip = self.clip();
         for seg in pts.windows(2) {
             let Some(((ax, ay), (bx, by))) = clip.segment_i16(seg[0], seg[1]) else {
@@ -281,7 +305,7 @@ impl<'ttf> Screen<'ttf> {
         )
     }
 
-    pub fn show_boat(&mut self, x: i32, y: i32) -> Result<(), String> {
+    fn show_boat(&mut self, x: i32, y: i32) -> Result<(), String> {
         if !self.clip().contains(f64::from(x), f64::from(y)) {
             return Ok(());
         }
@@ -305,7 +329,7 @@ impl<'ttf> Screen<'ttf> {
         Ok(())
     }
 
-    pub fn show_ais_target(
+    fn show_ais_target(
         &mut self,
         x: i32,
         y: i32,
@@ -350,11 +374,11 @@ impl<'ttf> Screen<'ttf> {
 
     /// Waypoint pin: a triangle under a ringed dot, tip at `point`.
     /// Off-screen points are culled before the i16 conversion.
-    pub fn show_waypoint(&mut self, point: Point) -> Result<(), String> {
-        let Some((x, y)) = self.point_i16(point) else {
+    fn show_waypoint(&mut self, point: Point) -> Result<(), String> {
+        let Some((x, y)) = self.clip().point_i16(point) else {
             return Ok(());
         };
-        let color = Color::RGB(220, 30, 30);
+        let color = configured_color(self.appearance.waypoint_color);
         self.canvas
             .filled_trigon(x - 5, y - 9, x + 5, y - 9, x, y, color)?;
         self.canvas.filled_circle(x, y - 11, 6, color)?;
@@ -362,15 +386,16 @@ impl<'ttf> Screen<'ttf> {
     }
 
     /// The boat's track as a polyline through `pts` (screen pixels).
-    pub fn show_track(&mut self, pts: &[Point]) -> Result<(), String> {
+    fn show_track(&mut self, pts: &[Point]) -> Result<(), String> {
         if pts.len() < 2 {
             return Ok(());
         }
-        self.canvas.set_draw_color(Color::RGB(255, 0, 0));
+        self.canvas
+            .set_draw_color(configured_color(self.appearance.track_color));
         self.canvas.draw_lines(pts)
     }
 
-    pub fn show_mark(&mut self, x: i32, y: i32) -> Result<(), String> {
+    fn show_mark(&mut self, x: i32, y: i32) -> Result<(), String> {
         if !self.clip().contains(f64::from(x), f64::from(y)) {
             return Ok(());
         }
@@ -384,11 +409,16 @@ impl<'ttf> Screen<'ttf> {
         Ok(())
     }
 
-    pub fn show_line(&mut self, x1: i32, y1: i32, x2: i32, y2: i32) -> Result<(), String> {
+    fn show_line(&mut self, a: Point, b: Point) -> Result<(), String> {
+        let Some(((ax, ay), (bx, by))) = self.clip().segment_i16(a, b) else {
+            return Ok(());
+        };
         self.canvas
             .set_draw_color(configured_color(self.appearance.line_color));
-        self.canvas
-            .draw_line(Point::new(x1, y1), Point::new(x2, y2))
+        self.canvas.draw_line(
+            Point::new(i32::from(ax), i32::from(ay)),
+            Point::new(i32::from(bx), i32::from(by)),
+        )
     }
 
     pub fn night_layer(&mut self, opacity: u8) -> Result<(), String> {
@@ -402,7 +432,7 @@ impl<'ttf> Screen<'ttf> {
         Ok(())
     }
 
-    pub fn show_text(&mut self, texte: &str, x: i32, y: i32) -> Result<(), String> {
+    fn show_text(&mut self, texte: &str, x: i32, y: i32) -> Result<(), String> {
         let texture_creator = self.canvas.texture_creator();
         let font = &self.font;
 

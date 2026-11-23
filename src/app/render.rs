@@ -24,38 +24,32 @@ impl Plotter<'_> {
             .show_map(texture, self.session.renderer.placement())
             .map_err(anyhow::Error::msg)?;
 
+        // Overlays: each module says what it wants drawn, in chart
+        // coordinates; the plan projects, culls and styles it; the screen paints.
+        let mut shapes = Vec::new();
         if self.session.mode == Mode::Measurement {
-            self.session.mesure.show(&self.session.renderer, screen);
+            shapes.extend(self.session.mesure.shapes());
         }
-
         if self.session.state.display_route {
-            self.display_route(screen);
+            let navigation = self
+                .session
+                .state
+                .goto
+                .then(|| (self.session.state.nav_id, self.session.boat.position()));
+            shapes.extend(self.session.route.shapes(self.session.mode, navigation));
         }
-
-        self.session
-            .boat
-            .show(&self.session.renderer, screen)
-            .map_err(anyhow::Error::msg)?;
-
+        shapes.extend(self.session.boat.shape());
         if self.session.state.display_ais {
-            crate::ais::show_targets(&self.session.ais_targets, &self.session.renderer, screen)
-                .map_err(anyhow::Error::msg)?;
+            shapes.extend(crate::ais::shapes(&self.session.ais_targets));
         }
-
         if self.session.state.display_track {
-            self.session.track.show(
-                screen,
-                &self.session.renderer,
-                Some(self.session.boat.position()),
-            );
+            shapes.extend(self.session.track.shape(Some(self.session.boat.position())));
         }
-
         if self.session.state.display_waypoint {
-            self.session
-                .waypoints
-                .show(screen, &self.session.renderer)
-                .map_err(anyhow::Error::msg)?;
+            shapes.extend(self.session.waypoints.shapes());
         }
+        let draws = crate::overlay::plan(&self.session.renderer.view(), &shapes);
+        screen.paint(&draws).map_err(anyhow::Error::msg)?;
 
         screen.night_layer(0).map_err(anyhow::Error::msg)?;
         self.display_buttombar(screen);
@@ -126,24 +120,5 @@ impl Plotter<'_> {
         };
         self.buttombar
             .show(&mut screen.canvas, &message_left, &message_right);
-    }
-
-    pub(super) fn display_route(&mut self, screen: &mut Screen<'_>) {
-        if self.session.state.goto {
-            self.session.route.show_route_from_boat(
-                &self.session.renderer,
-                screen,
-                self.session.mode,
-                self.session.state.nav_id,
-                self.session.boat.position(),
-            );
-        } else {
-            self.session.route.show_route_since_id(
-                &self.session.renderer,
-                screen,
-                self.session.mode,
-                0,
-            );
-        }
     }
 }

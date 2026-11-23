@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::{io, path::Path};
 
 use crate::geo_data::{GeoFile, GeoRecord};
-use crate::mbtiles_renderer::{ChartView, MBTilesRenderer};
-use crate::screen::Screen;
+use crate::mbtiles_renderer::ChartView;
+use crate::overlay::Shape;
 use sdl2::rect::Point;
 
 const WAYPOINTS_FILE: &str = "default/waypoints.json";
@@ -123,21 +123,20 @@ impl Waypoints {
         self.waypoints.remove(i);
     }
 
-    pub fn show(&self, screen: &mut Screen<'_>, renderer: &MBTilesRenderer) -> Result<(), String> {
-        for (i, wp) in self.waypoints.iter().enumerate() {
-            let point = renderer.gps_to_point((wp.longitude, wp.latitude));
-            if screen.point_i16(point).is_none() {
-                continue; // off screen: neither the pin nor its label is drawn
-            }
-            screen.show_waypoint(point)?;
-            let label = if wp.name.is_empty() {
-                format!("Waypoint {}", i + 1)
-            } else {
-                wp.name.clone()
-            };
-            screen.show_text(&label, point.x + 10, point.y - 12)?;
-        }
-        Ok(())
+    /// One pin per waypoint, labelled with its name or its number.
+    pub fn shapes(&self) -> Vec<Shape> {
+        self.waypoints
+            .iter()
+            .enumerate()
+            .map(|(i, wp)| Shape::Waypoint {
+                at: (wp.longitude, wp.latitude),
+                label: if wp.name.is_empty() {
+                    format!("Waypoint {}", i + 1)
+                } else {
+                    wp.name.clone()
+                },
+            })
+            .collect()
     }
 
     pub fn reset(&mut self) {

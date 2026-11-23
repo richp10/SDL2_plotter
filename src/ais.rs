@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use crate::mbtiles_renderer::MBTilesRenderer;
-use crate::screen::Screen;
+use crate::overlay::Shape;
 
 /// A target not heard from for this long is dropped from the display.
 pub const TARGET_TIMEOUT: Duration = Duration::from_secs(5 * 60);
@@ -63,33 +62,18 @@ impl AisTarget {
     }
 }
 
-pub fn show_targets(
-    targets: &[AisTarget],
-    renderer: &MBTilesRenderer,
-    screen: &mut Screen,
-) -> Result<(), String> {
-    let view = renderer.view();
-
-    for target in targets {
-        let Some(position) = target.position else {
-            continue;
-        };
-        let point = view.to_pixel(position);
-        if !view.contains(point, 32) {
-            continue;
-        }
-
-        screen.show_ais_target(
-            point.x,
-            point.y,
-            target
-                .course_over_ground
-                .map(|course| view.course_to_screen(course)),
-        )?;
-        screen.show_text(&target.label(), point.x + 10, point.y - 10)?;
-    }
-
-    Ok(())
+/// One labelled marker per target that has a position.
+pub fn shapes(targets: &[AisTarget]) -> Vec<Shape> {
+    targets
+        .iter()
+        .filter_map(|target| {
+            target.position.map(|at| Shape::Ais {
+                at,
+                course: target.course_over_ground,
+                label: target.label(),
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]

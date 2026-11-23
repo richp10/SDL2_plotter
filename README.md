@@ -136,6 +136,8 @@ mark_size = 6
 measure_color = [0, 0, 255, 255]
 route_width = 3
 route_color = [255, 0, 0, 255]
+track_color = [255, 0, 0, 255]
+waypoint_color = [220, 30, 30, 255]
 ```
 
 ### Rendering

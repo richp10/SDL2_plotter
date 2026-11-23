@@ -1,6 +1,6 @@
 use crate::gps;
-use crate::mbtiles_renderer::{ChartView, MBTilesRenderer};
-use crate::screen::Screen;
+use crate::mbtiles_renderer::ChartView;
+use crate::overlay::Shape;
 use sdl2::rect::Point;
 
 pub struct Mesure {
@@ -72,34 +72,53 @@ impl Mesure {
         };
     }
 
-    pub fn show(&mut self, renderer: &MBTilesRenderer, screen: &mut Screen) {
-        let s1 = self.get_pt1(renderer);
-        let s2 = self.get_pt2(renderer);
-        // les points
-        for (x, y) in [s1, s2].into_iter().flatten() {
-            let _ = screen.show_mark(x, y);
-        }
-        // le trait, seulement si les deux existent
-        if let (Some((x1, y1)), Some((x2, y2))) = (s1, s2) {
-            let _ = screen.show_line(x1, y1, x2, y2);
-        }
-        let text = if self.distance >= 1.0 {
-            format!("{:.1} Mn {:.0}°", self.distance, self.bearing)
-        } else {
-            format!("{:.0} m {:.0}°", self.distance * 1852.0, self.bearing)
+    /// The marks, the line between them and the readout at the second mark.
+    pub fn shapes(&self) -> Vec<Shape> {
+        let mut shapes = Vec::new();
+        let Some(mark1) = self.mark1 else {
+            return shapes;
         };
-        if let Some((x, y)) = s2 {
-            let _ = screen.show_text(&text, x, y);
+        shapes.push(Shape::Mark(mark1));
+        if let Some(mark2) = self.mark2 {
+            shapes.push(Shape::Mark(mark2));
+            shapes.push(Shape::MeasureLine(mark1, mark2));
+            let text = if self.distance >= 1.0 {
+                format!("{:.1} Mn {:.0}°", self.distance, self.bearing)
+            } else {
+                format!("{:.0} m {:.0}°", self.distance * 1852.0, self.bearing)
+            };
+            shapes.push(Shape::Label {
+                at: mark2,
+                text,
+                offset: (0, 0),
+            });
         }
+        shapes
     }
+}
 
-    fn get_pt1(&self, renderer: &MBTilesRenderer) -> Option<(i32, i32)> {
-        let pt = renderer.gps_to_point(self.mark1?);
-        Some((pt.x, pt.y))
-    }
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    fn get_pt2(&self, renderer: &MBTilesRenderer) -> Option<(i32, i32)> {
-        let pt = renderer.gps_to_point(self.mark2?);
-        Some((pt.x, pt.y))
+    #[test]
+    fn two_marks_give_two_marks_a_line_and_a_readout_in_nautical_miles() {
+        let view = ChartView::centred_on((0.0, 0.0), 6.0, 0.0, 512, 256);
+        let mut mesure = Mesure::new();
+        assert!(mesure.shapes().is_empty());
+        mesure.add_mark(&view, view.to_pixel((0.0, 0.0)));
+        assert_eq!(mesure.shapes(), vec![Shape::Mark((0.0, 0.0))]);
+
+        mesure.add_mark(&view, view.to_pixel((0.0, 1.0)));
+        let shapes = mesure.shapes();
+        assert_eq!(shapes.len(), 4, "{shapes:?}");
+        assert!(matches!(shapes[2], Shape::MeasureLine(..)));
+        let Shape::Label { text, .. } = &shapes[3] else {
+            panic!("{shapes:?}");
+        };
+        assert!(
+            text.ends_with("Mn 0°") || text.ends_with("Mn 360°"),
+            "{text}"
+        );
     }
 }

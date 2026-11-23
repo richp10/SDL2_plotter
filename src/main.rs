@@ -17,6 +17,7 @@ mod gps;
 mod gpx;
 mod mbtiles_renderer;
 mod mesure;
+mod overlay;
 mod route;
 mod screen;
 mod signalk;

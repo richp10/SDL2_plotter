@@ -2,8 +2,8 @@ const DEFAULT_ROUTE: &str = "default/route.json";
 
 use crate::geo_data::{GeoFile, GeoPoint};
 use crate::gps;
-use crate::mbtiles_renderer::{ChartView, MBTilesRenderer};
-use crate::screen::Screen;
+use crate::mbtiles_renderer::ChartView;
+use crate::overlay::Shape;
 use crate::Mode;
 use sdl2::rect::Point;
 use std::io;
@@ -64,47 +64,34 @@ impl Route {
         route.calc_route();
         route
     }
-    pub fn show_route_since_id(
-        &mut self,
-        renderer: &MBTilesRenderer,
-        screen: &mut Screen,
-        mode: Mode,
-        id: usize,
-    ) {
-        // `id` may come from a saved state and exceed the current route length.
-        let rte = self.track.get(id..).unwrap_or(&[]);
-        if !rte.is_empty() {
-            let pts: Vec<Point> = rte.iter().map(|&pos| renderer.gps_to_point(pos)).collect();
-            screen.show_route(&pts);
-        }
-        if mode == Mode::EditRoute && rte.len() >= 2 {
-            let mid_points = self.midpoints();
-            let mid_pts: Vec<Point> = mid_points
-                .get(id..)
-                .unwrap_or(&[])
-                .iter()
-                .map(|&pos| renderer.gps_to_point(pos))
-                .collect();
-            // Decoration only: a failed handle must not abort the frame (same policy as show_route).
-            let _ = screen.draw_mid_handles(&mid_pts);
-        }
-    }
-    pub fn show_route_from_boat(
-        &mut self,
-        renderer: &MBTilesRenderer,
-        screen: &mut Screen,
-        mode: Mode,
-        id: usize,
-        boat: (f64, f64),
-    ) {
-        let Some(id) = self.active_waypoint(id) else {
-            return;
+    /// The route as shapes. With `navigation = Some((nav_id, boat))` the
+    /// first shape is the leg from the boat to the active waypoint and the
+    /// route is drawn from that waypoint on; otherwise the whole route.
+    /// While editing, the midpoint handles of the drawn legs follow.
+    pub fn shapes(&self, mode: Mode, navigation: Option<(usize, (f64, f64))>) -> Vec<Shape> {
+        let mut shapes = Vec::new();
+        let from = match navigation {
+            Some((id, boat)) => {
+                // An empty route has nothing to navigate to.
+                let Some(id) = self.active_waypoint(id) else {
+                    return shapes;
+                };
+                shapes.push(Shape::Route(vec![boat, self.track[id]]));
+                id
+            }
+            None => 0,
         };
-        screen.show_route(&[
-            renderer.gps_to_point(boat),
-            renderer.gps_to_point(self.track[id]),
-        ]);
-        self.show_route_since_id(renderer, screen, mode, id);
+        let rest = self.track.get(from..).unwrap_or(&[]);
+        if !rest.is_empty() {
+            shapes.push(Shape::Route(rest.to_vec()));
+        }
+        if mode == Mode::EditRoute && rest.len() >= 2 {
+            let handles = self.midpoints();
+            shapes.push(Shape::RouteHandles(
+                handles.get(from..).unwrap_or(&[]).to_vec(),
+            ));
+        }
+        shapes
     }
 
     pub fn show_route_len(&self) -> String {
@@ -214,6 +201,34 @@ impl Route {
 #[cfg(test)]
 mod tests {
     use super::Route;
+    use crate::overlay::Shape;
+    use crate::Mode;
+
+    #[test]
+    fn navigation_shapes_draw_the_boat_leg_then_the_remaining_legs_and_handles_when_editing() {
+        let route = Route::from_points(vec![(0.0, 0.0), (0.0, 1.0), (0.0, 2.0)]);
+        let boat = (0.5, 0.5);
+
+        let shapes = route.shapes(Mode::EditRoute, Some((1, boat)));
+        assert_eq!(
+            shapes,
+            vec![
+                Shape::Route(vec![boat, (0.0, 1.0)]),
+                Shape::Route(vec![(0.0, 1.0), (0.0, 2.0)]),
+                Shape::RouteHandles(vec![(0.0, 1.5)]),
+            ]
+        );
+
+        let shapes = route.shapes(Mode::Measurement, None);
+        assert_eq!(
+            shapes,
+            vec![Shape::Route(vec![(0.0, 0.0), (0.0, 1.0), (0.0, 2.0)])]
+        );
+
+        assert!(Route::from_points(Vec::new())
+            .shapes(Mode::EditRoute, Some((0, boat)))
+            .is_empty());
+    }
 
     #[test]
     fn a_corrupt_route_file_loads_an_empty_route_and_is_set_aside() {

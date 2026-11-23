@@ -1,5 +1,4 @@
-use crate::mbtiles_renderer::MBTilesRenderer;
-use crate::screen::Screen;
+use crate::overlay::Shape;
 
 const MINIMUM_SPEED: f64 = 1.0;
 
@@ -23,32 +22,43 @@ impl BoatState {
         }
     }
 
-    pub fn show(&self, renderer: &MBTilesRenderer, screen: &mut Screen) -> Result<(), String> {
-        if !self.position_valid {
-            return Ok(());
-        }
-        let pt = renderer.gps_to_point((self.longitude, self.latitude));
-        if pt.x < 0
-            || pt.y < 0
-            || pt.x as u32 > screen.screen_width
-            || pt.y as u32 > screen.screen_height
-        {
-            crate::diagnostics::record(
-                "WARN",
-                format!(
-                    "Marqueur bateau hors écran: lon={:.6}, lat={:.6}, écran=({}, {})",
-                    self.longitude, self.latitude, pt.x, pt.y
-                ),
-            );
-        }
-        screen.show_boat(pt.x, pt.y)?;
-        if self.speed_over_ground > MINIMUM_SPEED {
-            screen.show_cog(renderer.course_to_screen(self.course_over_ground), pt)?;
-        }
-        Ok(())
+    /// The boat marker with its course vector when under way; nothing while
+    /// the fix is invalid. Where it falls on screen is the painter's business.
+    pub fn shape(&self) -> Option<Shape> {
+        self.position_valid.then(|| Shape::Boat {
+            at: (self.longitude, self.latitude),
+            course: (self.speed_over_ground > MINIMUM_SPEED).then_some(self.course_over_ground),
+        })
     }
 
     pub fn position(self) -> (f64, f64) {
         (self.longitude, self.latitude)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_boat_shows_its_course_only_when_under_way_and_nothing_without_a_fix() {
+        let mut boat = BoatState {
+            longitude: -4.5,
+            latitude: 48.4,
+            position_valid: true,
+            speed_over_ground: 0.2,
+            course_over_ground: 1.0,
+        };
+        assert_eq!(
+            boat.shape(),
+            Some(Shape::Boat {
+                at: (-4.5, 48.4),
+                course: None
+            })
+        );
+        boat.speed_over_ground = 5.0;
+        assert!(matches!(boat.shape(), Some(Shape::Boat { course: Some(c), .. }) if c == 1.0));
+        boat.position_valid = false;
+        assert_eq!(boat.shape(), None);
     }
 }

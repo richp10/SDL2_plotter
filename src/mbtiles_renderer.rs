@@ -12,12 +12,14 @@ mod view;
 use std::time::{Duration, Instant};
 
 use image::{imageops, ImageBuffer, Rgba, RgbaImage};
-use sdl2::rect::{Point, Rect};
+#[cfg(test)]
+use sdl2::rect::Point;
+use sdl2::rect::Rect;
 
 use crate::config::RenderingConfig;
 pub use projection::project_norm;
 use projection::{
-    course_to_screen, lonlat_to_world, rotated_bounds, screen_to_world_delta, smooth_zoom_progress,
+    lonlat_to_world, rotated_bounds, screen_to_world_delta, smooth_zoom_progress,
     source_dimensions, source_zoom_for, world_to_lonlat, TILE_SIZE,
 };
 #[cfg(test)]
@@ -258,10 +260,6 @@ impl MBTilesRenderer {
         self.reproject();
     }
 
-    pub fn course_to_screen(&self, course: f64) -> f64 {
-        course_to_screen(course, self.rotation)
-    }
-
     /// Moves to the next available zoom level. At the chart's maximum zoom
     /// nothing changes: the tile cache and view are kept as they are.
     pub fn zoom_increase(&mut self) -> i32 {
@@ -370,12 +368,9 @@ impl MBTilesRenderer {
         )
     }
 
+    #[cfg(test)]
     pub fn gps_to_point(&self, pos: (f64, f64)) -> Point {
         self.view().to_pixel(pos)
-    }
-
-    pub fn norm_to_point(&self, nx: f64, ny: f64) -> Point {
-        self.view().norm_to_pixel(nx, ny)
     }
 
     fn project(&self, lon: f64, lat: f64) -> (f64, f64) {

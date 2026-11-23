@@ -37,11 +37,15 @@ release run), and CLAUDE.md describing the result.
 - [T2 — ChartView as the screen-to-chart seam](#t2--chartview-as-the-screen-to-chart-seam) — copyable snapshot from `renderer.view()`; absolute pixels in, validated wrapped positions out; one `nearest` hit test; six "centre minus click" copies and four hit-test copies gone.
 - [T3 — Gesture recogniser separate from per-mode tools](#t3--gesture-recogniser-separate-from-per-mode-tools) — `app/gesture.rs` (pure, time-injected) emits Click/LongPress/Drag; `app/tools.rs` puts `target_at`, `click`, `long_press`, `drag_to`, `drag_end`, `name_waypoint` on `Session`; `input.rs` 705 -> 394 lines; the three defects fixed with tests.
 - [T6 — Main-loop policy onto its owners](#t6--main-loop-policy-onto-its-owners) — `Track::record/tick/clear/close` own checkpointing; `Session::on_boat`, `set_ais`, `expire_ais` own intake and expiry; the loop drains, calls, marks dirty; time injected.
+- [T7 — Draw list and one painter](#t7--draw-list-and-one-painter-for-overlays) — `overlay::Shape` + pure `plan` + `Screen::paint`; data modules emit shapes and no longer see `Screen`; one culling rule, colours from config, the boat's per-frame WARN gone.
+
+**Destination reached.** Every ticket is closed; see Not yet specified for what the route exposed but did not ticket.
 
 ## Not yet specified
 
-- Whether `Session`'s fields can all go private once tickets 3 and 6 move
-  behaviour onto it, and what the resulting interface looks like.
+- Whether `Session`'s fields can all go private now that T3 and T6 moved
+  behaviour onto it (`render.rs` still reads `state`, `mode`, `boat`,
+  `ais_targets`, and `input.rs` reads `mode`, `confirmation`, `mesure`).
 - Whether `display_buttombar`'s text composition becomes `Session::status_line()`.
 - `drag_map` presents without overlays, so the boat, route and AIS vanish
   during a pan; intended or not is a product question for the author.
@@ -100,7 +104,8 @@ release run), and CLAUDE.md describing the result.
   `Session`, with what time injection, and what does the loop keep?
 
 ### T7 — Draw list and one painter for overlays
-- type: grilling + task · status: open · blocked by: T2
+- type: grilling + task · status: closed · blocked by: T2
+- Resolution: `overlay::Shape` (Route, RouteHandles, Track in normalised coordinates, Boat, Ais, Waypoint, Mark, MeasureLine, Label) is emitted by `Route::shapes(mode, navigation)`, `Mesure::shapes`, `Waypoints::shapes`, `Track::shape`, `BoatState::shape` and `ais::shapes`; `overlay::plan(view, shapes) -> Vec<Draw>` projects through `ChartView`, culls markers and their labels together with a 32 px margin, keeps polylines whole for the painter to clip, and rotates courses into screen angles; `Screen::paint` executes a `Draw` list over primitives that are now private, every one clipped through `ClipRect` (the measurement line and labels included) and coloured from `AppearanceConfig` (`track_color` and `waypoint_color` added, defaults equal to the old hard-coded values). `render::display` collects, plans, paints. The data modules no longer import `Screen`, and the renderer lost `gps_to_point`/`norm_to_point`/`course_to_screen` to the view. The boat's off-screen WARN on every frame is gone with the cull. Tests: five on `plan` (culling, labels follow markers, non-finite course dropped, course rotation, polylines kept whole, empty shapes), route navigation shapes, measurement shapes and readout, boat shape with and without way on.
 - Question: what shapes do the data modules emit, and what does one painter
   need from `ChartView` and `AppearanceConfig` to cull, clip and style them,
   so that `boat.rs` stops logging every frame and every primitive clips?

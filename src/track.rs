@@ -1,13 +1,12 @@
 use chrono::Local;
-use sdl2::rect::Point;
 use std::io;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crate::geo_data::{GeoFile, GeoPoint};
 use crate::gps::{distance_meters, EARTH_RADIUS_METERS};
-use crate::mbtiles_renderer::{project_norm, MBTilesRenderer};
-use crate::screen::Screen;
+use crate::mbtiles_renderer::project_norm;
+use crate::overlay::Shape;
 
 const MIN_TRACK_DISTANCE_METERS: f64 = 20.0;
 const SIMPLIFICATION_TOLERANCE_METERS: f64 = 20.0;
@@ -209,24 +208,17 @@ impl Track {
         true
     }
 
-    pub fn show(&self, screen: &mut Screen, renderer: &MBTilesRenderer, boat: Option<(f64, f64)>) {
+    /// The track as one polyline in normalised coordinates, extended to the
+    /// boat so the line reaches the marker. `None` while the track is empty.
+    pub fn shape(&self, boat: Option<(f64, f64)>) -> Option<Shape> {
         if self.points.is_empty() {
-            return;
+            return None;
         }
-
-        let mut pts: Vec<Point> = self
-            .points
-            .iter()
-            .map(|p| renderer.norm_to_point(p.nx, p.ny))
-            .collect();
-
+        let mut norm: Vec<(f64, f64)> = self.points.iter().map(|p| (p.nx, p.ny)).collect();
         if let Some((lon, lat)) = boat {
-            let (nx, ny) = project_norm(lon, lat);
-            pts.push(renderer.norm_to_point(nx, ny));
+            norm.push(project_norm(lon, lat));
         }
-
-        // Decoration: a failed draw must not abort the frame.
-        let _ = screen.show_track(&pts);
+        Some(Shape::Track(norm))
     }
 
     pub fn save(&self) -> io::Result<()> {

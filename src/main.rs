@@ -84,11 +84,7 @@ async fn run() -> anyhow::Result<()> {
         .create_texture_streaming(PixelFormatEnum::RGBA32, texture_width, texture_height)
         .map_err(anyhow::Error::msg)?;
     texture.set_scale_mode(sdl2::render::ScaleMode::Linear);
-    let streamer = if config.streaming.enabled {
-        Some(stream::Streamer::start(&config.streaming)?)
-    } else {
-        None
-    };
+    let streamer = stream::Streamer::start_or_disable(&config.streaming);
     let mut plotter = app::Plotter::new(
         &sdl.context,
         &sdl.ttf_context,

@@ -30,6 +30,29 @@ pub struct Streamer {
 }
 
 impl Streamer {
+    /// The streamer the configuration asks for, or `None` when streaming is
+    /// off or the address cannot be bound. A bind failure is logged as an
+    /// ERROR and the chart plotter carries on without the stream: a wrong
+    /// address in plotter.toml must never keep the chart off the screen.
+    pub fn start_or_disable(config: &StreamingConfig) -> Option<Self> {
+        if !config.enabled {
+            return None;
+        }
+        match Self::start(config) {
+            Ok(streamer) => Some(streamer),
+            Err(error) => {
+                crate::diagnostics::record(
+                    "ERROR",
+                    format!(
+                        "Flux MJPEG désactivé: impossible d'écouter sur {}:{} ({error}).                          Vérifier [streaming] bind_address dans plotter.toml",
+                        config.bind_address, config.port
+                    ),
+                );
+                None
+            }
+        }
+    }
+
     pub fn start(config: &StreamingConfig) -> anyhow::Result<Self> {
         let frame = Arc::new(RwLock::new(None));
         let address = format!("{}:{}", config.bind_address, config.port);
@@ -279,6 +302,37 @@ mod tests {
             "bench jpeg encode 1600x800 q70: {:?}",
             samples[samples.len() / 2]
         );
+    }
+
+    fn config_on(port: u16) -> StreamingConfig {
+        StreamingConfig {
+            enabled: true,
+            bind_address: "127.0.0.1".into(),
+            port,
+            fps: 5,
+            jpeg_quality: 70,
+        }
+    }
+
+    #[test]
+    fn an_unbindable_address_disables_the_stream_instead_of_failing() {
+        // Occupy a port, then ask for a streamer on the same port.
+        let taken = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = taken.local_addr().unwrap().port();
+        assert!(Streamer::start_or_disable(&config_on(port)).is_none());
+        drop(taken);
+    }
+
+    #[test]
+    fn a_free_address_starts_the_stream() {
+        assert!(Streamer::start_or_disable(&config_on(0)).is_some());
+    }
+
+    #[test]
+    fn streaming_disabled_in_config_starts_nothing() {
+        let mut config = config_on(0);
+        config.enabled = false;
+        assert!(Streamer::start_or_disable(&config).is_none());
     }
 
     fn test_streamer() -> Streamer {

@@ -184,7 +184,7 @@ http://RPI_ADDRESS:8080/stream
 
 `bind_address` must be the real IP address of the machine running the application, or `0.0.0.0` to listen on all interfaces. A network address such as `192.168.3.0` does not identify a host. Use the machine firewall to restrict access.
 
-If the address cannot be bound (for example the boat's address on a development PC), the application stops at startup. On a development machine set `enabled = false` or `bind_address = "127.0.0.1"`.
+If the address cannot be bound (for example the boat's address on a development PC), the application logs an ERROR in `plotter.log` and runs without the stream; the chart is never held back by the tablet feed. On a development machine set `enabled = false` or `bind_address = "127.0.0.1"` to avoid the error.
 
 ## Runtime files
 

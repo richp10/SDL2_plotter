@@ -26,6 +26,10 @@ SDL2 Plotter can run in a desktop Linux environment, but the idea is to create a
 
 ## Requirements
 
+The application builds on Linux (the deployment target, including Raspberry Pi) and on Windows (for development). The Rust code is identical on both; only the way the SDL2 libraries are supplied differs.
+
+### Linux
+
 On Debian, Raspberry Pi OS or Ubuntu, install Rust and the SDL2 libraries:
 
 ```bash
@@ -40,6 +44,27 @@ sudo apt install \
 ```
 
 The Signal K server must be reachable from the computer or Raspberry Pi running the application.
+
+### Windows
+
+The step-by-step guide, including what was verified on a real machine, is in [WINDOWS_BUILD.md](WINDOWS_BUILD.md). In short:
+
+1. Install the Visual Studio C++ build tools and Windows SDK (Visual Studio Installer, "Desktop development with C++").
+2. Install Rust with the MSVC toolchain: `rustup-init.exe --profile minimal --default-toolchain stable-x86_64-pc-windows-msvc`.
+3. Install the SDL2 libraries once with vcpkg: `cargo install cargo-vcpkg` then `cargo vcpkg build` from the repository root.
+4. `cargo build`, `cargo test`, `cargo run` as on Linux.
+
+#### How the Windows build works
+
+`Cargo.toml` declares the `sdl2` crate once, with the `ttf`, `gfx` and `unsafe_textures` features, for every platform. A `[target.'cfg(windows)'.dependencies]` table adds two more features on Windows only: `use-vcpkg`, so the build script locates SDL2 in the vcpkg tree under `target/vcpkg`, and `static-link`, so SDL2, SDL2_ttf and SDL2_gfx are linked into `plotter.exe` and no DLLs need to be shipped. A `[package.metadata.vcpkg]` section pins the vcpkg revision and the three ports to build.
+
+Cargo's feature resolver (version 2, the default for edition 2021) ignores target-specific dependencies for platforms that are not being built, so Linux builds resolve `sdl2` with exactly the same three features as before and never see vcpkg. `cargo tree --target x86_64-unknown-linux-gnu -e features -i sdl2-sys` shows this.
+
+#### Alternative approaches on Windows
+
+- **Prebuilt SDL2 development zips.** SDL2 and SDL2_ttf publish `*-devel-*-VC.zip` archives on their GitHub release pages. Point the `LIB` environment variable (or a `.cargo/config.toml` `-L` flag) at the `lib/x64` folders, drop `use-vcpkg` and `static-link`, and copy the DLLs next to the exe. SDL2_gfx has no official Windows binaries, so this only works after replacing the five SDL2_gfx drawing calls with the hand-written primitives already present in `src/screen.rs`. That change would also remove `libsdl2-gfx-dev` from the Linux requirements.
+- **GNU toolchain with MSYS2.** Install MSYS2, then `pacman -S mingw-w64-ucrt-x86_64-toolchain mingw-w64-ucrt-x86_64-SDL2 mingw-w64-ucrt-x86_64-SDL2_ttf mingw-w64-ucrt-x86_64-SDL2_gfx`, and use the `stable-x86_64-pc-windows-gnu` Rust toolchain from the UCRT64 shell. This mirrors the apt workflow and needs no Visual Studio, at the cost of a second compiler environment and a GNU-built binary.
+- **WSL2.** Follow the Linux instructions inside Ubuntu on WSL2. The SDL window appears through WSLg. Simplest when a Linux-identical build matters more than a native Windows binary.
 
 ## Building and running
 
@@ -158,6 +183,8 @@ http://RPI_ADDRESS:8080/stream
 ```
 
 `bind_address` must be the real IP address of the machine running the application, or `0.0.0.0` to listen on all interfaces. A network address such as `192.168.3.0` does not identify a host. Use the machine firewall to restrict access.
+
+If the address cannot be bound (for example the boat's address on a development PC), the application stops at startup. On a development machine set `enabled = false` or `bind_address = "127.0.0.1"`.
 
 ## Runtime files
 

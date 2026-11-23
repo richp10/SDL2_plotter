@@ -76,7 +76,8 @@ impl Route
 						.iter()
 						.map(|&pos| renderer.gps_to_point(pos))
 						.collect();
-				map.draw_mid_handles(&mid_pts);
+				// Decoration only: a failed handle must not abort the frame (same policy as show_route).
+				let _ = map.draw_mid_handles(&mid_pts);
 				}
 			}
 		}

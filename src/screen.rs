@@ -49,30 +49,42 @@ impl<'ttf> Map<'ttf> {
 
         let font = ttf_context.load_font(&font_config.file, font_config.window_size)?;
         
-        let video_subsystem = context.video().unwrap();
+        let video_subsystem = context
+            .video()
+            .map_err(|e| format!("Sous-système vidéo SDL indisponible : {e}"))?;
         let window = match window_config.fullscreen
             {
             false => video_subsystem
                 .window(&window_config.title, window_config.width, window_config.height)
                 .position_centered()
-                .build()
-                .unwrap(),
+                .build(),
             true => video_subsystem
                 .window(&window_config.title, window_config.width, window_config.height)
                 .position_centered()
                 .fullscreen_desktop()
-                .build()
-                .unwrap(),
-            };
+                .build(),
+            }
+            .map_err(|e| {
+                format!(
+                    "Impossible de créer la fenêtre {}x{} (plein écran : {}) : {e}",
+                    window_config.width, window_config.height, window_config.fullscreen
+                )
+            })?;
         
-        let display_mode     = video_subsystem.current_display_mode(0).unwrap();
+        let display_mode = video_subsystem
+            .current_display_mode(0)
+            .map_err(|e| format!("Mode d'affichage de l'écran 0 indisponible : {e}"))?;
         let (screen_width,screen_height) = match window_config.fullscreen
             {
             false => { (window_config.width,window_config.height) }
             true  => { (display_mode.w as u32,display_mode.h as u32) }
             };
             
-        let canvas        = window.into_canvas().accelerated().build().unwrap();
+        let canvas = window
+            .into_canvas()
+            .accelerated()
+            .build()
+            .map_err(|e| format!("Impossible de créer le canvas accéléré : {e}"))?;
         let cursor_hand   = Cursor::from_system(SystemCursor::Hand)?;
         let cursor_cross  = Cursor::from_system(SystemCursor::Crosshair)?;
         let cursor_arrow  = Cursor::from_system(SystemCursor::Arrow)?;
@@ -91,13 +103,14 @@ impl<'ttf> Map<'ttf> {
         })
         }
 
-    pub fn draw_mid_handles(&mut self, pts: &[Point])  {
+    pub fn draw_mid_handles(&mut self, pts: &[Point]) -> Result<(), String> {
         self.canvas.set_draw_color(configured_color(self.appearance.route_color));
         for p in pts 
             {
             let r = sdl2::rect::Rect::new(p.x - 4, p.y - 4, 12, 12);
-            self.canvas.draw_rect(r).unwrap();   // contour seulement, pour les distinguer des vrais points
+            self.canvas.draw_rect(r)?;   // contour seulement, pour les distinguer des vrais points
             }
+        Ok(())
         }
 
     fn clip(&self) -> ClipRect {
@@ -311,7 +324,7 @@ impl<'ttf> Map<'ttf> {
             .set_draw_color(Color::RGBA(red, green, blue, opacity));
 
         let ecran_total = Rect::new(0, 0, self.screen_width, self.screen_height);
-        self.canvas.fill_rect(ecran_total).unwrap();
+        self.canvas.fill_rect(ecran_total)?;
         Ok(())
         }
     
@@ -330,13 +343,11 @@ impl<'ttf> Map<'ttf> {
 
         let TextureQuery { width, height, .. } = texture.query();
 
-        //let  y:i32 = (self.screen_height - 100).try_into().unwrap();
-        //let  x:i32 = ((self.screen_width/2) - 200).try_into().unwrap();
         let cible = Rect::new(x, y, width, height);
         
         self.canvas.set_blend_mode(BlendMode::Blend);
         self.canvas.set_draw_color(Color::RGBA(255, 255, 255, 128));
-        self.canvas.fill_rect(cible).unwrap();
+        self.canvas.fill_rect(cible)?;
         
         self.canvas.copy(&texture, None, Some(cible))?;
         unsafe {texture.destroy();}

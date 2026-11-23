@@ -55,6 +55,36 @@ impl AisTarget {
     }
 }
 
+pub fn show_targets(
+    targets: &[AisTarget],
+    renderer: &MBTilesRenderer,
+    map: &mut Map,
+) -> Result<(), String> {
+    let width = map.screen_width as i32;
+    let height = map.screen_height as i32;
+
+    for target in targets {
+        let Some(position) = target.position else {
+            continue;
+        };
+        let point = renderer.gps_to_point(position);
+        if point.x < -32 || point.x > width + 32 || point.y < -32 || point.y > height + 32 {
+            continue;
+        }
+
+        map.show_ais_target(
+            point.x,
+            point.y,
+            target
+                .course_over_ground
+                .map(|course| renderer.course_to_screen(course)),
+        )?;
+        map.show_text(&target.label(), point.x + 10, point.y - 10)?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,34 +120,4 @@ mod tests {
         assert!(!retain_fresh(&mut targets, now));
         assert_eq!(targets.len(), 1);
     }
-}
-
-pub fn show_targets(
-    targets: &[AisTarget],
-    renderer: &MBTilesRenderer,
-    map: &mut Map,
-) -> Result<(), String> {
-    let width = map.screen_width as i32;
-    let height = map.screen_height as i32;
-
-    for target in targets {
-        let Some(position) = target.position else {
-            continue;
-        };
-        let point = renderer.gps_to_point(position);
-        if point.x < -32 || point.x > width + 32 || point.y < -32 || point.y > height + 32 {
-            continue;
-        }
-
-        map.show_ais_target(
-            point.x,
-            point.y,
-            target
-                .course_over_ground
-                .map(|course| renderer.course_to_screen(course)),
-        )?;
-        map.show_text(&target.label(), point.x + 10, point.y - 10)?;
-    }
-
-    Ok(())
 }

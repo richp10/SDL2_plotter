@@ -27,7 +27,7 @@ impl MoteurSdl {
         Ok(MoteurSdl {
             context,
             event_pump,
-            ttf_context: ttf_context,
+            ttf_context,
         })
     }
 }
@@ -406,7 +406,7 @@ impl ClipRect {
     /// The point as `i16` coordinates if it lies inside, otherwise `None`.
     fn point_i16(&self, point: Point) -> Option<(i16, i16)> {
         let (x, y) = (f64::from(point.x), f64::from(point.y));
-        self.contains(x, y).then(|| (x as i16, y as i16))
+        self.contains(x, y).then_some((x as i16, y as i16))
     }
 
     /// The part of the segment inside the rectangle, as `i16` coordinates.

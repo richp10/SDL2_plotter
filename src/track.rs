@@ -345,9 +345,8 @@ fn simplified_indices(points: &[TrackPoint]) -> Vec<usize> {
         let mut farthest = None;
         let mut max_deviation = 0.0;
 
-        for index in start + 1..end {
-            let point = (points[index].lon, points[index].lat);
-            let deviation = distance_to_segment_meters(a, point, c);
+        for (index, point) in points.iter().enumerate().take(end).skip(start + 1) {
+            let deviation = distance_to_segment_meters(a, (point.lon, point.lat), c);
             if deviation > max_deviation {
                 max_deviation = deviation;
                 farthest = Some(index);

@@ -69,8 +69,8 @@ impl Mesure {
     }
 
     pub fn show(&mut self, renderer: &MBTilesRenderer, map: &mut Map) {
-        let s1 = self.get_pt1(&renderer);
-        let s2 = self.get_pt2(&renderer);
+        let s1 = self.get_pt1(renderer);
+        let s2 = self.get_pt2(renderer);
         // les points
         for (x, y) in [s1, s2].into_iter().flatten() {
             let _ = map.show_mark(x, y);
@@ -85,7 +85,7 @@ impl Mesure {
             format!("{:.0} m {:.0}°", self.distance * 1852.0, self.bearing)
         };
         if let Some((x, y)) = s2 {
-            let _ = map.show_text(&text, x as i32, y as i32);
+            let _ = map.show_text(&text, x, y);
         }
     }
 

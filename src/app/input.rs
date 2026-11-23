@@ -76,42 +76,40 @@ impl Plotter<'_> {
             return;
         }
 
-        match event {
-            Event::KeyDown {
-                keycode: Some(keycode),
-                keymod,
-                repeat: false,
-                ..
-            } => {
-                let fast = keymod.intersects(Mod::LSHIFTMOD | Mod::RSHIFTMOD);
-                let distance = if fast { 1000 } else { 100 };
-                let action = match *keycode {
-                    sdl2::keyboard::Keycode::Escape => match self.mode {
-                        Mode::Measurement => {
-                            self.mesure.clear();
-                            self.dirty = true;
-                            None
-                        }
-                        Mode::EditRoute => None,
-                        Mode::EditWaypoint => None,
-                    },
-                    sdl2::keyboard::Keycode::Up => Some(AppAction::Pan(0, distance)),
-                    sdl2::keyboard::Keycode::Down => Some(AppAction::Pan(0, -distance)),
-                    sdl2::keyboard::Keycode::Left => Some(AppAction::Pan(distance, 0)),
-                    sdl2::keyboard::Keycode::Right => Some(AppAction::Pan(-distance, 0)),
-                    sdl2::keyboard::Keycode::KpPlus => Some(AppAction::ZoomIn),
-                    sdl2::keyboard::Keycode::KpMinus => Some(AppAction::ZoomOut),
-                    sdl2::keyboard::Keycode::F => Some(AppAction::ToggleFollow),
-                    sdl2::keyboard::Keycode::Tab => Some(AppAction::CycleMode),
-                    sdl2::keyboard::Keycode::P => Some(AppAction::PreviousWaypoint),
-                    sdl2::keyboard::Keycode::N => Some(AppAction::NextWaypoint),
-                    _ => None,
-                };
-                if let Some(action) = action {
-                    self.execute_action(action);
-                }
+        if let Event::KeyDown {
+            keycode: Some(keycode),
+            keymod,
+            repeat: false,
+            ..
+        } = event
+        {
+            let fast = keymod.intersects(Mod::LSHIFTMOD | Mod::RSHIFTMOD);
+            let distance = if fast { 1000 } else { 100 };
+            let action = match *keycode {
+                sdl2::keyboard::Keycode::Escape => match self.mode {
+                    Mode::Measurement => {
+                        self.mesure.clear();
+                        self.dirty = true;
+                        None
+                    }
+                    Mode::EditRoute => None,
+                    Mode::EditWaypoint => None,
+                },
+                sdl2::keyboard::Keycode::Up => Some(AppAction::Pan(0, distance)),
+                sdl2::keyboard::Keycode::Down => Some(AppAction::Pan(0, -distance)),
+                sdl2::keyboard::Keycode::Left => Some(AppAction::Pan(distance, 0)),
+                sdl2::keyboard::Keycode::Right => Some(AppAction::Pan(-distance, 0)),
+                sdl2::keyboard::Keycode::KpPlus => Some(AppAction::ZoomIn),
+                sdl2::keyboard::Keycode::KpMinus => Some(AppAction::ZoomOut),
+                sdl2::keyboard::Keycode::F => Some(AppAction::ToggleFollow),
+                sdl2::keyboard::Keycode::Tab => Some(AppAction::CycleMode),
+                sdl2::keyboard::Keycode::P => Some(AppAction::PreviousWaypoint),
+                sdl2::keyboard::Keycode::N => Some(AppAction::NextWaypoint),
+                _ => None,
+            };
+            if let Some(action) = action {
+                self.execute_action(action);
             }
-            _ => {}
         }
     }
 
@@ -403,13 +401,8 @@ impl Plotter<'_> {
             Event::MouseMotion {
                 x, y, xrel, yrel, ..
             } => {
-                if let (Ok(x), Ok(y), Ok(xrel), Ok(yrel)) = (
-                    u32::try_from(*x),
-                    u32::try_from(*y),
-                    i32::try_from(*xrel),
-                    i32::try_from(*yrel),
-                ) {
-                    self.handle_mouse_motion(x, y, xrel, yrel, map, texture)?;
+                if let (Ok(x), Ok(y)) = (u32::try_from(*x), u32::try_from(*y)) {
+                    self.handle_mouse_motion(x, y, *xrel, *yrel, map, texture)?;
                 }
             }
             Event::MouseWheel { y, direction, .. } => {
@@ -505,7 +498,7 @@ impl Plotter<'_> {
 
     fn handle_click_edit_route(&mut self, map: &mut screen::Map<'_>, x: i32, y: i32) {
         self.selected = self.route.find_point_at(&self.renderer, (x, y), 8);
-        if self.selected == None {
+        if self.selected.is_none() {
             if let Some(k) = self.route.find_midpoint_at(&self.renderer, (x, y), 8) {
                 let (longitude, latitude) = self.route.midpoints()[k];
                 self.route.insert(k, longitude, latitude);

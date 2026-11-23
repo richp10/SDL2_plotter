@@ -337,7 +337,7 @@ mod tests {
             }
         }
         assert!(
-            accepted >= 1 && accepted <= 2,
+            (1..=2).contains(&accepted),
             "accepted {accepted} of 5 back-to-back frames"
         );
     }

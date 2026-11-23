@@ -24,9 +24,9 @@ impl<'ttf> Buttombar<'ttf> {
     ) -> Result<Self, String> {
         let font = ttf_context.load_font(&font_config.file, font_config.ui_size)?;
         Ok(Buttombar {
-            font: font,
-            width: width,
-            height: height,
+            font,
+            width,
+            height,
         })
     }
 
@@ -40,8 +40,8 @@ impl<'ttf> Buttombar<'ttf> {
         ));
         let r = sdl2::rect::Rect::new(0, 0, self.width, HEIGHT);
         canvas.fill_rect(r).unwrap();
-        let _ = self.show_message_left(canvas, &message1);
-        let _ = self.show_message_right(canvas, &message2);
+        let _ = self.show_message_left(canvas, message1);
+        let _ = self.show_message_right(canvas, message2);
         canvas.set_viewport(None);
     }
 
@@ -50,7 +50,7 @@ impl<'ttf> Buttombar<'ttf> {
         let font = &self.font;
         let color = sdl2::pixels::Color::BLACK;
         let surface = font
-            .render(&texte)
+            .render(texte)
             .blended(color)
             .map_err(|e| e.to_string())?;
         let texture = texture_creator
@@ -73,7 +73,7 @@ impl<'ttf> Buttombar<'ttf> {
         let font = &self.font;
         let color = sdl2::pixels::Color::BLACK;
         let surface = font
-            .render(&texte)
+            .render(texte)
             .blended(color)
             .map_err(|e| e.to_string())?;
         let texture = texture_creator

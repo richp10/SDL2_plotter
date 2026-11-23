@@ -4,6 +4,7 @@ use std::{fs, path::Path};
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct AppConfig {
     pub signalk: SignalKConfig,
     pub charts: ChartsConfig,
@@ -196,21 +197,6 @@ impl AppConfig {
             bail!("streaming.port, streaming.bind_address, streaming.fps et streaming.jpeg_quality doivent être valides");
         }
         Ok(())
-    }
-}
-
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            signalk: SignalKConfig::default(),
-            charts: ChartsConfig::default(),
-            window: WindowConfig::default(),
-            fonts: FontConfig::default(),
-            appearance: AppearanceConfig::default(),
-            rendering: RenderingConfig::default(),
-            streaming: StreamingConfig::default(),
-            track: TrackConfig::default(),
-        }
     }
 }
 

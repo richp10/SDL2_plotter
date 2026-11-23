@@ -96,7 +96,7 @@ pub fn list_maps(dir: &str) -> Vec<String> {
         .map(|e| e.path())
         .filter(|p| {
             p.extension()
-                .map_or(false, |e| e.eq_ignore_ascii_case("mbtiles"))
+                .is_some_and(|e| e.eq_ignore_ascii_case("mbtiles"))
         })
         .map(|p| p.to_string_lossy().into_owned())
         .collect();

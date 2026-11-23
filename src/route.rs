@@ -54,22 +54,20 @@ impl Route {
     ) {
         // `id` may come from a saved state and exceed the current route length.
         let rte = self.track.get(id..).unwrap_or(&[]);
-        if rte.len() >= 1 {
+        if !rte.is_empty() {
             let pts: Vec<Point> = rte.iter().map(|&pos| renderer.gps_to_point(pos)).collect();
             map.show_route(&pts);
         }
-        if mode == Mode::EditRoute {
-            if rte.len() >= 2 {
-                let mid_points = self.midpoints();
-                let mid_pts: Vec<Point> = mid_points
-                    .get(id..)
-                    .unwrap_or(&[])
-                    .iter()
-                    .map(|&pos| renderer.gps_to_point(pos))
-                    .collect();
-                // Decoration only: a failed handle must not abort the frame (same policy as show_route).
-                let _ = map.draw_mid_handles(&mid_pts);
-            }
+        if mode == Mode::EditRoute && rte.len() >= 2 {
+            let mid_points = self.midpoints();
+            let mid_pts: Vec<Point> = mid_points
+                .get(id..)
+                .unwrap_or(&[])
+                .iter()
+                .map(|&pos| renderer.gps_to_point(pos))
+                .collect();
+            // Decoration only: a failed handle must not abort the frame (same policy as show_route).
+            let _ = map.draw_mid_handles(&mid_pts);
         }
     }
     pub fn show_route_from_boat(

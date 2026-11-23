@@ -112,7 +112,7 @@ impl Plotter<'_> {
                     Err(error) => {
                         crate::diagnostics::record(
                             "ERROR",
-                            format!("Impossible d'ouvrir {}: {error}", &self.charts_path[index]),
+                            format!("Impossible d'ouvrir {}: {error}", self.charts_path[index]),
                         );
                     }
                 }

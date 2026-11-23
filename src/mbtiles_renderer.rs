@@ -127,7 +127,7 @@ fn decode_tile(bytes: Option<Vec<u8>>) -> CachedTile {
         .map(|dyn_img| {
             let has_alpha = dyn_img.color().has_alpha();
             let image = dyn_img.to_rgba8();
-            let opaque = !has_alpha || image.chunks_exact(4).all(|pixel| pixel[3] == 255);
+            let opaque = !has_alpha || image.as_chunks::<4>().0.iter().all(|pixel| pixel[3] == 255);
             Arc::new(Tile { image, opaque })
         })
 }
@@ -794,6 +794,13 @@ fn screen_to_world_delta(dx: f64, dy: f64, angle: f64) -> (f64, f64) {
     (dx * cos - dy * sin, dx * sin + dy * cos)
 }
 
+pub fn project_norm(lon: f64, lat: f64) -> (f64, f64) {
+    let lat_rad = lat.to_radians();
+    let x = (lon + 180.0) / 360.0;
+    let y = (1.0 - (lat_rad.tan() + 1.0 / lat_rad.cos()).ln() / std::f64::consts::PI) / 2.0;
+    (x, y)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1126,11 +1133,4 @@ mod tests {
         drop(renderer);
         std::fs::remove_file(path).unwrap();
     }
-}
-
-pub fn project_norm(lon: f64, lat: f64) -> (f64, f64) {
-    let lat_rad = lat.to_radians();
-    let x = (lon + 180.0) / 360.0;
-    let y = (1.0 - (lat_rad.tan() + 1.0 / lat_rad.cos()).ln() / std::f64::consts::PI) / 2.0;
-    (x, y)
 }

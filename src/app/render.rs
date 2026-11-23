@@ -120,16 +120,18 @@ impl Plotter<'_> {
             return;
         }
 
-        let message_left = if self.state.goto {
-            let (dist_wp, bearing_wp, dist_total) = self
-                .route
-                .calc_route_mn_from_boat(self.state.nav_id, self.boat.position());
-            format!(
+        let navigation = if self.state.goto {
+            self.route
+                .calc_route_mn_from_boat(self.state.nav_id, self.boat.position())
+        } else {
+            None
+        };
+        let message_left = match navigation {
+            Some((dist_wp, bearing_wp, dist_total)) => format!(
                 "From Boat to Next Waypoint :  {:.1} Mn   {:.0}° / DTD : {:.1} Mn",
                 dist_wp, bearing_wp, dist_total
-            )
-        } else {
-            self.route.show_route_len()
+            ),
+            None => self.route.show_route_len(),
         };
 
         let mut message_right = match self.mode {

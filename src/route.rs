@@ -39,8 +39,12 @@ impl Route
 			);
 		}
 		println!("route chargée : {} points", track.len());
+		Ok(Route::from_points(track))
+		}
 
-		let mut route = Route 
+	fn from_points(track: Vec<(f64, f64)>) -> Self
+		{
+		let mut route = Route
 			{
 			track,
 			distance: Vec::new(),
@@ -48,11 +52,12 @@ impl Route
 			longueur: 0.0,
 			};
 		route.calc_route();
-		Ok(route)
+		route
 		}
 	pub fn show_route_since_id(&mut self,renderer: &MBTilesRenderer,map: &mut Map,mode: Mode,id: usize)
 		{
-		let rte = &self.track[id..];
+		// `id` may come from a saved state and exceed the current route length.
+		let rte = self.track.get(id..).unwrap_or(&[]);
 		if rte.len() >= 1 {
 		    let pts: Vec<Point> = rte
 						.iter()
@@ -62,10 +67,12 @@ impl Route
 		    }
 	     if mode == Mode::EditRoute
 			{
-			 if rte.len() >= 2 
+			 if rte.len() >= 2
 				{
 				let mid_points = self.midpoints();
-				let mid_pts: Vec<Point> = mid_points[id..]
+				let mid_pts: Vec<Point> = mid_points
+						.get(id..)
+						.unwrap_or(&[])
 						.iter()
 						.map(|&pos| renderer.gps_to_point(pos))
 						.collect();
@@ -75,15 +82,27 @@ impl Route
 		}
 	pub fn show_route_from_boat(&mut self,renderer: &MBTilesRenderer,map: &mut Map, mode: Mode,id: usize,boat: (f64,f64))
 		{
-		map.show_route(&[ 
+		let Some(id) = self.active_waypoint(id) else {
+			return;
+		};
+		map.show_route(&[
 						renderer.gps_to_point(boat),
 						renderer.gps_to_point(self.track[id])
 						]);
 		self.show_route_since_id(renderer, map,mode, id);
 		}
-	
+
 	pub fn show_route_len(&self) -> String{
-		format!("route : {:.1} Mn", self.longueur)
+		// An empty sum is -0.0 in Rust, which would print as "-0.0".
+		format!("route : {:.1} Mn", self.longueur.max(0.0))
+		}
+
+	/// Index of the waypoint being navigated to, clamped to the last point.
+	/// `None` when the route is empty.
+	pub fn active_waypoint(&self, id: usize) -> Option<usize>
+		{
+		let last = self.track.len().checked_sub(1)?;
+		Some(id.min(last))
 		}
 			
 		pub fn save(&self) -> io::Result<()> {
@@ -144,10 +163,13 @@ impl Route
 			}
 		}
 		
-	pub fn calc_route_mn_from_boat(&mut self, id :usize, boat :(f64,f64)) -> (f64,f64,f64){
+	/// Distance and bearing from the boat to the active waypoint, plus the
+	/// distance to the end of the route. `None` when the route is empty.
+	pub fn calc_route_mn_from_boat(&self, id :usize, boat :(f64,f64)) -> Option<(f64,f64,f64)>{
+		let id = self.active_waypoint(id)?;
 		let (dist_wp, bearing_wp) = gps::distance_bearing_wp(boat, self.track[id]);
 		let dist_total = dist_wp + self.restante[id];
-		(dist_wp, bearing_wp, dist_total)
+		Some((dist_wp, bearing_wp, dist_total))
 		}
 		
 	pub fn find_point_at(
@@ -209,4 +231,49 @@ impl Route
 		self.track.len()
 		}
 	}
+
+#[cfg(test)]
+mod tests {
+	use super::Route;
+
+	#[test]
+	fn empty_route_has_no_active_waypoint_and_no_navigation_data() {
+		let route = Route::from_points(Vec::new());
+		assert_eq!(route.active_waypoint(0), None);
+		assert_eq!(route.calc_route_mn_from_boat(0, (0.0, 0.0)), None);
+	}
+
+	#[test]
+	fn active_waypoint_index_is_clamped_to_the_last_point() {
+		let route = Route::from_points(vec![(0.0, 0.0), (0.0, 1.0), (0.0, 2.0)]);
+		assert_eq!(route.active_waypoint(1), Some(1));
+		assert_eq!(route.active_waypoint(7), Some(2));
+	}
+
+	#[test]
+	fn navigation_from_the_last_waypoint_position_reports_zero_distance() {
+		let route = Route::from_points(vec![(0.0, 0.0), (0.0, 1.0)]);
+		let (to_waypoint, _bearing, to_end) =
+			route.calc_route_mn_from_boat(9, (0.0, 1.0)).unwrap();
+		assert!(to_waypoint.abs() < 1e-9);
+		assert!(to_end.abs() < 1e-9);
+	}
+
+	#[test]
+	fn navigation_distance_includes_the_remaining_legs() {
+		// 1 degree of latitude is 60 nautical miles.
+		let route = Route::from_points(vec![(0.0, 0.0), (0.0, 1.0), (0.0, 2.0)]);
+		let (to_waypoint, bearing, to_end) =
+			route.calc_route_mn_from_boat(1, (0.0, 0.0)).unwrap();
+		assert!((to_waypoint - 60.0).abs() < 0.1, "{to_waypoint}");
+		assert!(bearing.abs() < 1e-6, "{bearing}");
+		assert!((to_end - 120.0).abs() < 0.2, "{to_end}");
+	}
+
+	#[test]
+	fn empty_route_length_is_not_negative_zero() {
+		let route = Route::from_points(Vec::new());
+		assert_eq!(route.show_route_len(), "route : 0.0 Mn");
+	}
+}
 

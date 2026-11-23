@@ -5,7 +5,7 @@ use tokio_tungstenite::{
     WebSocketStream, MaybeTlsStream,
 };
 use tokio::net::TcpStream;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
 use serde_json::Value;
@@ -25,6 +25,18 @@ pub struct SignalKData {
     pub cog:        f64,
     pub sog:        f64,
     }
+
+/// What one Signal K delta message changed, so the task only forwards the
+/// data that actually moved.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct DeltaSummary {
+    /// Own vessel position, course or speed changed.
+    pub self_changed: bool,
+    /// Own vessel position was updated (a new track point).
+    pub self_position: bool,
+    /// At least one AIS target was created or updated.
+    pub ais_changed: bool,
+}
 
 /// Le client complet : connexion WebSocket + dernieres donnees connues
 pub struct SignalKClient {
@@ -63,20 +75,14 @@ impl SignalKClient {
     }
 
     /// Lit le prochain message et met a jour `self.data` si c'est du SignalK delta
-    pub async fn next_update(&mut self) -> Option<String> {
+    pub async fn next_update(&mut self) -> Option<DeltaSummary> {
         while let Some(msg) = self.read.next().await {
             match msg {
                 Ok(Message::Text(text)) => {
-                    //let mess = "none";
                     if let Ok(json) = serde_json::from_str::<serde_json::Value>(text.as_str())
                         {
-                        match  self.decode_updates(json)
-                            {
-                            Ok(message) => return Some(message),
-                            Err(_) => continue, 
-                            }
+                        return Some(self.decode_updates(&json));
                         }
-                    
                 }
                 Ok(Message::Ping(_)) | Ok(Message::Pong(_)) => continue,
                 Ok(Message::Close(_)) => return None,
@@ -192,70 +198,94 @@ impl SignalKClient {
         }
         
     /// interpretes les messages updates
-    fn decode_updates (&mut self, v: Value) -> Result<String, Box<dyn std::error::Error>> {
-        if let Some(updates) = v["updates"].as_array() {
-            let mut self_position_updated = false;
-            for update in updates {
-                if let Some(values) = update["values"].as_array() {
-                    let context = update["context"]
-                        .as_str()
-                        .or_else(|| v["context"].as_str())
-                        .unwrap_or("vessels.self");
-                    for value in values {
-                        let val = &value["value"];
-                        if let Some(path) = value["path"].as_str() {
-                            if is_self_context(context, self.self_context.as_deref()) {
-                                if path == self.paths.position {
-                                        if let (Some(latitude), Some(longitude)) =
-                                            (val["latitude"].as_f64(), val["longitude"].as_f64())
-                                        {
-                                            if latitude.is_finite()
-                                                && longitude.is_finite()
-                                                && (-90.0..=90.0).contains(&latitude)
-                                                && (-180.0..=180.0).contains(&longitude)
-                                            {
-                                                self.data.latitude = latitude;
-                                                self.data.longitude = longitude;
-                                                self.data.position_valid = true;
-                                                self_position_updated = true;
-                                            }
-                                        }
-                                } else if path == self.paths.course_over_ground {
-                                    self.data.cog = val.as_f64().unwrap_or(self.data.cog);
-                                } else if path == self.paths.speed_over_ground {
-                                    self.data.sog = val.as_f64().unwrap_or(self.data.sog);
-                                }
-                            } else {
-                                update_ais_target(&mut self.targets, &self.paths, context, path, val);
-                            }
+    fn decode_updates(&mut self, v: &Value) -> DeltaSummary {
+        apply_delta(
+            &mut self.data,
+            &mut self.targets,
+            &self.paths,
+            self.self_context.as_deref(),
+            v,
+        )
+    }
+}
+
+/// Applies one Signal K delta message to the own-vessel data and the AIS
+/// target map, and reports what changed.
+fn apply_delta(
+    data: &mut SignalKData,
+    targets: &mut HashMap<String, AisTarget>,
+    paths: &SignalKPaths,
+    self_context: Option<&str>,
+    v: &Value,
+) -> DeltaSummary {
+    let mut summary = DeltaSummary::default();
+    let Some(updates) = v["updates"].as_array() else {
+        return summary;
+    };
+    for update in updates {
+        let Some(values) = update["values"].as_array() else {
+            continue;
+        };
+        let context = update["context"]
+            .as_str()
+            .or_else(|| v["context"].as_str())
+            .unwrap_or("vessels.self");
+        for value in values {
+            let val = &value["value"];
+            let Some(path) = value["path"].as_str() else {
+                continue;
+            };
+            if is_self_context(context, self_context) {
+                if path == paths.position {
+                    if let (Some(latitude), Some(longitude)) =
+                        (val["latitude"].as_f64(), val["longitude"].as_f64())
+                    {
+                        if latitude.is_finite()
+                            && longitude.is_finite()
+                            && (-90.0..=90.0).contains(&latitude)
+                            && (-180.0..=180.0).contains(&longitude)
+                        {
+                            data.latitude = latitude;
+                            data.longitude = longitude;
+                            data.position_valid = true;
+                            summary.self_position = true;
+                            summary.self_changed = true;
                         }
                     }
+                } else if path == paths.course_over_ground {
+                    if let Some(cog) = val.as_f64() {
+                        data.cog = cog;
+                        summary.self_changed = true;
+                    }
+                } else if path == paths.speed_over_ground {
+                    if let Some(sog) = val.as_f64() {
+                        data.sog = sog;
+                        summary.self_changed = true;
+                    }
                 }
+            } else if update_ais_target(targets, paths, context, path, val) {
+                summary.ais_changed = true;
             }
-            return Ok(if self_position_updated {
-                "position".to_string()
-            } else {
-                "updates".to_string()
-            });
         }
-        println!("other");
-        Ok("other".to_string())
-        } 
+    }
+    summary
 }
 
 fn is_self_context(context: &str, self_context: Option<&str>) -> bool {
     context == "vessels.self" || self_context == Some(context)
 }
 
+/// Updates the AIS target for `context` from one path/value pair.
+/// Returns true when the target was created or changed.
 fn update_ais_target(
     targets: &mut HashMap<String, AisTarget>,
     paths: &SignalKPaths,
     context: &str,
     path: &str,
     value: &Value,
-) {
+) -> bool {
     if !context.starts_with("vessels.") || context == "vessels.self" {
-        return;
+        return false;
     }
 
     let target = targets
@@ -287,9 +317,10 @@ fn update_ais_target(
             target.speed_over_ground = Some(speed);
         }
     } else {
-        return;
+        return false;
     }
     target.update_received();
+    true
 }
     
 async fn wait_for_signalk_connection(url: &str) -> WsStream {
@@ -357,19 +388,32 @@ pub async fn signalk_task(
 
         let _ = status_tx.send("Load Map...".to_string());
         // boucle normale de reception des deltas signalk
-        while let Some(message) = signalk.next_update().await {
-            let state = BoatState {
-                longitude: signalk.data.longitude,
-                latitude: signalk.data.latitude,
-                position_valid: signalk.data.position_valid,
-                course_over_ground: signalk.data.cog,
-                speed_over_ground: signalk.data.sog,
-                };
-            let _ = state_tx.send(state);
-                if message == "position" {
-                    let _ = track_tx.send((signalk.data.longitude, signalk.data.latitude));
-                }
+        let mut last_eviction = Instant::now();
+        while let Some(summary) = signalk.next_update().await {
+            if summary.self_changed {
+                let _ = state_tx.send(BoatState {
+                    longitude: signalk.data.longitude,
+                    latitude: signalk.data.latitude,
+                    position_valid: signalk.data.position_valid,
+                    course_over_ground: signalk.data.cog,
+                    speed_over_ground: signalk.data.sog,
+                });
+            }
+            if summary.self_position {
+                let _ = track_tx.send((signalk.data.longitude, signalk.data.latitude));
+            }
+
+            // Targets that have gone quiet are dropped here, so the map does
+            // not grow for the whole passage. Checked at most once a second.
+            let mut ais_changed = summary.ais_changed;
+            let now = Instant::now();
+            if now.duration_since(last_eviction) >= Duration::from_secs(1) {
+                ais_changed |= crate::ais::retain_fresh(&mut signalk.targets, now);
+                last_eviction = now;
+            }
+            if ais_changed {
                 let _ = ais_tx.send(signalk.targets.values().cloned().collect());
+            }
         }
 
         let _ = status_tx.send("Try to reconnect...".to_string());
@@ -429,6 +473,45 @@ mod tests {
 
         assert_eq!(targets.len(), 1);
         assert_eq!(targets.get(context).unwrap().position, Some((178.1, -17.7)));
+    }
+
+    #[test]
+    fn delta_summary_tells_own_position_apart_from_ais_updates() {
+        let paths = SignalKPaths::default();
+        let mut data = SignalKData::default();
+        let mut targets = HashMap::new();
+
+        let own = json!({"context": "vessels.self", "updates": [{"values": [
+            {"path": "navigation.position", "value": {"latitude": 36.95, "longitude": 26.98}}
+        ]}]});
+        let summary = apply_delta(&mut data, &mut targets, &paths, None, &own);
+        assert!(summary.self_position);
+        assert!(summary.self_changed);
+        assert!(!summary.ais_changed);
+
+        let course = json!({"context": "vessels.self", "updates": [{"values": [
+            {"path": "navigation.courseOverGroundLastMinute", "value": 1.5}
+        ]}]});
+        let summary = apply_delta(&mut data, &mut targets, &paths, None, &course);
+        assert_eq!(summary, DeltaSummary { self_changed: true, self_position: false, ais_changed: false });
+        assert_eq!(data.cog, 1.5);
+        assert_eq!((data.longitude, data.latitude), (26.98, 36.95));
+        assert!(targets.is_empty());
+
+        let other = json!({"context": "vessels.urn:mrn:imo:mmsi:123456789", "updates": [{"values": [
+            {"path": "navigation.position", "value": {"latitude": 37.0, "longitude": 27.0}}
+        ]}]});
+        let summary = apply_delta(&mut data, &mut targets, &paths, None, &other);
+        assert!(!summary.self_position);
+        assert!(summary.ais_changed);
+        assert_eq!(targets.len(), 1);
+
+        let unrelated = json!({"context": "vessels.self", "updates": [{"values": [
+            {"path": "environment.depth.belowKeel", "value": 12.5}
+        ]}]});
+        let summary = apply_delta(&mut data, &mut targets, &paths, None, &unrelated);
+        assert!(!summary.self_position);
+        assert!(!summary.ais_changed);
     }
 
     #[test]

@@ -1,9 +1,18 @@
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use crate::mbtiles_renderer::MBTilesRenderer;
 use crate::screen::Map;
 
 const TARGET_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+
+/// Removes targets that have not been heard from within the timeout.
+/// Returns true when at least one target was removed.
+pub fn retain_fresh(targets: &mut HashMap<String, AisTarget>, now: Instant) -> bool {
+    let before = targets.len();
+    targets.retain(|_, target| target.is_fresh(now));
+    targets.len() != before
+}
 
 #[derive(Clone, Debug)]
 pub struct AisTarget {
@@ -60,6 +69,23 @@ mod tests {
 
         target.last_update = now - TARGET_TIMEOUT;
         assert!(!target.is_fresh(now));
+    }
+
+    #[test]
+    fn retain_fresh_drops_expired_targets_and_reports_whether_any_went() {
+        let now = Instant::now();
+        let mut targets = std::collections::HashMap::new();
+        let mut stale = AisTarget::new("vessels.stale".to_string());
+        stale.last_update = now - TARGET_TIMEOUT - Duration::from_secs(1);
+        targets.insert(stale.context.clone(), stale);
+        targets.insert("vessels.fresh".to_string(), AisTarget::new("vessels.fresh".to_string()));
+
+        assert!(retain_fresh(&mut targets, now));
+        assert_eq!(targets.len(), 1);
+        assert!(targets.contains_key("vessels.fresh"));
+
+        assert!(!retain_fresh(&mut targets, now));
+        assert_eq!(targets.len(), 1);
     }
 }
 

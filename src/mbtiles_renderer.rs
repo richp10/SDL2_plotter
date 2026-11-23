@@ -1,5 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 
 use image::{imageops, ImageBuffer, Rgba, RgbaImage};
@@ -26,6 +27,107 @@ struct Tile {
 /// Shared through an `Arc` so a cache hit does not copy the image.
 type CachedTile = Option<Arc<Tile>>;
 
+type TileKey = (i32, i64, i64);
+
+/// Fetches and decodes tiles on a worker thread, so prefetching the tiles
+/// around the view never stalls the render loop. The worker has its own
+/// read-only connection to the chart.
+struct TileLoader {
+    /// `None` only while shutting down.
+    requests: Option<Sender<TileKey>>,
+    results: Receiver<(TileKey, CachedTile)>,
+    in_flight: HashSet<TileKey>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+impl TileLoader {
+    fn start(mbtiles_path: &str) -> rusqlite::Result<Self> {
+        let conn = Connection::open_with_flags(
+            mbtiles_path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+        )?;
+        let (requests, request_rx) = channel::<TileKey>();
+        let (result_tx, results) = channel();
+        let worker = std::thread::spawn(move || {
+            for key in request_rx {
+                let (z, x, y) = key;
+                let tile = decode_tile(fetch_tile_bytes(&conn, z, x, y).unwrap_or(None));
+                if result_tx.send((key, tile)).is_err() {
+                    break; // the renderer that owned us is gone
+                }
+            }
+        });
+        Ok(Self {
+            requests: Some(requests),
+            results,
+            in_flight: HashSet::new(),
+            worker: Some(worker),
+        })
+    }
+
+    fn is_pending(&self, key: &TileKey) -> bool {
+        self.in_flight.contains(key)
+    }
+
+    fn request(&mut self, key: TileKey) {
+        let Some(requests) = &self.requests else {
+            return;
+        };
+        if !self.in_flight.contains(&key) && requests.send(key).is_ok() {
+            self.in_flight.insert(key);
+        }
+    }
+
+    /// Moves every finished tile into the cache. Returns how many arrived.
+    fn drain_into(&mut self, cache: &mut LruCache<TileKey, CachedTile>) -> usize {
+        let mut arrived = 0;
+        while let Ok((key, tile)) = self.results.try_recv() {
+            self.in_flight.remove(&key);
+            if !cache.contains(&key) {
+                cache.put(key, tile);
+            }
+            arrived += 1;
+        }
+        arrived
+    }
+}
+
+impl Drop for TileLoader {
+    /// Closes the request channel so the worker finishes what is queued and
+    /// exits, then waits for it, so its connection to the chart file is
+    /// closed before the renderer (and possibly the file) goes away.
+    fn drop(&mut self) {
+        self.requests.take();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+fn fetch_tile_bytes(conn: &Connection, z: i32, x: i64, y: i64) -> rusqlite::Result<Option<Vec<u8>>> {
+    let n = 1i64 << z; // 2^z
+    let tms_y = n - 1 - y; // MBTiles utilise le schema TMS
+
+    let mut stmt = conn.prepare_cached(
+        "SELECT tile_data FROM tiles WHERE zoom_level=?1 AND tile_column=?2 AND tile_row=?3",
+    )?;
+    let result = stmt
+        .query_row((z, x, tms_y), |row| row.get::<_, Vec<u8>>(0))
+        .ok();
+    Ok(result)
+}
+
+fn decode_tile(bytes: Option<Vec<u8>>) -> CachedTile {
+    bytes
+        .and_then(|bytes| image::load_from_memory(&bytes).ok())
+        .map(|dyn_img| {
+            let has_alpha = dyn_img.color().has_alpha();
+            let image = dyn_img.to_rgba8();
+            let opaque = !has_alpha || image.chunks_exact(4).all(|pixel| pixel[3] == 255);
+            Arc::new(Tile { image, opaque })
+        })
+}
+
 pub struct MBTilesRenderer {
     #[allow(dead_code)]
     path: String,
@@ -44,7 +146,8 @@ pub struct MBTilesRenderer {
     #[allow(dead_code)]
     tile_format: String,
     conn: Connection,
-    cache: LruCache<(i32, i64, i64), CachedTile>,
+    cache: LruCache<TileKey, CachedTile>,
+    loader: TileLoader,
     rendering_config: RenderingConfig,
     default_map: String,
     pub resolution : f64,
@@ -89,6 +192,7 @@ impl MBTilesRenderer {
             tile_format: "png".to_string(),
             conn,
             cache: LruCache::new(NonZeroUsize::new(config.tile_cache_size.max(1)).unwrap()),
+            loader: TileLoader::start(mbtiles_path)?,
             rendering_config: config.clone(),
             default_map: default_map.to_string(),
             resolution: 1.0,
@@ -147,8 +251,11 @@ impl MBTilesRenderer {
         (rect.width(), rect.height())
     }
 
-    /// Charge au plus `budget` tuiles manquantes. Renvoie true s'il reste du travail.
+    /// Collects tiles the loader has finished and asks it for up to `budget`
+    /// missing tiles around the view. Never decodes on the calling thread.
+    /// Returns true while tiles are still missing or being loaded.
     pub fn prefetch_step(&mut self, budget: usize) -> bool {
+        self.loader.drain_into(&mut self.cache);
         let source_zoom = self.source_zoom();
         let n_tiles: i64 = 1i64 << source_zoom;
         let tile_size = self.tile_size as f64;
@@ -164,29 +271,29 @@ impl MBTilesRenderer {
         let last_tx = ((origin_x + view_width as f64 / zoom_scale) / tile_size).floor() as i64 + self.rendering_config.prefetch_margin;
         let last_ty = ((origin_y + view_height as f64 / zoom_scale) / tile_size).floor() as i64 + self.rendering_config.prefetch_margin;
 
-        let mut loaded = 0;
-        for tx in first_tx..=last_tx 
+        let mut requested = 0;
+        for tx in first_tx..=last_tx
             {
-            for ty in first_ty..=last_ty 
+            for ty in first_ty..=last_ty
                 {
-                if ty < 0 || ty >= n_tiles 
+                if ty < 0 || ty >= n_tiles
                     {
                     continue;
                     }
-                let wx = tx.rem_euclid(n_tiles);
-                if self.cache.contains(&(source_zoom, wx, ty))
+                let key = (source_zoom, tx.rem_euclid(n_tiles), ty);
+                if self.cache.contains(&key) || self.loader.is_pending(&key)
                     {
                     continue;
                     }
-                if loaded >= budget 
+                if requested >= budget
                     {
                     return true; // il en reste
                     }
-                let _ = self.get_tile_image(source_zoom, wx, ty);
-                loaded += 1;
+                self.loader.request(key);
+                requested += 1;
                 }
             }
-            false
+        !self.loader.in_flight.is_empty()
         }
 
     fn nearest_zoom(&self, target: i32) -> Option<i32> 
@@ -517,34 +624,18 @@ impl MBTilesRenderer {
     }
 
     fn fetch_tile_bytes(&self, z: i32, x: i64, y: i64) -> rusqlite::Result<Option<Vec<u8>>> {
-        let n = 1i64 << z; // 2^z
-        let tms_y = n - 1 - y; // MBTiles utilise le schema TMS
-
-        let mut stmt = self.conn.prepare_cached(
-            "SELECT tile_data FROM tiles WHERE zoom_level=?1 AND tile_column=?2 AND tile_row=?3",
-        )?;
-        let result = stmt
-            .query_row((z, x, tms_y), |row| row.get::<_, Vec<u8>>(0))
-            .ok();
-        Ok(result)
+        fetch_tile_bytes(&self.conn, z, x, y)
     }
 
+    /// The tile from the cache, or decoded now on this thread when a frame
+    /// needs it and the loader has not delivered it yet.
     fn get_tile_image(&mut self, z: i32, x: i64, y: i64) -> CachedTile {
         let key = (z, x, y);
         if let Some(cached) = self.cache.get(&key) {
             return cached.clone();
         }
 
-        let data = self.fetch_tile_bytes(z, x, y).unwrap_or(None);
-        let tile = data
-            .and_then(|bytes| image::load_from_memory(&bytes).ok())
-            .map(|dyn_img| {
-                let has_alpha = dyn_img.color().has_alpha();
-                let image = dyn_img.to_rgba8();
-                let opaque = !has_alpha || image.chunks_exact(4).all(|pixel| pixel[3] == 255);
-                Arc::new(Tile { image, opaque })
-            });
-
+        let tile = decode_tile(self.fetch_tile_bytes(z, x, y).unwrap_or(None));
         self.cache.put(key, tile.clone());
         tile
     }
@@ -995,6 +1086,33 @@ mod tests {
             bytes.len()
         );
         }
+    }
+
+    #[test]
+    fn prefetch_loads_tiles_in_the_background_without_blocking_the_caller() {
+        let path = fixture_chart(&[3]); // 64 tiles, all in view plus margin at 512x256
+        let path_str = path.to_str().unwrap();
+        let mut renderer =
+            MBTilesRenderer::new(path_str, 3, 512, 256, &RenderingConfig::default(), path_str)
+                .unwrap();
+        renderer.last_center = renderer.project(0.0, 0.0);
+        assert_eq!(renderer.cache.len(), 0);
+
+        let started = Instant::now();
+        renderer.prefetch_step(64);
+        let first_call = started.elapsed();
+
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while renderer.cache.len() < 20 {
+            assert!(Instant::now() < deadline, "only {} tiles arrived", renderer.cache.len());
+            std::thread::sleep(Duration::from_millis(10));
+            renderer.prefetch_step(64);
+        }
+        // Decoding twenty or more PNG tiles synchronously takes far longer
+        // than this, even in release; the caller must only enqueue work.
+        assert!(first_call < Duration::from_millis(50), "prefetch_step took {first_call:?}");
+        drop(renderer);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

@@ -82,7 +82,10 @@ impl MoteurSdl {
     }
 }
 
-pub struct Map<'ttf> {
+/// The SDL window and the only way the data layer draws on it. Owns the
+/// canvas, the cursors and every drawing primitive; menus and dialogs get the
+/// canvas directly because they are chrome, not chart content.
+pub struct Screen<'ttf> {
     font: Font<'ttf, 'static>,
     pub canvas: WindowCanvas,
     pub screen_width: u32,
@@ -94,7 +97,7 @@ pub struct Map<'ttf> {
     appearance: AppearanceConfig,
 }
 
-impl<'ttf> Map<'ttf> {
+impl<'ttf> Screen<'ttf> {
     pub fn new(
         ttf_context: &'ttf Sdl2TtfContext,
         context: &Sdl,
@@ -151,7 +154,7 @@ impl<'ttf> Map<'ttf> {
         let cursor_arrow = Cursor::from_system(SystemCursor::Arrow)?;
         let cursor_size = Cursor::from_system(SystemCursor::SizeAll)?;
         cursor_hand.set();
-        Ok(Map {
+        Ok(Screen {
             font,
             canvas,
             screen_width,
@@ -343,6 +346,28 @@ impl<'ttf> Map<'ttf> {
             configured_color(self.appearance.ais_outline_color),
         )?;
         Ok(())
+    }
+
+    /// Waypoint pin: a triangle under a ringed dot, tip at `point`.
+    /// Off-screen points are culled before the i16 conversion.
+    pub fn show_waypoint(&mut self, point: Point) -> Result<(), String> {
+        let Some((x, y)) = self.point_i16(point) else {
+            return Ok(());
+        };
+        let color = Color::RGB(220, 30, 30);
+        self.canvas
+            .filled_trigon(x - 5, y - 9, x + 5, y - 9, x, y, color)?;
+        self.canvas.filled_circle(x, y - 11, 6, color)?;
+        self.canvas.filled_circle(x, y - 11, 2, Color::WHITE)
+    }
+
+    /// The boat's track as a polyline through `pts` (screen pixels).
+    pub fn show_track(&mut self, pts: &[Point]) -> Result<(), String> {
+        if pts.len() < 2 {
+            return Ok(());
+        }
+        self.canvas.set_draw_color(Color::RGB(255, 0, 0));
+        self.canvas.draw_lines(pts)
     }
 
     pub fn show_mark(&mut self, x: i32, y: i32) -> Result<(), String> {

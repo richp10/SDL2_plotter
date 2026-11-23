@@ -3,7 +3,8 @@ use sdl2::keyboard::Mod;
 use std::time::Instant;
 
 use super::{AppAction, Mouse, PendingWaypoint, Plotter, Press, LONG_CLICK, MOVE_TOLERANCE};
-use crate::{screen, topbar, Mode};
+use crate::screen::Screen;
+use crate::{topbar, Mode};
 
 impl Plotter<'_> {
     pub(super) fn handle_pending_waypoint_event(&mut self, event: &Event) {
@@ -70,7 +71,7 @@ impl Plotter<'_> {
         }
     }
 
-    pub(super) fn handle_keyboard_event(&mut self, event: &Event, _map: &mut screen::Map<'_>) {
+    pub(super) fn handle_keyboard_event(&mut self, event: &Event, _map: &mut Screen<'_>) {
         if self.pending_waypoint.is_some() {
             self.handle_pending_waypoint_event(event);
             return;
@@ -156,7 +157,7 @@ impl Plotter<'_> {
     pub(super) fn match_event(
         &mut self,
         event: Event,
-        map: &mut screen::Map<'_>,
+        screen: &mut Screen<'_>,
         texture: &sdl2::render::Texture,
     ) -> Result<(), String> {
         if self.confirm_dialog.is_open() {
@@ -206,11 +207,11 @@ impl Plotter<'_> {
                     "DEBUG",
                     format!("Événement clavier: touche={keycode:?}, répétition={repeat}"),
                 );
-                self.handle_keyboard_event(&event, map);
+                self.handle_keyboard_event(&event, screen);
             }
             Event::TextInput { .. } => {
                 crate::diagnostics::record("DEBUG", "Événement de saisie texte");
-                self.handle_keyboard_event(&event, map);
+                self.handle_keyboard_event(&event, screen);
             }
             Event::MouseButtonDown {
                 mouse_btn, x, y, ..
@@ -220,7 +221,7 @@ impl Plotter<'_> {
                     format!("Souris bouton enfoncé: {mouse_btn:?} ({x}, {y})"),
                 );
                 if self.pending_waypoint.is_none() {
-                    self.handle_mouse_event(&event, map, texture)?;
+                    self.handle_mouse_event(&event, screen, texture)?;
                 }
             }
             Event::MouseButtonUp {
@@ -231,18 +232,18 @@ impl Plotter<'_> {
                     format!("Souris bouton relâché: {mouse_btn:?} ({x}, {y})"),
                 );
                 if self.pending_waypoint.is_none() {
-                    self.handle_mouse_event(&event, map, texture)?;
+                    self.handle_mouse_event(&event, screen, texture)?;
                 }
             }
             Event::MouseWheel { y, .. } => {
                 crate::diagnostics::record("DEBUG", format!("Molette souris: {y}"));
                 if self.pending_waypoint.is_none() {
-                    self.handle_mouse_event(&event, map, texture)?;
+                    self.handle_mouse_event(&event, screen, texture)?;
                 }
             }
             Event::MouseMotion { .. } => {
                 if self.pending_waypoint.is_none() {
-                    self.handle_mouse_event(&event, map, texture)?;
+                    self.handle_mouse_event(&event, screen, texture)?;
                 }
             }
             Event::Quit { .. } => {
@@ -287,7 +288,7 @@ impl Plotter<'_> {
         }
     }
 
-    fn handle_mouse_up(&mut self, x: i32, y: i32, map: &mut screen::Map<'_>) {
+    fn handle_mouse_up(&mut self, x: i32, y: i32, screen: &mut Screen<'_>) {
         if let Some(p) = self.press.take() {
             if p.moved {
                 if self.dragging_measure_start {
@@ -327,7 +328,7 @@ impl Plotter<'_> {
                     self.dragging_measure_start = false;
                     self.mouse = Mouse::Move;
                 } else {
-                    self.handle_short_click(map, x, y);
+                    self.handle_short_click(screen, x, y);
                 }
             }
         }
@@ -339,7 +340,7 @@ impl Plotter<'_> {
         y: u32,
         xrel: i32,
         yrel: i32,
-        map: &mut screen::Map<'_>,
+        screen: &mut Screen<'_>,
         texture: &sdl2::render::Texture,
     ) -> Result<(), String> {
         if self.topbar.motion(x, y) {
@@ -352,13 +353,13 @@ impl Plotter<'_> {
             self.mouse = Mouse::Cross;
             match self.mode {
                 Mode::EditRoute => {
-                    self.handle_mouse_motion_edit_route(x, y, xrel, yrel, map, texture)?
+                    self.handle_mouse_motion_edit_route(x, y, xrel, yrel, screen, texture)?
                 }
                 Mode::EditWaypoint => {
-                    self.handle_mouse_motion_edit_waypoint(x, y, xrel, yrel, map, texture)?
+                    self.handle_mouse_motion_edit_waypoint(x, y, xrel, yrel, screen, texture)?
                 }
                 Mode::Measurement => {
-                    self.handle_mouse_motion_measurement(x, y, xrel, yrel, map, texture)?
+                    self.handle_mouse_motion_measurement(x, y, xrel, yrel, screen, texture)?
                 }
             };
         }
@@ -378,7 +379,7 @@ impl Plotter<'_> {
     pub(super) fn handle_mouse_event(
         &mut self,
         event: &Event,
-        map: &mut screen::Map<'_>,
+        screen: &mut Screen<'_>,
         texture: &sdl2::render::Texture,
     ) -> Result<(), String> {
         match event {
@@ -395,14 +396,14 @@ impl Plotter<'_> {
                 mouse_btn, x, y, ..
             } => {
                 if *mouse_btn == sdl2::mouse::MouseButton::Left {
-                    self.handle_mouse_up(*x, *y, map);
+                    self.handle_mouse_up(*x, *y, screen);
                 }
             }
             Event::MouseMotion {
                 x, y, xrel, yrel, ..
             } => {
                 if let (Ok(x), Ok(y)) = (u32::try_from(*x), u32::try_from(*y)) {
-                    self.handle_mouse_motion(x, y, *xrel, *yrel, map, texture)?;
+                    self.handle_mouse_motion(x, y, *xrel, *yrel, screen, texture)?;
                 }
             }
             Event::MouseWheel { y, direction, .. } => {
@@ -423,7 +424,7 @@ impl Plotter<'_> {
         y: i32,
         xrel: i32,
         yrel: i32,
-        map: &mut screen::Map<'_>,
+        screen: &mut Screen<'_>,
         texture: &sdl2::render::Texture,
     ) -> Result<(), String> {
         if let Some(p) = self.press.as_mut() {
@@ -440,7 +441,7 @@ impl Plotter<'_> {
             if p.moved && self.is_draging {
                 self.xdrag += xrel;
                 self.ydrag += yrel;
-                map.drag_map(texture, (self.xdrag, self.ydrag), self.renderer.placement())?;
+                screen.drag_map(texture, (self.xdrag, self.ydrag), self.renderer.placement())?;
                 self.mouse = Mouse::Hand;
             }
         }
@@ -453,7 +454,7 @@ impl Plotter<'_> {
         y: i32,
         xrel: i32,
         yrel: i32,
-        map: &mut screen::Map<'_>,
+        screen: &mut Screen<'_>,
         texture: &sdl2::render::Texture,
     ) -> Result<(), String> {
         let over_mark1 = self.mesure.find_mark1_at(&self.renderer, x, y, 12);
@@ -464,14 +465,14 @@ impl Plotter<'_> {
                     p.moved = true;
                 }
                 if p.moved {
-                    let dx = map.screen_width as i32 / 2 - x;
-                    let dy = map.screen_height as i32 / 2 - y;
+                    let dx = screen.screen_width as i32 / 2 - x;
+                    let dy = screen.screen_height as i32 / 2 - y;
                     self.mesure.modify_mark1(&self.renderer, dx, dy);
                     self.mouse = Mouse::Move;
                     self.dirty = true;
                 }
             } else {
-                self.handle_move_map(x, y, xrel, yrel, map, texture)?;
+                self.handle_move_map(x, y, xrel, yrel, screen, texture)?;
             }
         } else if over_mark1 {
             self.mouse = Mouse::Move;
@@ -481,22 +482,22 @@ impl Plotter<'_> {
         Ok(())
     }
 
-    fn handle_click_mesure(&mut self, map: &mut screen::Map<'_>, x: i32, y: i32) {
-        let dx = map.screen_width as i32 / 2 - x;
-        let dy = map.screen_height as i32 / 2 - y;
+    fn handle_click_mesure(&mut self, screen: &mut Screen<'_>, x: i32, y: i32) {
+        let dx = screen.screen_width as i32 / 2 - x;
+        let dy = screen.screen_height as i32 / 2 - y;
         self.mesure.add_mark(&self.renderer, dx, dy);
         self.dirty = true;
     }
 
-    fn handle_click_edit_route(&mut self, map: &mut screen::Map<'_>, x: i32, y: i32) {
+    fn handle_click_edit_route(&mut self, screen: &mut Screen<'_>, x: i32, y: i32) {
         self.selected = self.route.find_point_at(&self.renderer, (x, y), 8);
         if self.selected.is_none() {
             if let Some(k) = self.route.find_midpoint_at(&self.renderer, (x, y), 8) {
                 let (longitude, latitude) = self.route.midpoints()[k];
                 self.route.insert(k, longitude, latitude);
             } else {
-                let dx = map.screen_width as i32 / 2 - x;
-                let dy = map.screen_height as i32 / 2 - y;
+                let dx = screen.screen_width as i32 / 2 - x;
+                let dy = screen.screen_height as i32 / 2 - y;
                 let (longitude, latitude) = self.renderer.screen_to_gps(dx, dy);
                 self.route.add(longitude, latitude);
             }
@@ -508,9 +509,9 @@ impl Plotter<'_> {
         self.dirty = true;
     }
 
-    fn handle_click_edit_wp(&mut self, map: &mut screen::Map<'_>, x: i32, y: i32) {
-        let dx = map.screen_width as i32 / 2 - x;
-        let dy = map.screen_height as i32 / 2 - y;
+    fn handle_click_edit_wp(&mut self, screen: &mut Screen<'_>, x: i32, y: i32) {
+        let dx = screen.screen_width as i32 / 2 - x;
+        let dy = screen.screen_height as i32 / 2 - y;
         self.pending_waypoint = Some(PendingWaypoint {
             position: self.renderer.screen_to_gps(dx, dy),
             name: String::new(),
@@ -519,11 +520,11 @@ impl Plotter<'_> {
         self.dirty = true;
     }
 
-    fn handle_short_click(&mut self, map: &mut screen::Map<'_>, x: i32, y: i32) {
+    fn handle_short_click(&mut self, screen: &mut Screen<'_>, x: i32, y: i32) {
         match self.mode {
-            Mode::Measurement => self.handle_click_mesure(map, x, y),
-            Mode::EditRoute => self.handle_click_edit_route(map, x, y),
-            Mode::EditWaypoint => self.handle_click_edit_wp(map, x, y),
+            Mode::Measurement => self.handle_click_mesure(screen, x, y),
+            Mode::EditRoute => self.handle_click_edit_route(screen, x, y),
+            Mode::EditWaypoint => self.handle_click_edit_wp(screen, x, y),
         };
     }
 
@@ -583,7 +584,7 @@ impl Plotter<'_> {
         y: i32,
         xrel: i32,
         yrel: i32,
-        map: &mut screen::Map<'_>,
+        screen: &mut Screen<'_>,
         texture: &sdl2::render::Texture,
     ) -> Result<(), String> {
         let previous_selection = self.selected;
@@ -611,15 +612,15 @@ impl Plotter<'_> {
                     p.moved = true;
                 }
                 if p.moved {
-                    let dx = map.screen_width as i32 / 2 - x;
-                    let dy = map.screen_height as i32 / 2 - y;
+                    let dx = screen.screen_width as i32 / 2 - x;
+                    let dy = screen.screen_height as i32 / 2 - y;
                     self.mouse = Mouse::Move;
                     let (lon, lat) = self.renderer.screen_to_gps(dx, dy);
                     self.route.modify(i, lon, lat);
                     self.dirty = true;
                 }
             } else {
-                self.handle_move_map(x, y, xrel, yrel, map, texture)?;
+                self.handle_move_map(x, y, xrel, yrel, screen, texture)?;
             }
         }
         Ok(())
@@ -631,7 +632,7 @@ impl Plotter<'_> {
         y: i32,
         xrel: i32,
         yrel: i32,
-        map: &mut screen::Map<'_>,
+        screen: &mut Screen<'_>,
         texture: &sdl2::render::Texture,
     ) -> Result<(), String> {
         let previous_selection = self.selected;
@@ -653,15 +654,15 @@ impl Plotter<'_> {
                     p.moved = true;
                 }
                 if p.moved {
-                    let dx = map.screen_width as i32 / 2 - x;
-                    let dy = map.screen_height as i32 / 2 - y;
+                    let dx = screen.screen_width as i32 / 2 - x;
+                    let dy = screen.screen_height as i32 / 2 - y;
                     self.mouse = Mouse::Move;
                     let (lon, lat) = self.renderer.screen_to_gps(dx, dy);
                     self.waypoints.modify(i, (lon, lat));
                     self.dirty = true;
                 }
             } else {
-                self.handle_move_map(x, y, xrel, yrel, map, texture)?;
+                self.handle_move_map(x, y, xrel, yrel, screen, texture)?;
             }
         }
         Ok(())

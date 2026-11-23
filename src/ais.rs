@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use crate::mbtiles_renderer::MBTilesRenderer;
-use crate::screen::Map;
+use crate::screen::Screen;
 
 const TARGET_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
@@ -58,10 +58,10 @@ impl AisTarget {
 pub fn show_targets(
     targets: &[AisTarget],
     renderer: &MBTilesRenderer,
-    map: &mut Map,
+    screen: &mut Screen,
 ) -> Result<(), String> {
-    let width = map.screen_width as i32;
-    let height = map.screen_height as i32;
+    let width = screen.screen_width as i32;
+    let height = screen.screen_height as i32;
 
     for target in targets {
         let Some(position) = target.position else {
@@ -72,14 +72,14 @@ pub fn show_targets(
             continue;
         }
 
-        map.show_ais_target(
+        screen.show_ais_target(
             point.x,
             point.y,
             target
                 .course_over_ground
                 .map(|course| renderer.course_to_screen(course)),
         )?;
-        map.show_text(&target.label(), point.x + 10, point.y - 10)?;
+        screen.show_text(&target.label(), point.x + 10, point.y - 10)?;
     }
 
     Ok(())

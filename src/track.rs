@@ -1,13 +1,12 @@
 use chrono::Local;
-use sdl2::pixels::Color;
 use sdl2::rect::Point;
-use sdl2::render::WindowCanvas;
 use std::io;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crate::gps::{distance_meters, EARTH_RADIUS_METERS};
 use crate::mbtiles_renderer::{project_norm, MBTilesRenderer};
+use crate::screen::Screen;
 
 const MIN_TRACK_DISTANCE_METERS: f64 = 20.0;
 const SIMPLIFICATION_TOLERANCE_METERS: f64 = 20.0;
@@ -223,7 +222,7 @@ impl Track {
         true
     }
 
-    pub fn show(&self, canvas: &mut WindowCanvas, map: &MBTilesRenderer, boat: Option<(f64, f64)>) {
+    pub fn show(&self, screen: &mut Screen, renderer: &MBTilesRenderer, boat: Option<(f64, f64)>) {
         if self.points.is_empty() {
             return;
         }
@@ -231,20 +230,16 @@ impl Track {
         let mut pts: Vec<Point> = self
             .points
             .iter()
-            .map(|p| map.norm_to_point(p.nx, p.ny))
+            .map(|p| renderer.norm_to_point(p.nx, p.ny))
             .collect();
 
         if let Some((lon, lat)) = boat {
             let (nx, ny) = project_norm(lon, lat);
-            pts.push(map.norm_to_point(nx, ny));
+            pts.push(renderer.norm_to_point(nx, ny));
         }
 
-        if pts.len() < 2 {
-            return;
-        }
-
-        canvas.set_draw_color(Color::RGB(255, 0, 0));
-        let _ = canvas.draw_lines(pts.as_slice());
+        // Decoration: a failed draw must not abort the frame.
+        let _ = screen.show_track(&pts);
     }
 
     pub fn save(&self, path: &Path) -> io::Result<()> {

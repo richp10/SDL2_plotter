@@ -1,9 +1,8 @@
-use sdl2::gfx::primitives::DrawRenderer;
 use serde::{Deserialize, Serialize};
 use std::{fs, io, path::Path};
 
 use crate::mbtiles_renderer::MBTilesRenderer;
-use crate::screen::Map;
+use crate::screen::Screen;
 
 const WAYPOINTS_FILE: &str = "default/waypoints.json";
 
@@ -81,24 +80,19 @@ impl Waypoints {
         self.waypoints.remove(i);
     }
 
-    pub fn show(&self, map: &mut Map<'_>, renderer: &MBTilesRenderer) -> Result<(), String> {
+    pub fn show(&self, screen: &mut Screen<'_>, renderer: &MBTilesRenderer) -> Result<(), String> {
         for (i, wp) in self.waypoints.iter().enumerate() {
             let point = renderer.gps_to_point((wp.lon, wp.lat));
-            let Some((x, y)) = map.point_i16(point) else {
-                continue; // off screen: the i16 primitives would wrap the coordinates
-            };
-            let color = sdl2::pixels::Color::RGB(220, 30, 30);
-            map.canvas
-                .filled_trigon(x - 5, y - 9, x + 5, y - 9, x, y, color)?;
-            map.canvas.filled_circle(x, y - 11, 6, color)?;
-            map.canvas
-                .filled_circle(x, y - 11, 2, sdl2::pixels::Color::WHITE)?;
+            if screen.point_i16(point).is_none() {
+                continue; // off screen: neither the pin nor its label is drawn
+            }
+            screen.show_waypoint(point)?;
             let label = if wp.name.is_empty() {
                 format!("Waypoint {}", i + 1)
             } else {
                 wp.name.clone()
             };
-            map.show_text(&label, point.x + 10, point.y - 12)?;
+            screen.show_text(&label, point.x + 10, point.y - 12)?;
         }
         Ok(())
     }

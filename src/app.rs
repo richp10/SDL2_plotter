@@ -258,7 +258,7 @@ impl<'ttf> Plotter<'ttf> {
     pub(crate) fn main_loop(
         &mut self,
         event_pump: &mut sdl2::EventPump,
-        map: &mut screen::Map<'_>,
+        screen: &mut screen::Screen<'_>,
         texture: &mut sdl2::render::Texture,
     ) -> anyhow::Result<()> {
         let mut last_diagnostics = Instant::now();
@@ -298,7 +298,7 @@ impl<'ttf> Plotter<'ttf> {
                     last_input = Instant::now();
                 }
                 let event_started = Instant::now();
-                self.match_event(event, map, texture).map_err(|error| {
+                self.match_event(event, screen, texture).map_err(|error| {
                     crate::diagnostics::record(
                         "ERROR",
                         format!("Erreur de traitement SDL: {error}"),
@@ -377,7 +377,7 @@ impl<'ttf> Plotter<'ttf> {
             //////////////////////   Display /////////////////////////
             if self.dirty && !self.is_draging {
                 let display_started = Instant::now();
-                self.display(map, texture).map_err(anyhow::Error::msg)?;
+                self.display(screen, texture).map_err(anyhow::Error::msg)?;
                 rendered_frames += 1;
                 let elapsed = display_started.elapsed();
                 if elapsed >= Duration::from_millis(500) {
@@ -387,7 +387,7 @@ impl<'ttf> Plotter<'ttf> {
             }
 
             /////////////////  Mouse //////////////////////////////////
-            self.mouse(map);
+            self.mouse(screen);
 
             /////////////// preload tiles on the edge ///////////////////////////
             let prefetch_started = Instant::now();

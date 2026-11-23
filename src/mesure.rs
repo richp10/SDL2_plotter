@@ -1,6 +1,6 @@
 use crate::gps;
 use crate::mbtiles_renderer::MBTilesRenderer;
-use crate::screen::Map;
+use crate::screen::Screen;
 
 pub struct Mesure {
     mark1: Option<(f64, f64)>,
@@ -68,16 +68,16 @@ impl Mesure {
         }
     }
 
-    pub fn show(&mut self, renderer: &MBTilesRenderer, map: &mut Map) {
+    pub fn show(&mut self, renderer: &MBTilesRenderer, screen: &mut Screen) {
         let s1 = self.get_pt1(renderer);
         let s2 = self.get_pt2(renderer);
         // les points
         for (x, y) in [s1, s2].into_iter().flatten() {
-            let _ = map.show_mark(x, y);
+            let _ = screen.show_mark(x, y);
         }
         // le trait, seulement si les deux existent
         if let (Some((x1, y1)), Some((x2, y2))) = (s1, s2) {
-            let _ = map.show_line(x1, y1, x2, y2);
+            let _ = screen.show_line(x1, y1, x2, y2);
         }
         let text = if self.distance >= 1.0 {
             format!("{:.1} Mn {:.0}°", self.distance, self.bearing)
@@ -85,7 +85,7 @@ impl Mesure {
             format!("{:.0} m {:.0}°", self.distance * 1852.0, self.bearing)
         };
         if let Some((x, y)) = s2 {
-            let _ = map.show_text(&text, x, y);
+            let _ = screen.show_text(&text, x, y);
         }
     }
 

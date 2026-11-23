@@ -4,7 +4,7 @@ const LEGACY_ROUTE: &str = "default/route.gpx";
 
 use crate::gps;
 use crate::mbtiles_renderer::MBTilesRenderer;
-use crate::screen::Map;
+use crate::screen::Screen;
 use crate::Mode;
 use sdl2::rect::Point;
 use std::io;
@@ -48,7 +48,7 @@ impl Route {
     pub fn show_route_since_id(
         &mut self,
         renderer: &MBTilesRenderer,
-        map: &mut Map,
+        screen: &mut Screen,
         mode: Mode,
         id: usize,
     ) {
@@ -56,7 +56,7 @@ impl Route {
         let rte = self.track.get(id..).unwrap_or(&[]);
         if !rte.is_empty() {
             let pts: Vec<Point> = rte.iter().map(|&pos| renderer.gps_to_point(pos)).collect();
-            map.show_route(&pts);
+            screen.show_route(&pts);
         }
         if mode == Mode::EditRoute && rte.len() >= 2 {
             let mid_points = self.midpoints();
@@ -67,13 +67,13 @@ impl Route {
                 .map(|&pos| renderer.gps_to_point(pos))
                 .collect();
             // Decoration only: a failed handle must not abort the frame (same policy as show_route).
-            let _ = map.draw_mid_handles(&mid_pts);
+            let _ = screen.draw_mid_handles(&mid_pts);
         }
     }
     pub fn show_route_from_boat(
         &mut self,
         renderer: &MBTilesRenderer,
-        map: &mut Map,
+        screen: &mut Screen,
         mode: Mode,
         id: usize,
         boat: (f64, f64),
@@ -81,11 +81,11 @@ impl Route {
         let Some(id) = self.active_waypoint(id) else {
             return;
         };
-        map.show_route(&[
+        screen.show_route(&[
             renderer.gps_to_point(boat),
             renderer.gps_to_point(self.track[id]),
         ]);
-        self.show_route_since_id(renderer, map, mode, id);
+        self.show_route_since_id(renderer, screen, mode, id);
     }
 
     pub fn show_route_len(&self) -> String {

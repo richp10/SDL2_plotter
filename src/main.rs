@@ -65,7 +65,7 @@ async fn run() -> anyhow::Result<()> {
     let config = config::AppConfig::load_or_create(std::path::Path::new(DEFAULT_PLOTTER))?;
     let mut sdl = screen::MoteurSdl::init().map_err(anyhow::Error::msg)?;
     diagnostics::record("INFO", "SDL initialisé");
-    let mut map = screen::Map::new(
+    let mut screen = screen::Screen::new(
         &sdl.ttf_context,
         &sdl.context,
         &config.window,
@@ -75,9 +75,11 @@ async fn run() -> anyhow::Result<()> {
     .map_err(anyhow::Error::msg)?;
     diagnostics::record("INFO", "Fenêtre SDL initialisée");
 
-    let texture_creator = map.canvas.texture_creator();
-    let (texture_width, texture_height) =
-        mbtiles_renderer::MBTilesRenderer::texture_dimensions(map.screen_width, map.screen_height);
+    let texture_creator = screen.canvas.texture_creator();
+    let (texture_width, texture_height) = mbtiles_renderer::MBTilesRenderer::texture_dimensions(
+        screen.screen_width,
+        screen.screen_height,
+    );
     let mut texture = texture_creator
         .create_texture_streaming(PixelFormatEnum::RGBA32, texture_width, texture_height)
         .map_err(anyhow::Error::msg)?;
@@ -90,11 +92,11 @@ async fn run() -> anyhow::Result<()> {
     let mut plotter = app::Plotter::new(
         &sdl.context,
         &sdl.ttf_context,
-        map.screen_width,
-        map.screen_height,
+        screen.screen_width,
+        screen.screen_height,
         &config,
         streamer,
     )?;
     diagnostics::record("INFO", "Application initialisée");
-    plotter.main_loop(&mut sdl.event_pump, &mut map, &mut texture)
+    plotter.main_loop(&mut sdl.event_pump, &mut screen, &mut texture)
 }

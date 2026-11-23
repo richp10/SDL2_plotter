@@ -1,30 +1,30 @@
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
-use tokio_tungstenite::{
-    connect_async, tungstenite::Error as WsError, tungstenite::Message,
-    WebSocketStream, MaybeTlsStream,
-};
-use tokio::net::TcpStream;
-use std::time::{Duration, Instant};
-use std::collections::HashMap;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+use tokio::net::TcpStream;
 use tokio::sync::watch;
+use tokio_tungstenite::{
+    connect_async, tungstenite::Error as WsError, tungstenite::Message, MaybeTlsStream,
+    WebSocketStream,
+};
 
-use crate::boat::BoatState;
 use crate::ais::AisTarget;
+use crate::boat::BoatState;
 use crate::config::{SignalKConfig, SignalKPaths};
 pub type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 /// Les donnees SignalK collectees au fil de l'eau
 #[derive(Debug, Default, Clone)]
 pub struct SignalKData {
-    pub latitude:   f64,
-    pub longitude:  f64,
+    pub latitude: f64,
+    pub longitude: f64,
     pub position_valid: bool,
-    pub cog:        f64,
-    pub sog:        f64,
-    }
+    pub cog: f64,
+    pub sog: f64,
+}
 
 /// What one Signal K delta message changed, so the task only forwards the
 /// data that actually moved.
@@ -79,10 +79,9 @@ impl SignalKClient {
         while let Some(msg) = self.read.next().await {
             match msg {
                 Ok(Message::Text(text)) => {
-                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(text.as_str())
-                        {
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(text.as_str()) {
                         return Some(self.decode_updates(&json));
-                        }
+                    }
                 }
                 Ok(Message::Ping(_)) | Ok(Message::Pong(_)) => continue,
                 Ok(Message::Close(_)) => return None,
@@ -95,62 +94,61 @@ impl SignalKClient {
         }
         None
     }
-    
-    /// verifie que le premier message du sereveur est bien reçu 
-    pub async fn check_connect(&mut self) -> bool {
-        let msg = self.read.next().await ;
-        match msg {
-                Some(Ok(Message::Text(text))) => {
 
-                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(text.as_str())
-                        {
-                        let status = &json["name"]; 
-                                {
-                                if status == "signalk-server" {
-                                    self.self_context = json["self"].as_str().map(str::to_string);
-                                    if self.self_context.is_none() {
-                                        crate::diagnostics::record("WARN", "Le serveur Signal K n'a pas fourni le contexte du bateau (self)");
-                                    }
-                                    crate::diagnostics::record("INFO", "Identification SignalK réussie");
-                                    return true
-                                }
-                                else {
-                                    crate::diagnostics::record("WARN", "Réponse initiale SignalK inattendue");
-                                    return false
-                                }
-                                }
+    /// verifie que le premier message du sereveur est bien reçu
+    pub async fn check_connect(&mut self) -> bool {
+        let msg = self.read.next().await;
+        match msg {
+            Some(Ok(Message::Text(text))) => {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(text.as_str()) {
+                    let status = &json["name"];
+                    {
+                        if status == "signalk-server" {
+                            self.self_context = json["self"].as_str().map(str::to_string);
+                            if self.self_context.is_none() {
+                                crate::diagnostics::record("WARN", "Le serveur Signal K n'a pas fourni le contexte du bateau (self)");
+                            }
+                            crate::diagnostics::record("INFO", "Identification SignalK réussie");
+                            return true;
+                        } else {
+                            crate::diagnostics::record(
+                                "WARN",
+                                "Réponse initiale SignalK inattendue",
+                            );
+                            return false;
                         }
                     }
-                Some(Ok(Message::Ping(_))) | Some(Ok(Message::Pong(_))) => return false,
-                Some(Ok(Message::Close(_))) => return false,
-                Some(Err(e)) => {
-                    crate::diagnostics::record("WARN", format!("Erreur de lecture WebSocket: {e}"));
-                    return false;
                 }
-                _ => return false,
+            }
+            Some(Ok(Message::Ping(_))) | Some(Ok(Message::Pong(_))) => return false,
+            Some(Ok(Message::Close(_))) => return false,
+            Some(Err(e)) => {
+                crate::diagnostics::record("WARN", format!("Erreur de lecture WebSocket: {e}"));
+                return false;
+            }
+            _ => return false,
         }
-    false
+        false
     }
-        
+
     /// suscribe les paths du tableau SUBSRBES_PATH au sever signalk
     pub async fn subscribe(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-
         #[derive(Serialize, Deserialize)]
         struct Subscribe {
             context: String,
-            subscribe: Vec<Delta>
-            }
+            subscribe: Vec<Delta>,
+        }
 
         #[derive(Serialize, Deserialize)]
         struct Delta {
             path: String,
-            format : String,
+            format: String,
             //period : u32,
             //policy: String,
             //#[serde(rename = "minPeriod")] // Assure la compatibilité avec le JSON de Signal K
             //min_period: u32,
         }
-     
+
         crate::diagnostics::record("INFO", "Souscription SignalK aux données bateau et AIS");
         let self_paths = [
             self.paths.position.as_str(),
@@ -164,16 +162,16 @@ impl SignalKClient {
                 format: "delta".to_string(),
                 //period: PERIOD_MS,
                 //policy: "instant".to_string(), // "instant" pousse les données dès qu'elles changent
-                //min_period: PERIOD_MS,  
+                //min_period: PERIOD_MS,
             })
             .collect();
-        
-        let payload = Subscribe{
+
+        let payload = Subscribe {
             context: "vessels.self".to_string(),
-            subscribe: deltas
-            };
+            subscribe: deltas,
+        };
         let json_string = serde_json::to_string(&payload)?;
-        self.write.send(Message::Text(json_string.into())).await?; 
+        self.write.send(Message::Text(json_string.into())).await?;
 
         let ais_paths = [
             self.paths.ais_position.as_str(),
@@ -193,9 +191,9 @@ impl SignalKClient {
         };
         let json_string = serde_json::to_string(&ais_payload)?;
         self.write.send(Message::Text(json_string.into())).await?;
-        Ok(())   
-        }
-        
+        Ok(())
+    }
+
     /// interpretes les messages updates
     fn decode_updates(&mut self, v: &Value) -> DeltaSummary {
         apply_delta(
@@ -292,17 +290,17 @@ fn update_ais_target(
         .or_insert_with(|| AisTarget::new(context.to_string()));
 
     if path == paths.ais_position {
-            if let (Some(latitude), Some(longitude)) =
-                (value["latitude"].as_f64(), value["longitude"].as_f64())
+        if let (Some(latitude), Some(longitude)) =
+            (value["latitude"].as_f64(), value["longitude"].as_f64())
+        {
+            if latitude.is_finite()
+                && longitude.is_finite()
+                && (-90.0..=90.0).contains(&latitude)
+                && (-180.0..=180.0).contains(&longitude)
             {
-                if latitude.is_finite()
-                    && longitude.is_finite()
-                    && (-90.0..=90.0).contains(&latitude)
-                    && (-180.0..=180.0).contains(&longitude)
-                {
-                    target.position = Some((longitude, latitude));
-                }
+                target.position = Some((longitude, latitude));
             }
+        }
     } else if path == paths.ais_name {
         if let Some(name) = value.as_str().filter(|name| !name.trim().is_empty()) {
             target.name = Some(name.to_string());
@@ -312,7 +310,10 @@ fn update_ais_target(
             target.course_over_ground = Some(course);
         }
     } else if path == paths.ais_speed_over_ground {
-        if let Some(speed) = value.as_f64().filter(|speed| speed.is_finite() && *speed >= 0.0) {
+        if let Some(speed) = value
+            .as_f64()
+            .filter(|speed| speed.is_finite() && *speed >= 0.0)
+        {
             target.speed_over_ground = Some(speed);
         }
     } else {
@@ -321,7 +322,7 @@ fn update_ais_target(
     target.update_received();
     true
 }
-    
+
 async fn wait_for_signalk_connection(url: &str) -> WsStream {
     let mut attempt: u32 = 0;
 
@@ -331,7 +332,10 @@ async fn wait_for_signalk_connection(url: &str) -> WsStream {
             Ok((ws_stream, response)) => {
                 crate::diagnostics::record(
                     "INFO",
-                    format!("Connexion SignalK établie après {attempt} tentative(s), status {}", response.status()),
+                    format!(
+                        "Connexion SignalK établie après {attempt} tentative(s), status {}",
+                        response.status()
+                    ),
                 );
                 return ws_stream;
             }
@@ -343,17 +347,22 @@ async fn wait_for_signalk_connection(url: &str) -> WsStream {
                     .and_then(|v| v.parse::<u64>().ok())
                     .unwrap_or_else(|| (2u64.pow(attempt.min(5))).min(60));
 
-                crate::diagnostics::record("WARN", format!("SignalK HTTP 429: attente {wait}s (tentative {attempt})"));
+                crate::diagnostics::record(
+                    "WARN",
+                    format!("SignalK HTTP 429: attente {wait}s (tentative {attempt})"),
+                );
                 tokio::time::sleep(Duration::from_secs(wait)).await;
             }
             Err(error) => {
-                crate::diagnostics::record("WARN", format!("Connexion SignalK échouée (tentative {attempt}): {error}"));
+                crate::diagnostics::record(
+                    "WARN",
+                    format!("Connexion SignalK échouée (tentative {attempt}): {error}"),
+                );
                 let delay = Duration::from_secs((attempt.min(10)) as u64);
                 tokio::time::sleep(delay).await;
             }
         }
     }
-
 }
 
 // Tache dediee a signalk : connexion, souscription, reception des deltas,
@@ -365,7 +374,10 @@ pub async fn signalk_task(
     ais_tx: watch::Sender<Vec<AisTarget>>,
     config: SignalKConfig,
 ) {
-    crate::diagnostics::record("INFO", format!("Tâche SignalK démarrée, serveur={}", config.url));
+    crate::diagnostics::record(
+        "INFO",
+        format!("Tâche SignalK démarrée, serveur={}", config.url),
+    );
     let mut signalk = SignalKClient::connect(config).await;
     if !signalk.check_connect().await {
         crate::diagnostics::record("WARN", "La vérification initiale SignalK n'a pas abouti");
@@ -434,9 +446,27 @@ mod tests {
             &paths.ais_position,
             &json!({"latitude": -17.7, "longitude": 178.1}),
         );
-        update_ais_target(&mut targets, &paths, context, &paths.ais_name, &json!("Example"));
-        update_ais_target(&mut targets, &paths, context, &paths.ais_course_over_ground, &json!(1.25));
-        update_ais_target(&mut targets, &paths, context, &paths.ais_speed_over_ground, &json!(4.5));
+        update_ais_target(
+            &mut targets,
+            &paths,
+            context,
+            &paths.ais_name,
+            &json!("Example"),
+        );
+        update_ais_target(
+            &mut targets,
+            &paths,
+            context,
+            &paths.ais_course_over_ground,
+            &json!(1.25),
+        );
+        update_ais_target(
+            &mut targets,
+            &paths,
+            context,
+            &paths.ais_speed_over_ground,
+            &json!(4.5),
+        );
 
         let target = targets.get(context).unwrap();
         assert_eq!(target.position, Some((178.1, -17.7)));
@@ -481,7 +511,14 @@ mod tests {
             {"path": "navigation.courseOverGroundLastMinute", "value": 1.5}
         ]}]});
         let summary = apply_delta(&mut data, &mut targets, &paths, None, &course);
-        assert_eq!(summary, DeltaSummary { self_changed: true, self_position: false, ais_changed: false });
+        assert_eq!(
+            summary,
+            DeltaSummary {
+                self_changed: true,
+                self_position: false,
+                ais_changed: false
+            }
+        );
         assert_eq!(data.cog, 1.5);
         assert_eq!((data.longitude, data.latitude), (26.98, 36.95));
         assert!(targets.is_empty());

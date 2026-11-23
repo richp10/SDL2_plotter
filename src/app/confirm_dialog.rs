@@ -203,12 +203,7 @@ impl<'ttf> ConfirmDialog<'ttf> {
         canvas.copy(
             &texture,
             None,
-            Some(Rect::new(
-                text_x,
-                text_y,
-                surface.width(),
-                surface.height(),
-            )),
+            Some(Rect::new(text_x, text_y, surface.width(), surface.height())),
         )
     }
 }

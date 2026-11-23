@@ -144,10 +144,8 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!(
-            "plotter-log-{tag}-{}-{unique}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("plotter-log-{tag}-{}-{unique}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir.join("plotter.log")
     }
@@ -198,7 +196,9 @@ mod tests {
         assert!(current.contains("line number 39"));
         // Only one backup is kept, so the oldest lines are gone.
         assert!(!current.contains("line number 00"));
-        assert!(!std::fs::read_to_string(&backup).unwrap().contains("line number 00"));
+        assert!(!std::fs::read_to_string(&backup)
+            .unwrap()
+            .contains("line number 00"));
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 

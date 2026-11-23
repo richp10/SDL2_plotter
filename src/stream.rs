@@ -83,7 +83,10 @@ impl Streamer {
     /// second, and hands it to the encoder thread. The readback has to happen
     /// on the render thread; the JPEG encoding does not.
     pub fn capture(&self, canvas: &WindowCanvas) -> Result<(), String> {
-        let mut last = self.last_capture.lock().map_err(|_| "stream lock".to_string())?;
+        let mut last = self
+            .last_capture
+            .lock()
+            .map_err(|_| "stream lock".to_string())?;
         if last.elapsed() < self.frame_interval {
             return Ok(());
         }
@@ -167,10 +170,7 @@ fn handle_client(
         )?;
 
         loop {
-            let jpeg = frame
-                .read()
-                .ok()
-                .and_then(|current| current.clone());
+            let jpeg = frame.read().ok().and_then(|current| current.clone());
             if let Some(jpeg) = jpeg {
                 if stream
                     .write_all(
@@ -184,9 +184,7 @@ fn handle_client(
                 {
                     break;
                 }
-                if stream.write_all(&jpeg).is_err()
-                    || stream.write_all(b"\r\n").is_err()
-                {
+                if stream.write_all(&jpeg).is_err() || stream.write_all(b"\r\n").is_err() {
                     break;
                 }
             }
@@ -277,7 +275,10 @@ mod tests {
             })
             .collect();
         samples.sort();
-        println!("bench jpeg encode 1600x800 q70: {:?}", samples[samples.len() / 2]);
+        println!(
+            "bench jpeg encode 1600x800 q70: {:?}",
+            samples[samples.len() / 2]
+        );
     }
 
     fn test_streamer() -> Streamer {
@@ -319,7 +320,10 @@ mod tests {
         assert_eq!(&jpeg[..2], &[0xff, 0xd8], "frame should be a JPEG");
         // Encoding a full frame takes tens of milliseconds even in release;
         // the submitting thread must not pay for it.
-        assert!(submit_took < Duration::from_millis(5), "submit took {submit_took:?}");
+        assert!(
+            submit_took < Duration::from_millis(5),
+            "submit took {submit_took:?}"
+        );
     }
 
     #[test]
@@ -332,7 +336,10 @@ mod tests {
                 accepted += 1;
             }
         }
-        assert!(accepted >= 1 && accepted <= 2, "accepted {accepted} of 5 back-to-back frames");
+        assert!(
+            accepted >= 1 && accepted <= 2,
+            "accepted {accepted} of 5 back-to-back frames"
+        );
     }
 
     /// cargo test --release bench_ -- --ignored --nocapture --test-threads=1
@@ -351,7 +358,10 @@ mod tests {
             })
             .collect();
         samples.sort();
-        println!("bench submit frame (render thread cost): {:?}", samples[samples.len() / 2]);
+        println!(
+            "bench submit frame (render thread cost): {:?}",
+            samples[samples.len() / 2]
+        );
     }
 
     #[test]
@@ -374,6 +384,11 @@ mod tests {
         let failures: Vec<String> = (0..20)
             .filter_map(|_| time_to_first_frame(address, Duration::from_millis(5)).err())
             .collect();
-        assert!(failures.is_empty(), "{} of 20 failed: {:?}", failures.len(), failures.first());
+        assert!(
+            failures.is_empty(),
+            "{} of 20 failed: {:?}",
+            failures.len(),
+            failures.first()
+        );
     }
 }

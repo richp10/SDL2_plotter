@@ -34,9 +34,7 @@ impl Plotter<'_> {
                 .ok_or(anyhow::anyhow!("position de la carte inconnue"))?,
         };
 
-        let (pixels, texture_rect) = self
-            .renderer
-            .get_raw_rgba(lon, lat, self.state.map_offset);
+        let (pixels, texture_rect) = self.renderer.get_raw_rgba(lon, lat, self.state.map_offset);
         texture
             .update(
                 Some(texture_rect),
@@ -51,7 +49,7 @@ impl Plotter<'_> {
             self.renderer.display_dimensions().1,
             self.renderer.rotation_degrees(),
         )
-            .map_err(anyhow::Error::msg)?;
+        .map_err(anyhow::Error::msg)?;
 
         if self.mode == Mode::Measurement {
             self.mesure.show(&self.renderer, map);
@@ -84,9 +82,7 @@ impl Plotter<'_> {
         map.night_layer(0).map_err(anyhow::Error::msg)?;
         self.display_buttombar(map);
         if let Some(streamer) = &self.streamer {
-            streamer
-                .capture(&map.canvas)
-                .map_err(anyhow::Error::msg)?;
+            streamer.capture(&map.canvas).map_err(anyhow::Error::msg)?;
         }
         self.topbar.show(&mut map.canvas);
         self.confirm_dialog

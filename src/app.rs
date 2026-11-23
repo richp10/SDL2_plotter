@@ -1,9 +1,9 @@
 use crate::boat::BoatState;
-use crate::{
-    ais, buttombar, mbtiles_renderer, mesure, route, screen, signalk, state, topbar, track,
-    waypoints, config::AppConfig,
-};
 use crate::Mode;
+use crate::{
+    ais, buttombar, config::AppConfig, mbtiles_renderer, mesure, route, screen, signalk, state,
+    topbar, track, waypoints,
+};
 use mbtiles_renderer::MBTilesRenderer;
 use sdl2::event::Event;
 use sdl2::ttf::Sdl2TtfContext;
@@ -34,8 +34,8 @@ enum AppAction {
     SetMode(Mode),
     CycleMode,
     ToggleFollow,
-	FollowOn,
-	FollowOff,
+    FollowOn,
+    FollowOff,
     ToggleGoto,
     ClearRoute,
     PreviousWaypoint,
@@ -67,8 +67,8 @@ impl AppAction {
             Self::SetMode(_) => "SetMode",
             Self::CycleMode => "CycleMode",
             Self::ToggleFollow => "ToggleFollow",
-			Self::FollowOn => "On",
-			Self::FollowOff => "Off",
+            Self::FollowOn => "On",
+            Self::FollowOff => "Off",
             Self::ToggleGoto => "ToggleGoto",
             Self::ClearRoute => "ClearRoute",
             Self::PreviousWaypoint => "PreviousWaypoint",
@@ -320,15 +320,13 @@ impl<'ttf> Plotter<'ttf> {
                     track_updates += 1;
                     self.dirty = true;
                     if self.track.point_count() == 1 {
-                        self.track
-                            .save_default_track(Path::new(DEFAULT_TRACK_PATH));
+                        self.track.save_default_track(Path::new(DEFAULT_TRACK_PATH));
                     }
                 }
             }
 
             if self.track.checkpoint_due() {
-                self.track
-                    .save_default_track(Path::new(DEFAULT_TRACK_PATH));
+                self.track.save_default_track(Path::new(DEFAULT_TRACK_PATH));
             }
 
             //////////////////////   Position update  /////////////////////////
@@ -379,8 +377,7 @@ impl<'ttf> Plotter<'ttf> {
             //////////////////////   Display /////////////////////////
             if self.dirty && !self.is_draging {
                 let display_started = Instant::now();
-                self.display(map, texture)
-                    .map_err(anyhow::Error::msg)?;
+                self.display(map, texture).map_err(anyhow::Error::msg)?;
                 rendered_frames += 1;
                 let elapsed = display_started.elapsed();
                 if elapsed >= Duration::from_millis(500) {
@@ -416,15 +413,13 @@ impl<'ttf> Plotter<'ttf> {
         } // end while self.running
 
         crate::diagnostics::record("INFO", "Arrêt demandé, sauvegarde finale de la trace");
-        self.track
-            .save_default_track(Path::new(DEFAULT_TRACK_PATH));
+        self.track.save_default_track(Path::new(DEFAULT_TRACK_PATH));
         if let Err(error) = self.state.save(STATE_FILE) {
             crate::diagnostics::record("ERROR", format!("Erreur sauvegarde état: {error}"));
         }
         crate::diagnostics::record("INFO", "Boucle SDL terminée");
         Ok(())
     }
-
 }
 
 #[cfg(test)]

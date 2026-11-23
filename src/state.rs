@@ -1,28 +1,25 @@
 use serde::{Deserialize, Serialize};
 use std::{fs, path::Path};
 
-
-
 #[derive(Serialize, Deserialize, Debug)]
 pub struct State {
     #[serde(default)]
-    pub follow		        : bool,
-    pub goto		        : bool,
-    pub map			        : String,
-    pub position            : Option<(f64, f64)>,
-    pub zoom		        : i32,
-    pub map_offset          : (i32,i32),
-    pub nav_id              : usize,
-    pub display_waypoint    : bool,
-    pub display_route       : bool,
-    pub display_track       : bool,
-    pub display_ais         : bool,
+    pub follow: bool,
+    pub goto: bool,
+    pub map: String,
+    pub position: Option<(f64, f64)>,
+    pub zoom: i32,
+    pub map_offset: (i32, i32),
+    pub nav_id: usize,
+    pub display_waypoint: bool,
+    pub display_route: bool,
+    pub display_track: bool,
+    pub display_ais: bool,
     #[serde(default)]
-    pub course_up           : bool,
+    pub course_up: bool,
 }
 
-impl State 
-    {
+impl State {
     /// Loads the saved state. A missing file gives the defaults. A file that
     /// cannot be parsed is moved to `<name>.corrupt` for inspection and the
     /// defaults are used, so a damaged state file never stops startup.
@@ -78,30 +75,29 @@ impl State
     pub fn save<P: AsRef<Path>>(
         &self,
         path: P,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
-	    {
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let json = serde_json::to_string_pretty(self)?;
         crate::geo_data::atomic_write(path.as_ref(), json.as_bytes())?;
         Ok(())
-	    }
-
-    pub fn load<P: AsRef<Path>>(
-        path: P,
-    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>>
-	    {
-        let json = fs::read_to_string(path)?;
-        Ok(serde_json::from_str(&json)?)
-	    }
     }
 
-    /// Liste les fichiers .mbtiles d'un dossier, triés par nom.
+    pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let json = fs::read_to_string(path)?;
+        Ok(serde_json::from_str(&json)?)
+    }
+}
+
+/// Liste les fichiers .mbtiles d'un dossier, triés par nom.
 pub fn list_maps(dir: &str) -> Vec<String> {
     let mut maps: Vec<String> = std::fs::read_dir(dir)
         .into_iter()
         .flatten()
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.extension().map_or(false, |e| e.eq_ignore_ascii_case("mbtiles")))
+        .filter(|p| {
+            p.extension()
+                .map_or(false, |e| e.eq_ignore_ascii_case("mbtiles"))
+        })
         .map(|p| p.to_string_lossy().into_owned())
         .collect();
     maps.sort();
@@ -139,7 +135,10 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("plotter-state-{tag}-{}-{unique}", std::process::id()))
+        std::env::temp_dir().join(format!(
+            "plotter-state-{tag}-{}-{unique}",
+            std::process::id()
+        ))
     }
 
     #[test]
@@ -176,7 +175,10 @@ mod tests {
 
         assert_eq!(state.zoom, 8);
         assert_eq!(state.map, "chart.mbtiles");
-        assert!(!path.exists(), "the corrupt file should have been moved aside");
+        assert!(
+            !path.exists(),
+            "the corrupt file should have been moved aside"
+        );
         assert_eq!(
             std::fs::read_to_string(dir.join("state.json.corrupt")).unwrap(),
             "{ not json"

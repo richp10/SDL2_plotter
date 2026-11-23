@@ -34,9 +34,15 @@ impl Plotter<'_> {
                         self.waypoints
                             .add(pending.position, pending.name.trim().to_string());
                         if let Err(error) = self.waypoints.save() {
-                            crate::diagnostics::record("ERROR", format!("Erreur sauvegarde des waypoints: {error}"));
+                            crate::diagnostics::record(
+                                "ERROR",
+                                format!("Erreur sauvegarde des waypoints: {error}"),
+                            );
                         }
-                        crate::diagnostics::record("INFO", format!("Waypoint ajouté: {}", pending.name.trim()));
+                        crate::diagnostics::record(
+                            "INFO",
+                            format!("Waypoint ajouté: {}", pending.name.trim()),
+                        );
                     }
                 }
                 self.dirty = true;
@@ -166,9 +172,8 @@ impl Plotter<'_> {
                     self.dirty = true;
                 }
                 Event::KeyDown {
-                    keycode: Some(
-                        sdl2::keyboard::Keycode::Return | sdl2::keyboard::Keycode::KpEnter,
-                    ),
+                    keycode:
+                        Some(sdl2::keyboard::Keycode::Return | sdl2::keyboard::Keycode::KpEnter),
                     repeat: false,
                     ..
                 } => {
@@ -297,12 +302,18 @@ impl Plotter<'_> {
                     match self.mode {
                         Mode::EditRoute => {
                             if let Err(error) = self.route.save() {
-                                crate::diagnostics::record("ERROR", format!("Erreur sauvegarde route: {error}"));
+                                crate::diagnostics::record(
+                                    "ERROR",
+                                    format!("Erreur sauvegarde route: {error}"),
+                                );
                             }
                         }
                         Mode::EditWaypoint => {
                             if let Err(error) = self.waypoints.save() {
-                                crate::diagnostics::record("ERROR", format!("Erreur sauvegarde des waypoints: {error}"));
+                                crate::diagnostics::record(
+                                    "ERROR",
+                                    format!("Erreur sauvegarde des waypoints: {error}"),
+                                );
                             }
                         }
                         Mode::Measurement => {}
@@ -539,7 +550,10 @@ impl Plotter<'_> {
         if let Some(i) = self.waypoints.find_point_at(&self.renderer, (x, y), 8) {
             self.waypoints.remove(i);
             if let Err(error) = self.waypoints.save() {
-                crate::diagnostics::record("ERROR", format!("Erreur sauvegarde des waypoints: {error}"));
+                crate::diagnostics::record(
+                    "ERROR",
+                    format!("Erreur sauvegarde des waypoints: {error}"),
+                );
             }
             self.dirty = true;
             self.mouse = Mouse::Cross;

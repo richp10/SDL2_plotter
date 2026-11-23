@@ -3,14 +3,14 @@ use std::num::NonZeroUsize;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 
+use crate::config::RenderingConfig;
 use image::{imageops, ImageBuffer, Rgba, RgbaImage};
 use lru::LruCache;
 use rusqlite::{Connection, OpenFlags};
 use sdl2::rect::{Point, Rect};
 use std::time::{Duration, Instant};
-use crate::config::RenderingConfig;
 
-const TILE_SIZE     :u32   = 256;
+const TILE_SIZE: u32 = 256;
 const ZOOM_ANIMATION_DURATION: Duration = Duration::from_millis(240);
 const ROTATION_MARGIN: u32 = 4;
 const MAP_BACKGROUND: Rgba<u8> = Rgba([245, 245, 245, 255]);
@@ -103,7 +103,12 @@ impl Drop for TileLoader {
     }
 }
 
-fn fetch_tile_bytes(conn: &Connection, z: i32, x: i64, y: i64) -> rusqlite::Result<Option<Vec<u8>>> {
+fn fetch_tile_bytes(
+    conn: &Connection,
+    z: i32,
+    x: i64,
+    y: i64,
+) -> rusqlite::Result<Option<Vec<u8>>> {
     let n = 1i64 << z; // 2^z
     let tms_y = n - 1 - y; // MBTiles utilise le schema TMS
 
@@ -161,8 +166,7 @@ impl MBTilesRenderer {
         height: u32,
         config: &RenderingConfig,
         default_map: &str,
-    ) -> rusqlite::Result<Self> 
-        {
+    ) -> rusqlite::Result<Self> {
         let (render_width, render_height) = Self::texture_dimensions(width, height);
         // Ouverture en lecture seule, equivalent de "file:...?mode=ro"
         let conn = Connection::open_with_flags(
@@ -171,7 +175,7 @@ impl MBTilesRenderer {
         )?;
 
         let mut renderer = Self {
-            tile_size : TILE_SIZE,
+            tile_size: TILE_SIZE,
             width,
             height,
             render_width,
@@ -194,13 +198,17 @@ impl MBTilesRenderer {
         };
 
         renderer.load_metadata()?;
-        renderer.zoom = renderer.nearest_zoom( zoom)
-                                .unwrap_or_else(|| renderer.clamp_zoom(zoom));
+        renderer.zoom = renderer
+            .nearest_zoom(zoom)
+            .unwrap_or_else(|| renderer.clamp_zoom(zoom));
         renderer.display_zoom = renderer.zoom as f64;
-        crate::diagnostics::record("DEBUG", format!("Zoom initial {} pour {mbtiles_path}", renderer.zoom));
+        crate::diagnostics::record(
+            "DEBUG",
+            format!("Zoom initial {} pour {mbtiles_path}", renderer.zoom),
+        );
 
         Ok(renderer)
-        }
+    }
 
     pub fn texture_dimensions(width: u32, height: u32) -> (u32, u32) {
         let side = ((width as f64).hypot(height as f64)).ceil() as u32 + ROTATION_MARGIN;
@@ -230,7 +238,8 @@ impl MBTilesRenderer {
     pub fn texture_rect(&self) -> Rect {
         let display_rect = self.render_rect();
         let zoom_scale = 2.0_f64.powf(self.display_zoom - self.source_zoom() as f64);
-        let (width, height) = source_dimensions(display_rect.width(), display_rect.height(), zoom_scale);
+        let (width, height) =
+            source_dimensions(display_rect.width(), display_rect.height(), zoom_scale);
         Rect::new(
             (self.render_width - width) as i32 / 2,
             (self.render_height - height) as i32 / 2,
@@ -259,43 +268,41 @@ impl MBTilesRenderer {
         let origin_x = source_center_x - view_width as f64 / zoom_scale / 2.0;
         let origin_y = source_center_y - view_height as f64 / zoom_scale / 2.0;
 
-        let first_tx = (origin_x / tile_size).floor() as i64 - self.rendering_config.prefetch_margin;
-        let first_ty = (origin_y / tile_size).floor() as i64 - self.rendering_config.prefetch_margin;
-        let last_tx = ((origin_x + view_width as f64 / zoom_scale) / tile_size).floor() as i64 + self.rendering_config.prefetch_margin;
-        let last_ty = ((origin_y + view_height as f64 / zoom_scale) / tile_size).floor() as i64 + self.rendering_config.prefetch_margin;
+        let first_tx =
+            (origin_x / tile_size).floor() as i64 - self.rendering_config.prefetch_margin;
+        let first_ty =
+            (origin_y / tile_size).floor() as i64 - self.rendering_config.prefetch_margin;
+        let last_tx = ((origin_x + view_width as f64 / zoom_scale) / tile_size).floor() as i64
+            + self.rendering_config.prefetch_margin;
+        let last_ty = ((origin_y + view_height as f64 / zoom_scale) / tile_size).floor() as i64
+            + self.rendering_config.prefetch_margin;
 
         let mut requested = 0;
-        for tx in first_tx..=last_tx
-            {
-            for ty in first_ty..=last_ty
-                {
-                if ty < 0 || ty >= n_tiles
-                    {
+        for tx in first_tx..=last_tx {
+            for ty in first_ty..=last_ty {
+                if ty < 0 || ty >= n_tiles {
                     continue;
-                    }
+                }
                 let key = (source_zoom, tx.rem_euclid(n_tiles), ty);
-                if self.cache.contains(&key) || self.loader.is_pending(&key)
-                    {
+                if self.cache.contains(&key) || self.loader.is_pending(&key) {
                     continue;
-                    }
-                if requested >= budget
-                    {
+                }
+                if requested >= budget {
                     return true; // il en reste
-                    }
+                }
                 self.loader.request(key);
                 requested += 1;
-                }
             }
-        !self.loader.in_flight.is_empty()
         }
+        !self.loader.in_flight.is_empty()
+    }
 
-    fn nearest_zoom(&self, target: i32) -> Option<i32> 
-        {
+    fn nearest_zoom(&self, target: i32) -> Option<i32> {
         self.available_zooms
             .iter()
             .copied()
             .min_by_key(|&z| (z - target).abs())
-        }
+    }
 
     fn source_zoom(&self) -> i32 {
         source_zoom_for(self.display_zoom, &self.available_zooms, self.zoom)
@@ -318,9 +325,8 @@ impl MBTilesRenderer {
             return false;
         };
 
-        let progress = (started_at.elapsed().as_secs_f64()
-            / ZOOM_ANIMATION_DURATION.as_secs_f64())
-        .min(1.0);
+        let progress =
+            (started_at.elapsed().as_secs_f64() / ZOOM_ANIMATION_DURATION.as_secs_f64()).min(1.0);
         let eased = smooth_zoom_progress(progress);
         let next_zoom = start_zoom + (self.zoom as f64 - start_zoom) * eased;
         let scale = 2.0_f64.powf(next_zoom - self.display_zoom);
@@ -346,38 +352,34 @@ impl MBTilesRenderer {
     pub fn course_to_screen(&self, course: f64) -> f64 {
         course_to_screen(course, self.rotation)
     }
-        
+
     /// Moves to the next available zoom level. At the chart's maximum zoom
     /// nothing changes: the tile cache and view are kept as they are.
-    pub fn zoom_increase(&mut self) -> i32
-        {
-        if let Some(i) = self.available_zooms.iter().position(|&z| z == self.zoom)
-            {
-            if let Some(&next) = self.available_zooms.get(i + 1)
-                {
+    pub fn zoom_increase(&mut self) -> i32 {
+        if let Some(i) = self.available_zooms.iter().position(|&z| z == self.zoom) {
+            if let Some(&next) = self.available_zooms.get(i + 1) {
                 self.set_zoom(next);
-                }
             }
-        self.zoom
         }
-    
-    pub fn zoom_decrease(&mut self) -> i32
-        {
-        if let Some(i) = self.available_zooms.iter().position(|&z| z == self.zoom) 
-            {
-            if let Some(&prev) = i.checked_sub(1).and_then(|j| self.available_zooms.get(j)) 
-                {
+        self.zoom
+    }
+
+    pub fn zoom_decrease(&mut self) -> i32 {
+        if let Some(i) = self.available_zooms.iter().position(|&z| z == self.zoom) {
+            if let Some(&prev) = i.checked_sub(1).and_then(|j| self.available_zooms.get(j)) {
                 self.set_zoom(prev);
-                }
-            else{
-                crate::diagnostics::record("DEBUG", "Zoom minimal atteint, retour à la carte par défaut");
+            } else {
+                crate::diagnostics::record(
+                    "DEBUG",
+                    "Zoom minimal atteint, retour à la carte par défaut",
+                );
                 let fallback_map = self.default_map.clone();
                 let _ = self.change_map(&fallback_map);
-                }
             }
-        self.zoom
         }
-        
+        self.zoom
+    }
+
     pub fn change_map(&mut self, mbtiles_path: &str) -> rusqlite::Result<()> {
         // Position GPS actuellement affichée au centre de l'écran
         let (lon, lat) = self.pixel_to_lonlat(self.last_center.0, self.last_center.1);
@@ -400,7 +402,7 @@ impl MBTilesRenderer {
         *self = new_renderer;
         Ok(())
     }
-    
+
     /// Position to show when no position has been saved yet. Prefers the
     /// centre of the tiles actually present, then the chart metadata, and
     /// finally (0, 0) so that a sparse or empty chart never stops startup.
@@ -426,8 +428,8 @@ impl MBTilesRenderer {
         }
     }
 
-/// Centre calculé à partir des tuiles réellement présentes au zoom min.
-/// Gère les cartes qui chevauchent l'antiméridien (Pacifique).
+    /// Centre calculé à partir des tuiles réellement présentes au zoom min.
+    /// Gère les cartes qui chevauchent l'antiméridien (Pacifique).
     pub fn tiles_center(&self) -> Option<(f64, f64)> {
         let z = self.min_zoom;
         let n = (1i64 << z) as f64;
@@ -436,7 +438,9 @@ impl MBTilesRenderer {
         // Colonnes occupées (triées)
         let mut stmt = self
             .conn
-            .prepare("SELECT DISTINCT tile_column FROM tiles WHERE zoom_level=?1 ORDER BY tile_column")
+            .prepare(
+                "SELECT DISTINCT tile_column FROM tiles WHERE zoom_level=?1 ORDER BY tile_column",
+            )
             .ok()?;
         let cols: Vec<i64> = stmt
             .query_map([z], |r| r.get::<_, i64>(0))
@@ -452,7 +456,11 @@ impl MBTilesRenderer {
         let mut start = cols[0]; // première colonne après le trou
         for i in 0..cols.len() {
             let cur = cols[i];
-            let next = if i + 1 < cols.len() { cols[i + 1] } else { cols[0] + ni };
+            let next = if i + 1 < cols.len() {
+                cols[i + 1]
+            } else {
+                cols[0] + ni
+            };
             let gap = next - cur - 1;
             if gap > best_gap {
                 best_gap = gap;
@@ -477,28 +485,19 @@ impl MBTilesRenderer {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .ok()?;
-        let y_top = (ni - 1 - rmax) as f64;       // bord nord
+        let y_top = (ni - 1 - rmax) as f64; // bord nord
         let y_bottom = (ni - 1 - rmin) as f64 + 1.0; // bord sud
         let y_mid = (y_top + y_bottom) / 2.0;
 
         let merc = std::f64::consts::PI * (1.0 - 2.0 * y_mid / n);
         let lat = merc.sinh().atan().to_degrees();
         Some((lon, lat))
-    } 
+    }
 
-
-    pub fn get_raw_rgba(
-        &mut self,
-        lon: f64,
-        lat: f64,
-        offset: (i32, i32),
-    ) -> (Vec<u8>, Rect) {
+    pub fn get_raw_rgba(&mut self, lon: f64, lat: f64, offset: (i32, i32)) -> (Vec<u8>, Rect) {
         let (mut center_x, mut center_y) = self.lonlat_to_pixel(lon, lat);
-        let (offset_x, offset_y) = screen_to_world_delta(
-            offset.0 as f64,
-            offset.1 as f64,
-            self.rotation,
-        );
+        let (offset_x, offset_y) =
+            screen_to_world_delta(offset.0 as f64, offset.1 as f64, self.rotation);
         center_x -= offset_x;
         center_y -= offset_y;
         self.last_center = (center_x, center_y); // mémorisé pour gps_to_screen()
@@ -510,34 +509,30 @@ impl MBTilesRenderer {
         let (center_x, center_y) = self.project(center.0, center.1);
         let (offset_x, offset_y) =
             screen_to_world_delta(offset.0 as f64, offset.1 as f64, self.rotation);
-        self.pixel_to_lonlat(
-            center_x - offset_x,
-            center_y - offset_y,
-        )
+        self.pixel_to_lonlat(center_x - offset_x, center_y - offset_y)
     }
 
-    pub fn gps_to_point(&self, pos: (f64,f64)) -> Point
-        {
+    pub fn gps_to_point(&self, pos: (f64, f64)) -> Point {
         let (world_x, world_y) = self.project(pos.0, pos.1);
-        let (x, y) =
-            self.world_to_screen(world_x, world_y, self.last_center.0, self.last_center.1);
+        let (x, y) = self.world_to_screen(world_x, world_y, self.last_center.0, self.last_center.1);
         Point::new(x as i32, y as i32)
-        }
-    
-    pub fn screen_to_gps(&self, dx:i32, dy:i32) -> (f64,f64) {
-        let (offset_x, offset_y) =
-            screen_to_world_delta(dx as f64, dy as f64, self.rotation);
+    }
+
+    pub fn screen_to_gps(&self, dx: i32, dy: i32) -> (f64, f64) {
+        let (offset_x, offset_y) = screen_to_world_delta(dx as f64, dy as f64, self.rotation);
         let (x, y) = (self.last_center.0, self.last_center.1);
         let (new_lon, new_lat) = self.pixel_to_lonlat(x - offset_x, y - offset_y);
-        (new_lon,new_lat)
-        }
+        (new_lon, new_lat)
+    }
 
-    fn world_to_screen(&self, world_x: f64, world_y: f64, center_x: f64, center_y: f64) -> (i64, i64) {
-        let (x, y) = world_to_screen_delta(
-            world_x - center_x,
-            world_y - center_y,
-            self.rotation,
-        );
+    fn world_to_screen(
+        &self,
+        world_x: f64,
+        world_y: f64,
+        center_x: f64,
+        center_y: f64,
+    ) -> (i64, i64) {
+        let (x, y) = world_to_screen_delta(world_x - center_x, world_y - center_y, self.rotation);
         (
             (x + self.width as f64 / 2.0).round() as i64,
             (y + self.height as f64 / 2.0).round() as i64,
@@ -574,7 +569,10 @@ impl MBTilesRenderer {
             }
         }
 
-        self.tile_format = meta.get("format").cloned().unwrap_or_else(|| "png".to_string());
+        self.tile_format = meta
+            .get("format")
+            .cloned()
+            .unwrap_or_else(|| "png".to_string());
 
         let parsed_min = meta.get("minzoom").and_then(|v| v.parse::<i32>().ok());
         let parsed_max = meta.get("maxzoom").and_then(|v| v.parse::<i32>().ok());
@@ -597,15 +595,15 @@ impl MBTilesRenderer {
 
         self.metadata = meta;
         let mut zooms: Vec<i32> = Vec::new();
-            if let Ok(mut stmt) = self
-                .conn
-                .prepare("SELECT DISTINCT zoom_level FROM tiles ORDER BY zoom_level")
-            {
-                if let Ok(rows) = stmt.query_map([], |row| row.get::<_, i32>(0)) {
-                    zooms = rows.flatten().collect();
-                }
+        if let Ok(mut stmt) = self
+            .conn
+            .prepare("SELECT DISTINCT zoom_level FROM tiles ORDER BY zoom_level")
+        {
+            if let Ok(rows) = stmt.query_map([], |row| row.get::<_, i32>(0)) {
+                zooms = rows.flatten().collect();
             }
-            self.available_zooms = zooms;
+        }
+        self.available_zooms = zooms;
         Ok(())
     }
 
@@ -658,8 +656,7 @@ impl MBTilesRenderer {
         let origin_x = center_x - width as f64 / 2.0;
         let origin_y = center_y - height as f64 / 2.0;
 
-        let mut canvas: RgbaImage =
-            ImageBuffer::from_pixel(width, height, MAP_BACKGROUND);
+        let mut canvas: RgbaImage = ImageBuffer::from_pixel(width, height, MAP_BACKGROUND);
 
         let first_tx = (origin_x / tile_size).floor() as i64;
         let first_ty = (origin_y / tile_size).floor() as i64;
@@ -691,15 +688,13 @@ impl MBTilesRenderer {
         canvas
     }
 
-    fn project(&self, lon: f64, lat: f64) -> (f64, f64) 
-        {
+    fn project(&self, lon: f64, lat: f64) -> (f64, f64) {
         let (x, y) = project_norm(lon, lat);
         let scale = self.tile_size as f64 * 2.0_f64.powf(self.display_zoom);
         (x * scale, y * scale)
-        }
-    
-    pub fn norm_to_point(&self, nx: f64, ny: f64) -> Point 
-        {
+    }
+
+    pub fn norm_to_point(&self, nx: f64, ny: f64) -> Point {
         let scale = self.tile_size as f64 * 2.0_f64.powf(self.display_zoom);
         let (x, y) = self.world_to_screen(
             nx * scale,
@@ -707,11 +702,8 @@ impl MBTilesRenderer {
             self.last_center.0,
             self.last_center.1,
         );
-        Point::new(
-            x as i32,
-            y as i32,
-            )
-        }
+        Point::new(x as i32, y as i32)
+    }
 }
 
 /// Reads a chart centre from MBTiles metadata: the `center` key
@@ -846,10 +838,8 @@ mod tests {
 
     #[test]
     fn course_arrow_points_up_when_course_up_is_enabled() {
-        let screen_course = course_to_screen(
-            std::f64::consts::FRAC_PI_2,
-            std::f64::consts::FRAC_PI_2,
-        );
+        let screen_course =
+            course_to_screen(std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2);
         assert!(screen_course.abs() < 1e-12);
     }
 
@@ -882,7 +872,10 @@ mod tests {
         ));
         let mut png = Vec::new();
         RgbaImage::from_pixel(TILE_SIZE, TILE_SIZE, colour)
-            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageOutputFormat::Png)
+            .write_to(
+                &mut std::io::Cursor::new(&mut png),
+                image::ImageOutputFormat::Png,
+            )
             .unwrap();
 
         let conn = Connection::open(&path).unwrap();
@@ -895,11 +888,8 @@ mod tests {
             let n = 1i64 << z;
             for x in 0..n {
                 for y in 0..n {
-                    conn.execute(
-                        "INSERT INTO tiles VALUES (?1, ?2, ?3, ?4)",
-                        (z, x, y, &png),
-                    )
-                    .unwrap();
+                    conn.execute("INSERT INTO tiles VALUES (?1, ?2, ?3, ?4)", (z, x, y, &png))
+                        .unwrap();
                 }
             }
         }
@@ -915,7 +905,12 @@ mod tests {
         let (pixels, rect) = renderer.get_raw_rgba(0.0, 0.0, (0, 0));
         let (width, height) = (rect.width() as usize, rect.height() as usize);
         let index = ((height / 2) * width + width / 2) * 4;
-        Rgba([pixels[index], pixels[index + 1], pixels[index + 2], pixels[index + 3]])
+        Rgba([
+            pixels[index],
+            pixels[index + 1],
+            pixels[index + 2],
+            pixels[index + 3],
+        ])
     }
 
     #[test]
@@ -957,11 +952,8 @@ mod tests {
         let path = fixture_chart(&[]);
         let path_str = path.to_str().unwrap();
         let conn = Connection::open(&path).unwrap();
-        conn.execute(
-            "INSERT INTO metadata VALUES ('bounds', '-10,50,0,60')",
-            [],
-        )
-        .unwrap();
+        conn.execute("INSERT INTO metadata VALUES ('bounds', '-10,50,0,60')", [])
+            .unwrap();
         drop(conn);
 
         let renderer =
@@ -978,10 +970,13 @@ mod tests {
     /// The real charts to benchmark against that are present (they are
     /// gitignored): path and the zoom to render at.
     fn bench_charts() -> Vec<(&'static str, i32)> {
-        [("map/OpenSeaMap-test.mbtiles", 8), ("assets/OSM.mbtiles", 6)]
-            .into_iter()
-            .filter(|(path, _)| std::path::Path::new(path).exists())
-            .collect()
+        [
+            ("map/OpenSeaMap-test.mbtiles", 8),
+            ("assets/OSM.mbtiles", 6),
+        ]
+        .into_iter()
+        .filter(|(path, _)| std::path::Path::new(path).exists())
+        .collect()
     }
 
     fn median(mut samples: Vec<Duration>) -> Duration {
@@ -999,31 +994,31 @@ mod tests {
     #[ignore]
     fn bench_render_frame_cold_and_warm() {
         for (path, zoom) in bench_charts() {
-        let config = RenderingConfig::default();
-        let probe = MBTilesRenderer::new(path, zoom, 1600, 800, &config, path).unwrap();
-        let (lon, lat) = probe.tiles_center().unwrap();
+            let config = RenderingConfig::default();
+            let probe = MBTilesRenderer::new(path, zoom, 1600, 800, &config, path).unwrap();
+            let (lon, lat) = probe.tiles_center().unwrap();
 
-        let cold = median(
-            (0..5)
-                .map(|_| {
-                    let mut renderer =
-                        MBTilesRenderer::new(path, zoom, 1600, 800, &config, path).unwrap();
-                    timed(|| renderer.get_raw_rgba(lon, lat, (0, 0))).1
-                })
-                .collect(),
-        );
-        let mut renderer = MBTilesRenderer::new(path, zoom, 1600, 800, &config, path).unwrap();
-        renderer.get_raw_rgba(lon, lat, (0, 0));
-        let warm = median(
-            (0..20)
-                .map(|_| timed(|| renderer.get_raw_rgba(lon, lat, (0, 0))).1)
-                .collect(),
-        );
-        println!(
-            "bench render 1600x800 {path} z{}: cold {cold:?}, warm {warm:?}, {} tiles cached",
-            renderer.zoom,
-            renderer.cache.len()
-        );
+            let cold = median(
+                (0..5)
+                    .map(|_| {
+                        let mut renderer =
+                            MBTilesRenderer::new(path, zoom, 1600, 800, &config, path).unwrap();
+                        timed(|| renderer.get_raw_rgba(lon, lat, (0, 0))).1
+                    })
+                    .collect(),
+            );
+            let mut renderer = MBTilesRenderer::new(path, zoom, 1600, 800, &config, path).unwrap();
+            renderer.get_raw_rgba(lon, lat, (0, 0));
+            let warm = median(
+                (0..20)
+                    .map(|_| timed(|| renderer.get_raw_rgba(lon, lat, (0, 0))).1)
+                    .collect(),
+            );
+            println!(
+                "bench render 1600x800 {path} z{}: cold {cold:?}, warm {warm:?}, {} tiles cached",
+                renderer.zoom,
+                renderer.cache.len()
+            );
         }
     }
 
@@ -1031,17 +1026,17 @@ mod tests {
     #[ignore]
     fn bench_prefetch_step_of_eight_tiles() {
         for (path, zoom) in bench_charts() {
-        let config = RenderingConfig::default();
-        let samples = (0..5)
-            .map(|_| {
-                let mut renderer =
-                    MBTilesRenderer::new(path, zoom, 1600, 800, &config, path).unwrap();
-                let (lon, lat) = renderer.tiles_center().unwrap();
-                renderer.last_center = renderer.project(lon, lat);
-                timed(|| renderer.prefetch_step(8)).1
-            })
-            .collect();
-        println!("bench prefetch_step(8) cold {path}: {:?}", median(samples));
+            let config = RenderingConfig::default();
+            let samples = (0..5)
+                .map(|_| {
+                    let mut renderer =
+                        MBTilesRenderer::new(path, zoom, 1600, 800, &config, path).unwrap();
+                    let (lon, lat) = renderer.tiles_center().unwrap();
+                    renderer.last_center = renderer.project(lon, lat);
+                    timed(|| renderer.prefetch_step(8)).1
+                })
+                .collect();
+            println!("bench prefetch_step(8) cold {path}: {:?}", median(samples));
         }
     }
 
@@ -1049,28 +1044,31 @@ mod tests {
     #[ignore]
     fn bench_single_tile_decode() {
         for (path, zoom) in bench_charts() {
-        let renderer =
-            MBTilesRenderer::new(path, zoom, 1600, 800, &RenderingConfig::default(), path)
+            let renderer =
+                MBTilesRenderer::new(path, zoom, 1600, 800, &RenderingConfig::default(), path)
+                    .unwrap();
+            let (lon, lat) = renderer.tiles_center().unwrap();
+            let (x, y) = renderer.project(lon, lat);
+            let (tx, ty) = ((x / 256.0) as i64, (y / 256.0) as i64);
+            let bytes = renderer
+                .fetch_tile_bytes(renderer.zoom, tx, ty)
+                .unwrap()
                 .unwrap();
-        let (lon, lat) = renderer.tiles_center().unwrap();
-        let (x, y) = renderer.project(lon, lat);
-        let (tx, ty) = ((x / 256.0) as i64, (y / 256.0) as i64);
-        let bytes = renderer.fetch_tile_bytes(renderer.zoom, tx, ty).unwrap().unwrap();
-        let fetch = median(
-            (0..20)
-                .map(|_| timed(|| renderer.fetch_tile_bytes(renderer.zoom, tx, ty)).1)
-                .collect(),
-        );
-        let decode = median(
-            (0..20)
-                .map(|_| timed(|| image::load_from_memory(&bytes).unwrap().to_rgba8()).1)
-                .collect(),
-        );
-        println!(
-            "bench tile {path} z{} ({} bytes): sqlite fetch {fetch:?}, png decode {decode:?}",
-            renderer.zoom,
-            bytes.len()
-        );
+            let fetch = median(
+                (0..20)
+                    .map(|_| timed(|| renderer.fetch_tile_bytes(renderer.zoom, tx, ty)).1)
+                    .collect(),
+            );
+            let decode = median(
+                (0..20)
+                    .map(|_| timed(|| image::load_from_memory(&bytes).unwrap().to_rgba8()).1)
+                    .collect(),
+            );
+            println!(
+                "bench tile {path} z{} ({} bytes): sqlite fetch {fetch:?}, png decode {decode:?}",
+                renderer.zoom,
+                bytes.len()
+            );
         }
     }
 
@@ -1090,13 +1088,20 @@ mod tests {
 
         let deadline = Instant::now() + Duration::from_secs(15);
         while renderer.cache.len() < 20 {
-            assert!(Instant::now() < deadline, "only {} tiles arrived", renderer.cache.len());
+            assert!(
+                Instant::now() < deadline,
+                "only {} tiles arrived",
+                renderer.cache.len()
+            );
             std::thread::sleep(Duration::from_millis(10));
             renderer.prefetch_step(64);
         }
         // Decoding twenty or more PNG tiles synchronously takes far longer
         // than this, even in release; the caller must only enqueue work.
-        assert!(first_call < Duration::from_millis(50), "prefetch_step took {first_call:?}");
+        assert!(
+            first_call < Duration::from_millis(50),
+            "prefetch_step took {first_call:?}"
+        );
         drop(renderer);
         std::fs::remove_file(path).unwrap();
     }
@@ -1123,10 +1128,9 @@ mod tests {
     }
 }
 
-pub fn project_norm(lon: f64, lat: f64) -> (f64, f64) 
-    {
+pub fn project_norm(lon: f64, lat: f64) -> (f64, f64) {
     let lat_rad = lat.to_radians();
     let x = (lon + 180.0) / 360.0;
     let y = (1.0 - (lat_rad.tan() + 1.0 / lat_rad.cos()).ln() / std::f64::consts::PI) / 2.0;
     (x, y)
-    }
+}

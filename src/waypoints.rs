@@ -1,10 +1,6 @@
 use sdl2::gfx::primitives::DrawRenderer;
 use serde::{Deserialize, Serialize};
-use std::{
-    fs,
-    io,
-    path::Path,
-};
+use std::{fs, io, path::Path};
 
 use crate::mbtiles_renderer::MBTilesRenderer;
 use crate::screen::Map;
@@ -37,15 +33,14 @@ impl Waypoints {
     }
 
     pub fn add(&mut self, pos: (f64, f64), name: String) {
-        
         let (longitude, latitude) = pos;
         if !longitude.is_finite()
-			|| !latitude.is_finite()
-			|| !(-180.0..=180.0).contains(&longitude)
-			|| !(-90.0..=90.0).contains(&latitude)
-			{
-			return;
-			}
+            || !latitude.is_finite()
+            || !(-180.0..=180.0).contains(&longitude)
+            || !(-90.0..=90.0).contains(&latitude)
+        {
+            return;
+        }
         self.waypoints.push(Waypoint {
             lon: longitude,
             lat: latitude,
@@ -53,7 +48,7 @@ impl Waypoints {
         });
     }
 
-    pub fn modify(&mut self, i:usize, pos: (f64, f64)) {
+    pub fn modify(&mut self, i: usize, pos: (f64, f64)) {
         let (longitude, latitude) = pos;
         if let Some(waypoint) = self.waypoints.get_mut(i) {
             waypoint.lon = longitude;
@@ -61,26 +56,26 @@ impl Waypoints {
         }
     }
 
-	pub fn find_point_at(
-		&self,
-		renderer: &MBTilesRenderer,
-		mouse: (i32, i32),
-		radius: i32,
-		) -> Option<usize> {
-			let r2 = (radius as i64) * (radius as i64);
-			self.waypoints
-				.iter()
-				.enumerate()
-				.map(|(i, waypoint)| {
-					let pt = renderer.gps_to_point((waypoint.lon, waypoint.lat));
-					let dx = pt.x as i64 - mouse.0 as i64;
-					let dy = pt.y as i64 - mouse.1 as i64;
-					(i, dx * dx + dy * dy)
-				})
-				.filter(|&(_, d2)| d2 <= r2)
-				.min_by_key(|&(_, d2)| d2)
-				.map(|(i, _)| i)
-				}
+    pub fn find_point_at(
+        &self,
+        renderer: &MBTilesRenderer,
+        mouse: (i32, i32),
+        radius: i32,
+    ) -> Option<usize> {
+        let r2 = (radius as i64) * (radius as i64);
+        self.waypoints
+            .iter()
+            .enumerate()
+            .map(|(i, waypoint)| {
+                let pt = renderer.gps_to_point((waypoint.lon, waypoint.lat));
+                let dx = pt.x as i64 - mouse.0 as i64;
+                let dy = pt.y as i64 - mouse.1 as i64;
+                (i, dx * dx + dy * dy)
+            })
+            .filter(|&(_, d2)| d2 <= r2)
+            .min_by_key(|&(_, d2)| d2)
+            .map(|(i, _)| i)
+    }
 
     pub fn remove(&mut self, i: usize) {
         self.waypoints.remove(i);
@@ -93,7 +88,8 @@ impl Waypoints {
                 continue; // off screen: the i16 primitives would wrap the coordinates
             };
             let color = sdl2::pixels::Color::RGB(220, 30, 30);
-            map.canvas.filled_trigon(x - 5, y - 9, x + 5, y - 9, x, y, color)?;
+            map.canvas
+                .filled_trigon(x - 5, y - 9, x + 5, y - 9, x, y, color)?;
             map.canvas.filled_circle(x, y - 11, 6, color)?;
             map.canvas
                 .filled_circle(x, y - 11, 2, sdl2::pixels::Color::WHITE)?;
@@ -130,8 +126,10 @@ impl Waypoints {
 
     pub fn export_gpx(&self, path: &Path) -> io::Result<()> {
         let mut gpx = String::new();
-        gpx.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>
-");
+        gpx.push_str(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+",
+        );
         gpx.push_str("<gpx version=\"1.1\" creator=\"SDL2 Plotter\" xmlns=\"http://www.topografix.com/GPX/1/1\">
 ");
         for waypoint in &self.waypoints {
@@ -143,8 +141,10 @@ impl Waypoints {
                 escape_xml(&waypoint.name)
             ));
         }
-        gpx.push_str("</gpx>
-");
+        gpx.push_str(
+            "</gpx>
+",
+        );
         crate::geo_data::atomic_write(path, gpx.as_bytes())
     }
 
@@ -153,7 +153,6 @@ impl Waypoints {
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         crate::geo_data::atomic_write(path, json.as_bytes())
     }
-
 }
 
 fn escape_xml(value: &str) -> String {
@@ -223,8 +222,10 @@ mod tests {
 
     #[test]
     fn loads_waypoints_without_names() {
-        let path =
-            std::env::temp_dir().join(format!("plotter-waypoints-legacy-{}.json", std::process::id()));
+        let path = std::env::temp_dir().join(format!(
+            "plotter-waypoints-legacy-{}.json",
+            std::process::id()
+        ));
         fs::write(&path, r#"[{"lon":178.1,"lat":-17.7}]"#).unwrap();
         let mut loaded = Waypoints {
             waypoints: Vec::new(),

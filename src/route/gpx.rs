@@ -10,22 +10,38 @@ fn xml_escape(s: &str) -> String {
 
 pub fn save_route_gpx(path: &Path, name: &str, route: &[(f64, f64)]) -> std::io::Result<()> {
     let mut gpx = String::new();
-    gpx.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>
-");
-    gpx.push_str("<gpx version=\"1.1\" creator=\"ma_carte\" xmlns=\"http://www.topografix.com/GPX/1/1\">
-");
-    gpx.push_str("  <rte>
-");
-    gpx.push_str(&format!("    <name>{}</name>
-", xml_escape(name)));
+    gpx.push_str(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+",
+    );
+    gpx.push_str(
+        "<gpx version=\"1.1\" creator=\"ma_carte\" xmlns=\"http://www.topografix.com/GPX/1/1\">
+",
+    );
+    gpx.push_str(
+        "  <rte>
+",
+    );
+    gpx.push_str(&format!(
+        "    <name>{}</name>
+",
+        xml_escape(name)
+    ));
     for &(lon, lat) in route {
-        gpx.push_str(&format!("    <rtept lat=\"{:.6}\" lon=\"{:.6}\"/>
-", lat, lon));
+        gpx.push_str(&format!(
+            "    <rtept lat=\"{:.6}\" lon=\"{:.6}\"/>
+",
+            lat, lon
+        ));
     }
-    gpx.push_str("  </rte>
-");
-    gpx.push_str("</gpx>
-");
+    gpx.push_str(
+        "  </rte>
+",
+    );
+    gpx.push_str(
+        "</gpx>
+",
+    );
     crate::geo_data::atomic_write(path, gpx.as_bytes())
 }
 

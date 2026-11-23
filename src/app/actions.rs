@@ -54,9 +54,15 @@ impl Plotter<'_> {
                 let path = Path::new("export")
                     .join(format!("Route-{}.gpx", now.format("%Y-%m-%d_%H-%M-%S")));
                 match self.route.export_gpx(&path) {
-                    Ok(()) => crate::diagnostics::record("INFO", format!("Route exportée: {}", path.display())),
+                    Ok(()) => crate::diagnostics::record(
+                        "INFO",
+                        format!("Route exportée: {}", path.display()),
+                    ),
                     Err(error) => {
-                        crate::diagnostics::record("ERROR", format!("Erreur export route GPX: {error}"));
+                        crate::diagnostics::record(
+                            "ERROR",
+                            format!("Erreur export route GPX: {error}"),
+                        );
                     }
                 }
             }
@@ -65,22 +71,30 @@ impl Plotter<'_> {
                 let path = Path::new("export")
                     .join(format!("Track-{}.gpx", now.format("%Y-%m-%d_%H-%M-%S")));
                 match self.track.export_gpx(&path) {
-                    Ok(()) => crate::diagnostics::record("INFO", format!("Trace exportée: {}", path.display())),
+                    Ok(()) => crate::diagnostics::record(
+                        "INFO",
+                        format!("Trace exportée: {}", path.display()),
+                    ),
                     Err(error) => {
-                        crate::diagnostics::record("ERROR", format!("Erreur export trace GPX: {error}"));
+                        crate::diagnostics::record(
+                            "ERROR",
+                            format!("Erreur export trace GPX: {error}"),
+                        );
                     }
                 }
             }
             AppAction::ClearWaypoints => {
-                self.confirm_dialog
-                    .request(ConfirmAction::ClearWaypoints);
+                self.confirm_dialog.request(ConfirmAction::ClearWaypoints);
             }
             AppAction::ExportWaypointsGpx => {
                 let now = Local::now();
                 let path = Path::new("export")
                     .join(format!("Waypoints-{}.gpx", now.format("%Y-%m-%d_%H-%M-%S")));
                 match self.waypoints.export_gpx(&path) {
-                    Ok(()) => crate::diagnostics::record("INFO", format!("Waypoints exportés: {}", path.display())),
+                    Ok(()) => crate::diagnostics::record(
+                        "INFO",
+                        format!("Waypoints exportés: {}", path.display()),
+                    ),
                     Err(error) => {
                         crate::diagnostics::record(
                             "ERROR",
@@ -145,8 +159,7 @@ impl Plotter<'_> {
             }
             ConfirmAction::ClearTrack => {
                 self.track.reset();
-                self.track
-                    .save_default_track(Path::new(DEFAULT_TRACK_PATH));
+                self.track.save_default_track(Path::new(DEFAULT_TRACK_PATH));
             }
             ConfirmAction::ClearWaypoints => {
                 self.waypoints.reset();

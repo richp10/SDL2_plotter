@@ -78,7 +78,10 @@ mod tests {
         let mut stale = AisTarget::new("vessels.stale".to_string());
         stale.last_update = now - TARGET_TIMEOUT - Duration::from_secs(1);
         targets.insert(stale.context.clone(), stale);
-        targets.insert("vessels.fresh".to_string(), AisTarget::new("vessels.fresh".to_string()));
+        targets.insert(
+            "vessels.fresh".to_string(),
+            AisTarget::new("vessels.fresh".to_string()),
+        );
 
         assert!(retain_fresh(&mut targets, now));
         assert_eq!(targets.len(), 1);

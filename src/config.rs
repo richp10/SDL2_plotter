@@ -174,7 +174,10 @@ impl AppConfig {
             || self.appearance.cog_length <= 0.0
             || self.appearance.cog_length > i16::MAX as f64
         {
-            bail!("Les tailles de appearance doivent être positives et cog_length ne pas dépasser {}", i16::MAX);
+            bail!(
+                "Les tailles de appearance doivent être positives et cog_length ne pas dépasser {}",
+                i16::MAX
+            );
         }
         if self.rendering.tile_cache_size == 0
             || !(0..=16).contains(&self.rendering.prefetch_margin)

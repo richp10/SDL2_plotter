@@ -1,44 +1,43 @@
+use crate::config::FontConfig;
 use sdl2::pixels::Color;
 use sdl2::rect::Rect;
 use sdl2::render::{BlendMode, WindowCanvas};
 use sdl2::ttf::{Font, Sdl2TtfContext};
-use crate::config::FontConfig;
-
 
 const COLOR: Color = Color::RGBA(220, 220, 220, 200);
 const HOVER_COLOR: Color = Color::RGB(170, 195, 230);
 const BORDER_COLOR: Color = Color::RGB(120, 120, 120);
 
-const ITEM_WIDTH: u32   = 96; // largeur d'un titre dans la barre
-const MENU_WIDTH: u32   = 170; // largeur d'un menu déroulant
+const ITEM_WIDTH: u32 = 96; // largeur d'un titre dans la barre
+const MENU_WIDTH: u32 = 170; // largeur d'un menu déroulant
 const ENTRY_HEIGHT: u32 = 28; // hauteur d'une entrée du menu
-const HEIGHT: u32       = 32; // hauteur de la barre
+const HEIGHT: u32 = 32; // hauteur de la barre
 
-pub const EDIT_ROUTE: &str  = "Edit Route";
-pub const EDIT_WP: &str     = "Edit Waypoint";
+pub const EDIT_ROUTE: &str = "Edit Route";
+pub const EDIT_WP: &str = "Edit Waypoint";
 pub const EDIT_MESURE: &str = "Measurement";
 pub const CLEAR_ROUTE: &str = "Clear Route";
-pub const GOTO: &str        = "From Boat";
-pub const PREVIOUS: &str    = "Previous Wp";
-pub const NEXT: &str        = "Next Wp";
-pub const QUITTE: &str      = "Exit";
+pub const GOTO: &str = "From Boat";
+pub const PREVIOUS: &str = "Previous Wp";
+pub const NEXT: &str = "Next Wp";
+pub const QUITTE: &str = "Exit";
 pub const CLEAR_TRACK: &str = "Clear Track";
 pub const EXPORT_ROUTE_GPX: &str = "Export Route GPX";
 pub const EXPORT_TRACK_GPX: &str = "Export Track GPX";
-pub const CLEAR_WP: &str    = "Clear Waypoint";
+pub const CLEAR_WP: &str = "Clear Waypoint";
 pub const EXPORT_WP_GPX: &str = "Export Waypoints GPX";
-pub const SHOW_WP: &str     = "Show Waypoint";
-pub const HIDE_WP: &str     = "Hide Waypoint";
-pub const SHOW_TRACK: &str  = "Show Track";
-pub const HIDE_TRACK: &str  = "Hide Track";
-pub const SHOW_ROUTE: &str  = "Show Route";
-pub const HIDE_ROUTE: &str  = "Hide Route";
-pub const SHOW_AIS: &str    = "Show Ais";
-pub const HIDE_AIS: &str    = "Hide Ais";
-pub const NORTH_UP: &str    = "North Up";
-pub const COURSE_UP: &str   = "Course Up";
-pub const FOLLOW_ON: &str   = "On";
-pub const FOLLOW_OFF: &str  = "Off";
+pub const SHOW_WP: &str = "Show Waypoint";
+pub const HIDE_WP: &str = "Hide Waypoint";
+pub const SHOW_TRACK: &str = "Show Track";
+pub const HIDE_TRACK: &str = "Hide Track";
+pub const SHOW_ROUTE: &str = "Show Route";
+pub const HIDE_ROUTE: &str = "Hide Route";
+pub const SHOW_AIS: &str = "Show Ais";
+pub const HIDE_AIS: &str = "Hide Ais";
+pub const NORTH_UP: &str = "North Up";
+pub const COURSE_UP: &str = "Course Up";
+pub const FOLLOW_ON: &str = "On";
+pub const FOLLOW_OFF: &str = "Off";
 
 struct Menu {
     title: &'static str,
@@ -64,11 +63,14 @@ impl<'ttf> Topbar<'ttf> {
         let font = ttf_context.load_font(&font_config.file, font_config.ui_size)?;
 
         let menus = vec![
-            Menu { title: "App", entries: vec![
-                    QUITTE.into(),
-                    ] },
-            Menu { title: "Charts", entries: names.clone()
-                     },
+            Menu {
+                title: "App",
+                entries: vec![QUITTE.into()],
+            },
+            Menu {
+                title: "Charts",
+                entries: names.clone(),
+            },
             Menu {
                 title: "Route",
                 entries: vec![
@@ -79,7 +81,8 @@ impl<'ttf> Topbar<'ttf> {
                     NEXT.into(),
                     SHOW_ROUTE.into(),
                     HIDE_ROUTE.into(),
-                    ] },
+                ],
+            },
             Menu {
                 title: "Track",
                 entries: vec![
@@ -87,7 +90,8 @@ impl<'ttf> Topbar<'ttf> {
                     EXPORT_TRACK_GPX.into(),
                     SHOW_TRACK.into(),
                     HIDE_TRACK.into(),
-                    ] },
+                ],
+            },
             Menu {
                 title: "Waypoints",
                 entries: vec![
@@ -95,39 +99,37 @@ impl<'ttf> Topbar<'ttf> {
                     EXPORT_WP_GPX.into(),
                     SHOW_WP.into(),
                     HIDE_WP.into(),
-                    ] },
+                ],
+            },
             Menu {
                 title: "AIS",
-                entries: vec![
-                    SHOW_AIS.into(),
-                    HIDE_AIS.into(),
-                    ] },
+                entries: vec![SHOW_AIS.into(), HIDE_AIS.into()],
+            },
             Menu {
                 title: "Mode",
-                entries: vec![
-                    EDIT_MESURE.into(),
-                    EDIT_ROUTE.into(),
-                    EDIT_WP.into(),
-                    ] },
+                entries: vec![EDIT_MESURE.into(), EDIT_ROUTE.into(), EDIT_WP.into()],
+            },
             Menu {
                 title: "Orientation",
-                entries: vec![
-                    NORTH_UP.into(),
-                    COURSE_UP.into(),
-                    ] },
+                entries: vec![NORTH_UP.into(), COURSE_UP.into()],
+            },
             Menu {
                 title: "Follow",
-                entries: vec![
-                    FOLLOW_ON.into(),
-                    FOLLOW_OFF.into(),
-                    ] },
-            ];
+                entries: vec![FOLLOW_ON.into(), FOLLOW_OFF.into()],
+            },
+        ];
 
-        Ok(Topbar { font, width, menus, open: None, hover_title: None, hover_entry: None })
+        Ok(Topbar {
+            font,
+            width,
+            menus,
+            open: None,
+            hover_title: None,
+            hover_entry: None,
+        })
     }
 
-
-     // ---------- Affichage ----------
+    // ---------- Affichage ----------
     pub fn show(&self, canvas: &mut WindowCanvas) {
         canvas.set_blend_mode(BlendMode::Blend);
 
@@ -193,11 +195,17 @@ impl<'ttf> Topbar<'ttf> {
             .map_err(|e| e.to_string())?;
 
         let (tw, th) = (surface.width(), surface.height());
-        let tx = if w > 0 { x + (w as i32 - tw as i32) / 2 } else { x };
+        let tx = if w > 0 {
+            x + (w as i32 - tw as i32) / 2
+        } else {
+            x
+        };
         let ty = y + (h as i32 - th as i32) / 2;
 
         canvas.copy(&texture, None, Some(Rect::new(tx, ty, tw, th)))?;
-        unsafe { texture.destroy(); }
+        unsafe {
+            texture.destroy();
+        }
         Ok(())
     }
 
@@ -276,5 +284,3 @@ impl<'ttf> Topbar<'ttf> {
         self.open.is_some()
     }
 }
-
- 

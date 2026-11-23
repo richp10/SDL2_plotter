@@ -38,17 +38,15 @@ impl State {
                 Ok(State::defaults(init_map))
             }
             Err(error) if error.is::<serde_json::Error>() => {
-                let mut corrupt = path.as_os_str().to_owned();
-                corrupt.push(".corrupt");
+                let aside = crate::geo_data::set_aside(path)?;
                 crate::diagnostics::record(
                     "ERROR",
                     format!(
                         "État illisible ({error}); {} déplacé vers {} et valeurs par défaut utilisées",
                         path.display(),
-                        Path::new(&corrupt).display()
+                        aside.display()
                     ),
                 );
-                fs::rename(path, &corrupt)?;
                 Ok(State::defaults(init_map))
             }
             Err(error) => Err(error),

@@ -4,6 +4,7 @@ use std::io;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use crate::geo_data::{GeoFile, GeoPoint};
 use crate::gps::{distance_meters, EARTH_RADIUS_METERS};
 use crate::mbtiles_renderer::{project_norm, MBTilesRenderer};
 use crate::screen::Screen;
@@ -24,46 +25,39 @@ struct TrackPoint {
 
 pub struct Track {
     points: Vec<TrackPoint>,
+    /// The file the track is checkpointed to and saved on exit.
+    file: GeoFile<GeoPoint>,
     save_pending: bool,
     last_save: Instant,
     checkpoint_interval: Duration,
 }
 
 impl Track {
+    /// A track over `path`. A `.gpx` path loads that file directly (tests);
+    /// anything else is the versioned JSON file with the default checkpoint.
     #[cfg(test)]
-    pub fn new(path: &Path) -> io::Result<Self> {
+    pub fn new(path: &Path) -> Self {
         if path.extension().is_some_and(|extension| extension == "gpx") {
-            let mut track = Self {
-                points: Vec::new(),
-                save_pending: false,
-                last_save: Instant::now(),
-                checkpoint_interval: DEFAULT_CHECKPOINT_INTERVAL,
-            };
-            match Self::load_gpx(path) {
-                Ok(positions) => track.set_points(positions),
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error),
+            let mut track = Self::empty(GeoFile::new(path), DEFAULT_CHECKPOINT_INTERVAL);
+            if let Ok(positions) = Self::load_gpx(path) {
+                track.set_points(positions);
             }
-            Ok(track)
+            track
         } else {
             Self::with_checkpoint_interval(path, DEFAULT_CHECKPOINT_INTERVAL)
         }
     }
 
-    pub fn with_checkpoint_interval(
-        path: &Path,
-        checkpoint_interval: Duration,
-    ) -> io::Result<Self> {
-        let mut track = Self {
-            points: Vec::new(),
-            save_pending: false,
-            last_save: Instant::now(),
-            checkpoint_interval,
-        };
-
-        let legacy_path = path.with_extension("gpx");
-        let migrating = !path.exists() && legacy_path.exists();
-        let positions = crate::geo_data::read_or_migrate(path, &legacy_path, Self::load_gpx)?;
+    /// Loads the track saved at `path`. A missing file is an empty track, a
+    /// damaged one is set aside, and a legacy `.gpx` beside it is migrated
+    /// once (see `geo_data::GeoFile`). Never fails: a saved file cannot stop
+    /// the app starting.
+    pub fn with_checkpoint_interval(path: &Path, checkpoint_interval: Duration) -> Self {
+        let file = GeoFile::new(path).with_legacy_file("gpx", |legacy| {
+            Self::load_gpx(legacy).map(|points| points.into_iter().map(Into::into).collect())
+        });
+        let positions: Vec<(f64, f64)> = file.load().into_iter().map(Into::into).collect();
+        let mut track = Self::empty(file, checkpoint_interval);
         track.set_points(positions);
         crate::diagnostics::record(
             "INFO",
@@ -73,18 +67,17 @@ impl Track {
                 track.points.len()
             ),
         );
-        if migrating {
-            crate::diagnostics::record(
-                "INFO",
-                format!(
-                    "Trace migrée de {} vers {}",
-                    legacy_path.display(),
-                    path.display()
-                ),
-            );
-        }
+        track
+    }
 
-        Ok(track)
+    fn empty(file: GeoFile<GeoPoint>, checkpoint_interval: Duration) -> Self {
+        Self {
+            points: Vec::new(),
+            file,
+            save_pending: false,
+            last_save: Instant::now(),
+            checkpoint_interval,
+        }
     }
 
     pub fn reset(&mut self) {
@@ -105,24 +98,25 @@ impl Track {
         self.save_pending && self.last_save.elapsed() >= self.checkpoint_interval
     }
 
-    pub fn save_default_track(&mut self, path: &Path) {
+    /// Checkpoints the track to its file, or removes the file when the track
+    /// was cleared. Errors are logged, never propagated: the loop goes on.
+    pub fn save_default_track(&mut self) {
         self.last_save = Instant::now();
         crate::diagnostics::record(
             "INFO",
             format!(
                 "Sauvegarde de la trace démarrée: {} points vers {}",
                 self.point_count(),
-                path.display()
+                self.file.path().display()
             ),
         );
 
         if self.points.is_empty() {
             if self.save_pending {
-                match std::fs::remove_file(path) {
+                match self.file.remove() {
                     Ok(()) => {
                         crate::diagnostics::record("INFO", "Trace vide supprimée après effacement")
                     }
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                     Err(error) => {
                         crate::diagnostics::record(
                             "ERROR",
@@ -136,7 +130,7 @@ impl Track {
             return;
         }
 
-        match self.save(path) {
+        match self.save() {
             Ok(()) => {
                 self.save_pending = false;
                 crate::diagnostics::record("INFO", "Trace sauvegardée avec succès");
@@ -242,13 +236,13 @@ impl Track {
         let _ = screen.show_track(&pts);
     }
 
-    pub fn save(&self, path: &Path) -> io::Result<()> {
-        let positions = self
+    pub fn save(&self) -> io::Result<()> {
+        let records: Vec<GeoPoint> = self
             .points
             .iter()
-            .map(|point| (point.lon, point.lat))
-            .collect::<Vec<_>>();
-        crate::geo_data::write(path, &positions)
+            .map(|point| GeoPoint::from((point.lon, point.lat)))
+            .collect();
+        self.file.save(&records)
     }
 
     pub fn export_gpx(&self, path: &Path) -> io::Result<()> {
@@ -438,7 +432,7 @@ mod tests {
         )
         .unwrap();
 
-        let track = Track::new(&path).unwrap();
+        let track = Track::new(&path);
         std::fs::remove_file(path).unwrap();
 
         assert_eq!(track.points.len(), 2);
@@ -459,7 +453,7 @@ mod tests {
         ));
         std::fs::write(&path, "<gpx><trk><trkseg></trkseg></trk></gpx>").unwrap();
 
-        let track = Track::new(&path).unwrap();
+        let track = Track::new(&path);
         std::fs::remove_file(path).unwrap();
 
         assert!(track.points.is_empty());
@@ -467,7 +461,7 @@ mod tests {
 
     #[test]
     fn filters_positions_by_distance_from_last_recorded_point() {
-        let mut track = Track::new(Path::new("missing-track.gpx")).unwrap();
+        let mut track = Track::new(Path::new("missing-track.gpx"));
         let start = (-122.3, 47.5);
         let under_20m = (-122.3, 47.5001);
         let over_20m = (-122.3, 47.5003);
@@ -492,12 +486,12 @@ mod tests {
             std::process::id(),
             unique_id
         ));
-        let mut original = Track::new(Path::new("missing-track.gpx")).unwrap();
+        let mut original = Track::new(&path);
         original.add((-122.3, 47.5));
         original.add((-122.3, 47.5003));
 
-        original.save(&path).unwrap();
-        let loaded = Track::new(&path).unwrap();
+        original.save().unwrap();
+        let loaded = Track::new(&path);
 
         assert_eq!(loaded.point_count(), 2);
         assert!(!path
@@ -527,7 +521,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(&gpx_path, source).unwrap();
 
-        let track = Track::with_checkpoint_interval(&json_path, Duration::from_secs(60)).unwrap();
+        let track = Track::with_checkpoint_interval(&json_path, Duration::from_secs(60));
 
         assert_eq!(track.point_count(), 2);
         assert_eq!(
@@ -536,6 +530,23 @@ mod tests {
         );
         assert_eq!(std::fs::read_to_string(&gpx_path).unwrap(), source);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_corrupt_track_file_is_set_aside_and_starts_empty() {
+        let path = std::env::temp_dir().join(format!(
+            "desktop_plotter_track_corrupt_{}_{}.json",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, "garbage").unwrap();
+        let track = Track::with_checkpoint_interval(&path, Duration::from_secs(60));
+        assert_eq!(track.point_count(), 0);
+        assert!(path.with_extension("json.corrupt").exists());
+        std::fs::remove_file(path.with_extension("json.corrupt")).unwrap();
     }
 
     #[test]
@@ -549,12 +560,12 @@ mod tests {
             std::process::id(),
             unique_id
         ));
-        let mut track = Track::with_checkpoint_interval(&path, Duration::from_secs(60)).unwrap();
+        let mut track = Track::with_checkpoint_interval(&path, Duration::from_secs(60));
         track.add((-122.3, 47.5));
-        track.save(&path).unwrap();
+        track.save().unwrap();
 
         track.reset();
-        track.save_default_track(&path);
+        track.save_default_track();
 
         assert!(!path.exists());
     }
@@ -572,11 +583,10 @@ mod tests {
         ));
         let json_path = dir.join("track.json");
         let gpx_path = dir.join("export/track.gpx");
-        let mut track =
-            Track::with_checkpoint_interval(&json_path, Duration::from_secs(60)).unwrap();
+        let mut track = Track::with_checkpoint_interval(&json_path, Duration::from_secs(60));
         track.add((-122.3, 47.5));
         track.add((-122.2, 47.6));
-        track.save(&json_path).unwrap();
+        track.save().unwrap();
         track.export_gpx(&gpx_path).unwrap();
 
         let exported = std::fs::read_to_string(&gpx_path).unwrap();
@@ -643,9 +653,9 @@ mod tests {
         ));
         let path = dir.join("track").join("default.json");
 
-        let mut track = Track::new(Path::new("missing-track.gpx")).unwrap();
+        let mut track = Track::new(&path);
         track.add((-122.3, 47.5));
-        track.save(&path).unwrap();
+        track.save().unwrap();
 
         assert!(path.is_file());
         std::fs::remove_dir_all(dir).unwrap();

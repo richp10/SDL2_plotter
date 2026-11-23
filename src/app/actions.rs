@@ -161,8 +161,7 @@ impl Session {
             }
             ConfirmAction::ClearTrack => {
                 self.track.reset();
-                let path = self.track_path.clone();
-                self.track.save_default_track(&path);
+                self.track.save_default_track();
             }
             ConfirmAction::ClearWaypoints => {
                 self.waypoints.reset();
@@ -239,14 +238,13 @@ mod tests {
                 &dir.join("route.json"),
             ),
             mesure: Mesure::new().unwrap(),
-            track: Track::new(&dir.join("track.json")).unwrap(),
+            track: Track::new(&dir.join("track.json")),
             waypoints: Waypoints::empty_at(&dir.join("waypoints.json")),
             charts_path: vec![
                 chart_str,
                 dir.join("missing.mbtiles").to_string_lossy().into_owned(),
             ],
             confirmation: Confirmation::default(),
-            track_path: dir.join("track.json"),
             export_dir: dir.join("export"),
         };
         session.sync_view();

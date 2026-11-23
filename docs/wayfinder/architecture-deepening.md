@@ -31,6 +31,8 @@ release run), and CLAUDE.md describing the result.
 
 <!-- one line per closed ticket, appended as each is resolved -->
 
+- [T1 — One persisted-collection module](#t1--one-persisted-collection-module-geofile) — `GeoFile<R>` in `geo_data.rs`, generic over a `GeoRecord`, with two optional legacy adapters and a `load` that never fails; route, track and waypoints each own one, `State` reuses `set_aside`.
+
 ## Not yet specified
 
 - Whether `Session`'s fields can all go private once tickets 3 and 6 move
@@ -50,7 +52,8 @@ release run), and CLAUDE.md describing the result.
 ## Tickets
 
 ### T1 — One persisted-collection module (`GeoFile`)
-- type: grilling + task · status: open · blocked by: none
+- type: grilling + task · status: closed · blocked by: none
+- Resolution: `GeoFile<R: GeoRecord>` holds the path and the policy; `load() -> Vec<R>` never fails (missing = empty, unparseable = try `with_legacy_shape` then set aside as `.corrupt` + ERROR, missing + `with_legacy_file` neighbour = migrate once), `save` validates and writes atomically, `remove` for a cleared track. Generic over the record rather than a fixed point so waypoints keep their names in the same versioned envelope; the old bare-array waypoints file is the first legacy shape. Route, Track and Waypoints own their file (no more path parameters or `Session::track_path`), and their loaders return the collection, not a `Result`, so `Plotter::new` has no `?` on saved data. `State` keeps its own shape but uses `set_aside`. Rejected: a shared `PointList` type (out of scope) and keeping `read_or_migrate` free functions (two sources of truth for the path).
 - Question: what is the small interface of a persisted-collection module
   that gives route, track and waypoints the same set-aside, version,
   validation, migration and atomic-write policy `state.rs` already has, so

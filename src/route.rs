@@ -1,13 +1,14 @@
 mod gpx;
 const DEFAULT_ROUTE: &str = "default/route.json";
 
+use crate::geo_data::{GeoFile, GeoPoint};
 use crate::gps;
 use crate::mbtiles_renderer::MBTilesRenderer;
 use crate::screen::Screen;
 use crate::Mode;
 use sdl2::rect::Point;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[derive(Debug)]
 pub struct Route {
@@ -15,35 +16,30 @@ pub struct Route {
     distance: Vec<f64>,
     restante: Vec<f64>,
     longueur: f64,
-    /// Where `save` writes; set by `load`.
-    path: PathBuf,
+    /// The file this route is saved to.
+    file: GeoFile<GeoPoint>,
 }
 
 impl Route {
-    pub fn new() -> Result<Self, String> {
+    pub fn new() -> Self {
         Self::load(Path::new(DEFAULT_ROUTE))
     }
 
-    /// Loads the route saved at `json_path` (a missing file is an empty
-    /// route), migrating a legacy `.gpx` beside it if that is all there is.
-    /// `save` writes back to the same path.
-    pub fn load(json_path: &Path) -> Result<Self, String> {
-        let legacy_path = json_path.with_extension("gpx");
-        let migrating = !json_path.exists() && legacy_path.exists();
-        let track = crate::geo_data::read_or_migrate(json_path, &legacy_path, gpx::load_gpx)
-            .map_err(|error| format!("impossible de charger la route: {error}"))?;
-        if migrating {
-            crate::diagnostics::record(
-                "INFO",
-                format!(
-                    "Route migrée de {} vers {}",
-                    legacy_path.display(),
-                    json_path.display()
-                ),
-            );
-        }
+    /// Loads the route saved at `json_path`. A missing file is an empty
+    /// route, a damaged one is set aside, and a legacy `.gpx` beside it is
+    /// migrated once (see `geo_data::GeoFile`). `save` writes back to the
+    /// same path. Never fails: a saved file cannot stop the app starting.
+    pub fn load(json_path: &Path) -> Self {
+        let file = Self::file_at(json_path);
+        let track: Vec<(f64, f64)> = file.load().into_iter().map(Into::into).collect();
         crate::diagnostics::record("INFO", format!("Route chargée: {} points", track.len()));
-        Ok(Route::from_points_at(track, json_path))
+        Route::from_points_in(track, file)
+    }
+
+    fn file_at(path: &Path) -> GeoFile<GeoPoint> {
+        GeoFile::new(path).with_legacy_file("gpx", |legacy| {
+            gpx::load_gpx(legacy).map(|points| points.into_iter().map(Into::into).collect())
+        })
     }
 
     #[cfg(test)]
@@ -52,13 +48,18 @@ impl Route {
     }
 
     /// A route over `track` that `save` will write to `path`.
+    #[cfg(test)]
     pub(crate) fn from_points_at(track: Vec<(f64, f64)>, path: &Path) -> Self {
+        Self::from_points_in(track, Self::file_at(path))
+    }
+
+    fn from_points_in(track: Vec<(f64, f64)>, file: GeoFile<GeoPoint>) -> Self {
         let mut route = Route {
             track,
             distance: Vec::new(),
             restante: Vec::new(),
             longueur: 0.0,
-            path: path.to_path_buf(),
+            file,
         };
         route.calc_route();
         route
@@ -119,7 +120,8 @@ impl Route {
     }
 
     pub fn save(&self) -> io::Result<()> {
-        crate::geo_data::write(&self.path, &self.track)
+        let records: Vec<GeoPoint> = self.track.iter().copied().map(Into::into).collect();
+        self.file.save(&records)
     }
 
     pub fn export_gpx(&self, path: &Path) -> io::Result<()> {
@@ -243,6 +245,23 @@ impl Route {
 #[cfg(test)]
 mod tests {
     use super::Route;
+
+    #[test]
+    fn a_corrupt_route_file_loads_an_empty_route_and_is_set_aside() {
+        let path = std::env::temp_dir().join(format!(
+            "plotter-route-corrupt-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, "garbage").unwrap();
+        let route = Route::load(&path);
+        assert_eq!(route.get_nb_wp(), 0);
+        assert!(path.with_extension("json.corrupt").exists());
+        std::fs::remove_file(path.with_extension("json.corrupt")).unwrap();
+    }
 
     #[test]
     fn empty_route_has_no_active_waypoint_and_no_navigation_data() {

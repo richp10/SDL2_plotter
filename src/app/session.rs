@@ -30,8 +30,6 @@ pub(crate) struct Session {
     /// Chart files offered in the Charts menu, in menu order.
     pub charts_path: Vec<String>,
     pub confirmation: Confirmation,
-    /// Where the track is checkpointed and saved on exit.
-    pub track_path: PathBuf,
     /// Where GPX exports are written.
     pub export_dir: PathBuf,
 }

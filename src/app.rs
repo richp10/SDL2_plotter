@@ -192,12 +192,12 @@ impl<'ttf> Plotter<'ttf> {
         let confirm_dialog =
             confirm_dialog::ConfirmDialog::new(ttf_context, width, height, &config.fonts)
                 .map_err(anyhow::Error::msg)?;
-        let route = route::Route::new().map_err(anyhow::Error::msg)?;
+        let route = route::Route::new();
         let mesure = mesure::Mesure::new().map_err(anyhow::Error::msg)?;
         let track = track::Track::with_checkpoint_interval(
             Path::new(DEFAULT_TRACK_PATH),
             Duration::from_secs(config.track.checkpoint_interval_seconds),
-        )?;
+        );
         crate::diagnostics::record(
             "INFO",
             format!(
@@ -206,7 +206,7 @@ impl<'ttf> Plotter<'ttf> {
                 DEFAULT_TRACK_PATH
             ),
         );
-        let waypoints = waypoints::Waypoints::new()?;
+        let waypoints = waypoints::Waypoints::new();
 
         let mut session = Session {
             renderer,
@@ -220,7 +220,6 @@ impl<'ttf> Plotter<'ttf> {
             waypoints,
             charts_path,
             confirmation: Confirmation::default(),
-            track_path: PathBuf::from(DEFAULT_TRACK_PATH),
             export_dir: PathBuf::from("export"),
         };
         // The renderer knows where it is looking before the first event or frame.
@@ -332,17 +331,13 @@ impl<'ttf> Plotter<'ttf> {
                     track_updates += 1;
                     self.dirty = true;
                     if self.session.track.point_count() == 1 {
-                        self.session
-                            .track
-                            .save_default_track(Path::new(DEFAULT_TRACK_PATH));
+                        self.session.track.save_default_track();
                     }
                 }
             }
 
             if self.session.track.checkpoint_due() {
-                self.session
-                    .track
-                    .save_default_track(Path::new(DEFAULT_TRACK_PATH));
+                self.session.track.save_default_track();
             }
 
             //////////////////////   Position update  /////////////////////////
@@ -429,9 +424,7 @@ impl<'ttf> Plotter<'ttf> {
         } // end while self.session.running
 
         crate::diagnostics::record("INFO", "Arrêt demandé, sauvegarde finale de la trace");
-        self.session
-            .track
-            .save_default_track(Path::new(DEFAULT_TRACK_PATH));
+        self.session.track.save_default_track();
         if let Err(error) = self.session.state.save(STATE_FILE) {
             crate::diagnostics::record("ERROR", format!("Erreur sauvegarde état: {error}"));
         }

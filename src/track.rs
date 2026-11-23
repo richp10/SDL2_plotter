@@ -7,12 +7,12 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 use chrono::Local;
 
+use crate::gps::{distance_meters, EARTH_RADIUS_METERS};
 use crate::mbtiles_renderer::{project_norm, MBTilesRenderer};
 
 const MIN_TRACK_DISTANCE_METERS: f64 = 20.0;
 const SIMPLIFICATION_TOLERANCE_METERS: f64 = 20.0;
 const MAX_SIMPLIFIED_SEGMENT_METERS: f64 = 1_500.0;
-const EARTH_RADIUS_METERS: f64 = 6_371_000.0;
 #[cfg(test)]
 const DEFAULT_CHECKPOINT_INTERVAL: Duration = Duration::from_secs(15);
 
@@ -294,15 +294,6 @@ fn parse_gpx_attr(tag: &str, name: &str) -> Option<f64>
 	let end = value.find(quote)?;
 	value[..end].parse().ok()
 	}
-
-fn distance_meters(a: (f64, f64), b: (f64, f64)) -> f64 {
-	let (lat1, lat2) = (a.1.to_radians(), b.1.to_radians());
-	let delta_lat = lat2 - lat1;
-	let delta_lon = (b.0 - a.0).to_radians();
-	let haversine = (delta_lat / 2.0).sin().powi(2)
-		+ lat1.cos() * lat2.cos() * (delta_lon / 2.0).sin().powi(2);
-	2.0 * EARTH_RADIUS_METERS * haversine.sqrt().asin()
-}
 
 fn simplified_indices(points: &[TrackPoint]) -> Vec<usize> {
 	if points.len() <= 2 {

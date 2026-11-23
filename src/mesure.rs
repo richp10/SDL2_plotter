@@ -1,3 +1,4 @@
+use crate::gps;
 use crate::mbtiles_renderer::MBTilesRenderer;
 use crate::screen::Map;
 
@@ -35,7 +36,7 @@ impl Mesure
 					(Some((lon1, lat1)), _) => {
 					    let (lon2, lat2) = renderer.screen_to_gps(dx, dy);
 					    self.mark2 = Some((lon2, lat2));
-					    self.distance_and_bearing(lat1, lon1, lat2, lon2);
+					    (self.distance, self.bearing) = gps::distance_bearing_nm((lon1, lat1), (lon2, lat2));
 					    println!("{:.1} Mn  {:.0}°", self.distance, self.bearing);
 						}
 				   }
@@ -63,7 +64,7 @@ impl Mesure
 		let (lon1, lat1) = renderer.screen_to_gps(dx, dy);
 		self.mark1 = Some((lon1, lat1));
 		if let Some((lon2, lat2)) = self.mark2 {
-			self.distance_and_bearing(lat1, lon1, lat2, lon2);
+			(self.distance, self.bearing) = gps::distance_bearing_nm((lon1, lat1), (lon2, lat2));
 			}
 		else {
 			(self.distance, self.bearing) = (0.0, 0.0);
@@ -105,32 +106,5 @@ impl Mesure
 		{
 		let pt = renderer.gps_to_point(self.mark2?);
 		Some((pt.x, pt.y))
-		}
-					
-		
-	fn distance_and_bearing(&mut self,lat1: f64, lon1: f64, lat2: f64, lon2: f64)  {
-		// Rayon moyen de la Terre en milles nautiques
-		const EARTH_RADIUS_NM: f64 = 3440.065;
-        
-		// Conversion en radians
-		let lat1_rad = lat1.to_radians();
-		let lat2_rad = lat2.to_radians();
-		let delta_lat = (lat2 - lat1).to_radians();
-		let delta_lon = (lon2 - lon1).to_radians();
-
-		// --- Distance : formule de Haversine ---
-		let a = (delta_lat / 2.0).sin().powi(2)
-			+ lat1_rad.cos() * lat2_rad.cos() * (delta_lon / 2.0).sin().powi(2);
-		let c = 2.0 * a.sqrt().asin();
-		self.distance = EARTH_RADIUS_NM * c;
-
-		// --- Cap initial (bearing) ---
-		let y = delta_lon.sin() * lat2_rad.cos();
-		let x = lat1_rad.cos() * lat2_rad.sin()
-			- lat1_rad.sin() * lat2_rad.cos() * delta_lon.cos();
-		let bearing_rad = y.atan2(x);
-
-		// Conversion en degrés et normalisation 0-360
-		self.bearing = (bearing_rad.to_degrees() + 360.0) % 360.0;
 		}
 	}

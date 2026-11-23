@@ -146,10 +146,7 @@ impl Route
 
 		for w in self.track.windows(2) 
 			{
-			let (lon1, lat1) = w[0];
-			let (lon2, lat2) = w[1];
-			let d = gps::distance_wp(Some((lat1, lon1)), Some((lat2, lon2)));
-			self.distance.push(d);
+			self.distance.push(gps::distance_nm(w[0], w[1]));
 			}
 
 		self.longueur = self.distance.iter().sum();
@@ -167,7 +164,7 @@ impl Route
 	/// distance to the end of the route. `None` when the route is empty.
 	pub fn calc_route_mn_from_boat(&self, id :usize, boat :(f64,f64)) -> Option<(f64,f64,f64)>{
 		let id = self.active_waypoint(id)?;
-		let (dist_wp, bearing_wp) = gps::distance_bearing_wp(boat, self.track[id]);
+		let (dist_wp, bearing_wp) = gps::distance_bearing_nm(boat, self.track[id]);
 		let dist_total = dist_wp + self.restante[id];
 		Some((dist_wp, bearing_wp, dist_total))
 		}

@@ -440,15 +440,7 @@ impl Plotter<'_> {
             if p.moved && self.is_draging {
                 self.xdrag += xrel;
                 self.ydrag += yrel;
-                map.drag_map(
-                    texture,
-                    self.xdrag,
-                    self.ydrag,
-                    self.renderer.texture_rect(),
-                    self.renderer.display_dimensions().0,
-                    self.renderer.display_dimensions().1,
-                    self.renderer.rotation_degrees(),
-                )?;
+                map.drag_map(texture, (self.xdrag, self.ydrag), self.renderer.placement())?;
                 self.mouse = Mouse::Hand;
             }
         }

@@ -4,6 +4,7 @@ use sdl2::render::{BlendMode, WindowCanvas};
 use sdl2::ttf::{Font, Sdl2TtfContext};
 
 use crate::config::FontConfig;
+use crate::screen::{draw_text, TextAlign};
 
 const PANEL_WIDTH: u32 = 440;
 const PANEL_HEIGHT: u32 = 190;
@@ -11,6 +12,9 @@ const BUTTON_WIDTH: u32 = 112;
 const BUTTON_HEIGHT: u32 = 38;
 const BUTTON_GAP: i32 = 20;
 
+/// The prefix is the verb the dialog confirms; other verbs (Quit, Reset)
+/// are expected to join, so the names stay explicit.
+#[allow(clippy::enum_variant_names)]
 #[derive(Clone, Copy)]
 pub(super) enum ConfirmAction {
     ClearRoute,
@@ -96,48 +100,49 @@ impl<'ttf> ConfirmDialog<'ttf> {
         canvas.set_draw_color(Color::RGB(210, 215, 225));
         canvas.draw_rect(panel)?;
 
-        self.draw_centered_text(
+        draw_text(
             canvas,
+            &self.font,
             "Confirm action",
-            panel.x,
-            panel.y + 20,
-            panel.width(),
-            28,
+            Rect::new(panel.x, panel.y + 20, panel.width(), 28),
+            TextAlign::Centered,
             Color::RGB(255, 255, 255),
         )?;
-        self.draw_centered_text(
+        draw_text(
             canvas,
+            &self.font,
             action.message(),
-            panel.x + 16,
-            panel.y + 64,
-            panel.width().saturating_sub(32),
-            30,
+            Rect::new(
+                panel.x + 16,
+                panel.y + 64,
+                panel.width().saturating_sub(32),
+                30,
+            ),
+            TextAlign::Centered,
             Color::RGB(235, 235, 235),
         )?;
 
         let cancel = self.cancel_button();
         canvas.set_draw_color(Color::RGB(90, 98, 110));
         canvas.fill_rect(cancel)?;
-        self.draw_centered_text(
+        draw_text(
             canvas,
+            &self.font,
             "Cancel",
-            cancel.x,
-            cancel.y,
-            cancel.width(),
-            cancel.height(),
+            cancel,
+            TextAlign::Centered,
             Color::WHITE,
         )?;
 
         let confirm = self.confirm_button();
         canvas.set_draw_color(Color::RGB(155, 55, 55));
         canvas.fill_rect(confirm)?;
-        self.draw_centered_text(
+        draw_text(
             canvas,
+            &self.font,
             action.confirm_label(),
-            confirm.x,
-            confirm.y,
-            confirm.width(),
-            confirm.height(),
+            confirm,
+            TextAlign::Centered,
             Color::WHITE,
         )?;
 
@@ -176,34 +181,6 @@ impl<'ttf> ConfirmDialog<'ttf> {
             panel.y + panel.height() as i32 - BUTTON_HEIGHT as i32 - 18,
             BUTTON_WIDTH,
             BUTTON_HEIGHT,
-        )
-    }
-
-    fn draw_centered_text(
-        &self,
-        canvas: &mut WindowCanvas,
-        text: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-        color: Color,
-    ) -> Result<(), String> {
-        let texture_creator = canvas.texture_creator();
-        let surface = self
-            .font
-            .render(text)
-            .blended(color)
-            .map_err(|error| error.to_string())?;
-        let texture = texture_creator
-            .create_texture_from_surface(&surface)
-            .map_err(|error| error.to_string())?;
-        let text_x = x + (width as i32 - surface.width() as i32) / 2;
-        let text_y = y + (height as i32 - surface.height() as i32) / 2;
-        canvas.copy(
-            &texture,
-            None,
-            Some(Rect::new(text_x, text_y, surface.width(), surface.height())),
         )
     }
 }

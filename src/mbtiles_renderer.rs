@@ -220,6 +220,17 @@ impl MBTilesRenderer {
         -self.rotation.to_degrees()
     }
 
+    /// Everything `screen::Map` needs to place the chart texture this frame.
+    pub fn placement(&self) -> crate::screen::ChartPlacement {
+        let (display_width, display_height) = self.display_dimensions();
+        crate::screen::ChartPlacement {
+            source: self.texture_rect(),
+            display_width,
+            display_height,
+            rotation_degrees: self.rotation_degrees(),
+        }
+    }
+
     pub fn render_rect(&self) -> Rect {
         let (width, height) = if self.rotation.abs() < f64::EPSILON {
             (self.width, self.height)

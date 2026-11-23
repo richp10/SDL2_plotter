@@ -42,14 +42,8 @@ impl Plotter<'_> {
                 (texture_rect.width() * 4) as usize,
             )
             .map_err(|error| anyhow::anyhow!(error))?;
-        map.show_map(
-            texture,
-            texture_rect,
-            self.renderer.display_dimensions().0,
-            self.renderer.display_dimensions().1,
-            self.renderer.rotation_degrees(),
-        )
-        .map_err(anyhow::Error::msg)?;
+        map.show_map(texture, self.renderer.placement())
+            .map_err(anyhow::Error::msg)?;
 
         if self.mode == Mode::Measurement {
             self.mesure.show(&self.renderer, map);

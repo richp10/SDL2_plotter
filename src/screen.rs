@@ -12,6 +12,56 @@ use sdl2::{
     Sdl,
 };
 
+/// Which part of the chart texture is shown, how large, and how rotated.
+/// Built by `MBTilesRenderer::placement` once per frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ChartPlacement {
+    pub source: Rect,
+    pub display_width: u32,
+    pub display_height: u32,
+    pub rotation_degrees: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextAlign {
+    /// Centred in `area` on both axes.
+    Centered,
+    /// Flush with the left edge of `area`, centred vertically.
+    Left,
+}
+
+/// Renders `text` with `font` inside `area` and frees the texture again.
+/// Shared by the menu bar and the confirmation dialog.
+pub fn draw_text(
+    canvas: &mut WindowCanvas,
+    font: &Font,
+    text: &str,
+    area: Rect,
+    align: TextAlign,
+    color: Color,
+) -> Result<(), String> {
+    let texture_creator = canvas.texture_creator();
+    let surface = font
+        .render(text)
+        .blended(color)
+        .map_err(|e| e.to_string())?;
+    let texture = texture_creator
+        .create_texture_from_surface(&surface)
+        .map_err(|e| e.to_string())?;
+    let (width, height) = (surface.width(), surface.height());
+    let x = match align {
+        TextAlign::Centered => area.x + (area.width() as i32 - width as i32) / 2,
+        TextAlign::Left => area.x,
+    };
+    let y = area.y + (area.height() as i32 - height as i32) / 2;
+    let result = canvas.copy(&texture, None, Some(Rect::new(x, y, width, height)));
+    // `unsafe_textures` is enabled, so textures are not freed on drop.
+    unsafe {
+        texture.destroy();
+    }
+    result
+}
+
 pub struct MoteurSdl {
     pub context: Sdl,
     pub event_pump: EventPump,
@@ -184,62 +234,48 @@ impl<'ttf> Map<'ttf> {
         }
     }
 
-    pub fn show_map(
-        &mut self,
-        texture: &Texture,
-        source_rect: Rect,
-        display_width: u32,
-        display_height: u32,
-        rotation_degrees: f64,
-    ) -> Result<(), String> {
-        let dst = Rect::new(
-            (self.screen_width as i32 - display_width as i32) / 2,
-            (self.screen_height as i32 - display_height as i32) / 2,
-            display_width,
-            display_height,
-        );
-        self.canvas.copy_ex(
-            texture,
-            Some(source_rect),
-            Some(dst),
-            rotation_degrees,
-            None,
-            false,
-            false,
-        )?;
-        Ok(())
+    /// Draws the chart texture centred on the screen.
+    pub fn show_map(&mut self, texture: &Texture, placement: ChartPlacement) -> Result<(), String> {
+        self.blit_chart(texture, (0, 0), placement)
     }
 
+    /// Redraws the chart shifted by `offset` while the user drags it, and
+    /// presents the frame straight away so the drag feels immediate.
     pub fn drag_map(
         &mut self,
         texture: &Texture,
-        x: i32,
-        y: i32,
-        source_rect: Rect,
-        display_width: u32,
-        display_height: u32,
-        rotation_degrees: f64,
+        offset: (i32, i32),
+        placement: ChartPlacement,
     ) -> Result<(), String> {
-        let dst_rect = Rect::new(
-            (self.screen_width as i32 - display_width as i32) / 2 + x,
-            (self.screen_height as i32 - display_height as i32) / 2 + y,
-            display_width,
-            display_height,
-        );
         self.canvas
             .set_draw_color(configured_color(self.appearance.map_background_color));
         self.canvas.clear();
+        self.blit_chart(texture, offset, placement)?;
+        self.canvas.present();
+        Ok(())
+    }
+
+    fn blit_chart(
+        &mut self,
+        texture: &Texture,
+        offset: (i32, i32),
+        placement: ChartPlacement,
+    ) -> Result<(), String> {
+        let dst = Rect::new(
+            (self.screen_width as i32 - placement.display_width as i32) / 2 + offset.0,
+            (self.screen_height as i32 - placement.display_height as i32) / 2 + offset.1,
+            placement.display_width,
+            placement.display_height,
+        );
         self.canvas.copy_ex(
             texture,
-            Some(source_rect),
-            Some(dst_rect),
-            rotation_degrees,
+            Some(placement.source),
+            Some(dst),
+            placement.rotation_degrees,
             None,
             false,
             false,
-        )?;
-        self.canvas.present();
-        Ok(())
+        )
     }
 
     pub fn show_boat(&mut self, x: i32, y: i32) -> Result<(), String> {

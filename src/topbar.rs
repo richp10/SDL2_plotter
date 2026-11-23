@@ -1,4 +1,5 @@
 use crate::config::FontConfig;
+use crate::screen::{draw_text, TextAlign};
 use sdl2::pixels::Color;
 use sdl2::rect::Rect;
 use sdl2::render::{BlendMode, WindowCanvas};
@@ -255,7 +256,14 @@ impl<'ttf> Topbar<'ttf> {
                 canvas.set_draw_color(HOVER_COLOR);
                 let _ = canvas.fill_rect(Rect::new(x0, 0, ITEM_WIDTH, HEIGHT));
             }
-            let _ = self.draw_text(canvas, menu.title, x0, 0, ITEM_WIDTH, HEIGHT, Color::BLACK);
+            let _ = draw_text(
+                canvas,
+                &self.font,
+                menu.title,
+                Rect::new(x0, 0, ITEM_WIDTH, HEIGHT),
+                TextAlign::Centered,
+                Color::BLACK,
+            );
         }
 
         // Menu déroulant (dessiné par-dessus la carte)
@@ -273,52 +281,20 @@ impl<'ttf> Topbar<'ttf> {
                     canvas.set_draw_color(HOVER_COLOR);
                     let _ = canvas.fill_rect(Rect::new(x0, y, MENU_WIDTH, ENTRY_HEIGHT));
                 }
-                //let color = if e.state { Color::RED } else { Color::BLACK };
                 // texte aligné à gauche avec une marge de 10 px
-                let _ = self.draw_text(canvas, e, x0 + 10, y, 0, ENTRY_HEIGHT, Color::BLACK);
+                let _ = draw_text(
+                    canvas,
+                    &self.font,
+                    e,
+                    Rect::new(x0 + 10, y, MENU_WIDTH - 10, ENTRY_HEIGHT),
+                    TextAlign::Left,
+                    Color::BLACK,
+                );
             }
 
             canvas.set_draw_color(BORDER_COLOR);
             let _ = canvas.draw_rect(Rect::new(x0, HEIGHT as i32, MENU_WIDTH, h));
         }
-    }
-
-    /// Dessine `texte` dans la zone (x, y, w, h).
-    /// Si `w > 0` le texte est centré horizontalement, sinon aligné à gauche en x.
-    /// Dans les deux cas il est centré verticalement.
-    fn draw_text(
-        &self,
-        canvas: &mut WindowCanvas,
-        texte: &str,
-        x: i32,
-        y: i32,
-        w: u32,
-        h: u32,
-        color: Color,
-    ) -> Result<(), String> {
-        let texture_creator = canvas.texture_creator();
-        let surface = self
-            .font
-            .render(texte)
-            .blended(color)
-            .map_err(|e| e.to_string())?;
-        let texture = texture_creator
-            .create_texture_from_surface(&surface)
-            .map_err(|e| e.to_string())?;
-
-        let (tw, th) = (surface.width(), surface.height());
-        let tx = if w > 0 {
-            x + (w as i32 - tw as i32) / 2
-        } else {
-            x
-        };
-        let ty = y + (h as i32 - th as i32) / 2;
-
-        canvas.copy(&texture, None, Some(Rect::new(tx, ty, tw, th)))?;
-        unsafe {
-            texture.destroy();
-        }
-        Ok(())
     }
 }
 

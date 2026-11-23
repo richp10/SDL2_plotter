@@ -1,4 +1,3 @@
-mod gpx;
 const DEFAULT_ROUTE: &str = "default/route.json";
 
 use crate::geo_data::{GeoFile, GeoPoint};
@@ -38,7 +37,8 @@ impl Route {
 
     fn file_at(path: &Path) -> GeoFile<GeoPoint> {
         GeoFile::new(path).with_legacy_file("gpx", |legacy| {
-            gpx::load_gpx(legacy).map(|points| points.into_iter().map(Into::into).collect())
+            crate::gpx::load_points(legacy)
+                .map(|points| points.into_iter().map(Into::into).collect())
         })
     }
 
@@ -125,7 +125,8 @@ impl Route {
     }
 
     pub fn export_gpx(&self, path: &Path) -> io::Result<()> {
-        gpx::save_route_gpx(path, "Plotter", &self.track)
+        let document = crate::gpx::write_route("Plotter", &self.track);
+        crate::geo_data::atomic_write(path, document.as_bytes())
     }
 
     pub fn clear(&mut self) -> io::Result<()> {

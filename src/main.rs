@@ -14,6 +14,7 @@ mod config;
 mod diagnostics;
 mod geo_data;
 mod gps;
+mod gpx;
 mod mbtiles_renderer;
 mod mesure;
 mod route;

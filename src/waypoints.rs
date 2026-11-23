@@ -156,35 +156,13 @@ impl Waypoints {
     }
 
     pub fn export_gpx(&self, path: &Path) -> io::Result<()> {
-        let mut gpx = String::new();
-        gpx.push_str(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>
-",
+        let document = crate::gpx::write_waypoints(
+            self.waypoints
+                .iter()
+                .map(|w| (w.name.as_str(), (w.longitude, w.latitude))),
         );
-        gpx.push_str("<gpx version=\"1.1\" creator=\"SDL2 Plotter\" xmlns=\"http://www.topografix.com/GPX/1/1\">
-");
-        for waypoint in &self.waypoints {
-            gpx.push_str(&format!(
-                "  <wpt lat=\"{:.6}\" lon=\"{:.6}\"><name>{}</name></wpt>
-",
-                waypoint.latitude,
-                waypoint.longitude,
-                escape_xml(&waypoint.name)
-            ));
-        }
-        gpx.push_str(
-            "</gpx>
-",
-        );
-        crate::geo_data::atomic_write(path, gpx.as_bytes())
+        crate::geo_data::atomic_write(path, document.as_bytes())
     }
-}
-
-fn escape_xml(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
 }
 
 #[cfg(test)]

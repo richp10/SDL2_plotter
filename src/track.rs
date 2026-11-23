@@ -39,7 +39,7 @@ impl Track {
     pub fn new(path: &Path) -> Self {
         if path.extension().is_some_and(|extension| extension == "gpx") {
             let mut track = Self::empty(GeoFile::new(path), DEFAULT_CHECKPOINT_INTERVAL);
-            if let Ok(positions) = Self::load_gpx(path) {
+            if let Ok(positions) = crate::gpx::load_points(path) {
                 track.set_points(positions);
             }
             track
@@ -54,7 +54,8 @@ impl Track {
     /// the app starting.
     pub fn with_checkpoint_interval(path: &Path, checkpoint_interval: Duration) -> Self {
         let file = GeoFile::new(path).with_legacy_file("gpx", |legacy| {
-            Self::load_gpx(legacy).map(|points| points.into_iter().map(Into::into).collect())
+            crate::gpx::load_points(legacy)
+                .map(|points| points.into_iter().map(Into::into).collect())
         });
         let positions: Vec<(f64, f64)> = file.load().into_iter().map(Into::into).collect();
         let mut track = Self::empty(file, checkpoint_interval);
@@ -141,43 +142,6 @@ impl Track {
         }
     }
 
-    fn load_gpx(path: &Path) -> io::Result<Vec<(f64, f64)>> {
-        let text = std::fs::read_to_string(path)?;
-        let mut positions = Vec::new();
-        for chunk in text.split('<').skip(1) {
-            let tag = chunk.split('>').next().unwrap_or("").trim();
-            if !is_track_point_tag(tag) {
-                continue;
-            }
-            let lat = parse_gpx_attr(tag, "lat").ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "latitude GPX manquante ou invalide",
-                )
-            })?;
-            let lon = parse_gpx_attr(tag, "lon").ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "longitude GPX manquante ou invalide",
-                )
-            })?;
-            if !lat.is_finite() || !(-90.0..=90.0).contains(&lat) {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "latitude GPX hors limites",
-                ));
-            }
-            if !lon.is_finite() || !(-180.0..=180.0).contains(&lon) {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "longitude GPX hors limites",
-                ));
-            }
-            positions.push((lon, lat));
-        }
-        Ok(positions)
-    }
-
     fn set_points(&mut self, positions: Vec<(f64, f64)>) {
         self.points = positions
             .into_iter()
@@ -249,69 +213,14 @@ impl Track {
         if self.points.is_empty() {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "trace vide"));
         }
-        let now = Local::now();
-        let mut gpx = String::new();
-        gpx.push_str(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>
-",
-        );
-        gpx.push_str("<gpx version=\"1.1\" creator=\"boat-tracker\" xmlns=\"http://www.topografix.com/GPX/1/1\">
-");
-        gpx.push_str(
-            "  <trk>
-",
-        );
-        gpx.push_str(&format!(
-            "    <name>Track {}</name>
-",
-            now.format("%Y-%m-%d %H:%M:%S")
-        ));
-        gpx.push_str(
-            "    <trkseg>
-",
-        );
-        for index in simplified_indices(&self.points) {
-            let point = &self.points[index];
-            gpx.push_str(&format!(
-                "      <trkpt lat=\"{:.6}\" lon=\"{:.6}\"/>
-",
-                point.lat, point.lon
-            ));
-        }
-        gpx.push_str(
-            "    </trkseg>
-",
-        );
-        gpx.push_str(
-            "  </trk>
-",
-        );
-        gpx.push_str(
-            "</gpx>
-",
-        );
-        crate::geo_data::atomic_write(path, gpx.as_bytes())
+        let name = format!("Track {}", Local::now().format("%Y-%m-%d %H:%M:%S"));
+        let points: Vec<(f64, f64)> = simplified_indices(&self.points)
+            .into_iter()
+            .map(|index| (self.points[index].lon, self.points[index].lat))
+            .collect();
+        let document = crate::gpx::write_track(&name, &points);
+        crate::geo_data::atomic_write(path, document.as_bytes())
     }
-}
-
-fn is_track_point_tag(tag: &str) -> bool {
-    let Some(rest) = tag.strip_prefix("trkpt") else {
-        return false;
-    };
-    rest.is_empty() || rest.starts_with('/') || rest.chars().next().is_some_and(char::is_whitespace)
-}
-
-fn parse_gpx_attr(tag: &str, name: &str) -> Option<f64> {
-    let key = format!("{name}=");
-    let start = tag.find(&key)? + key.len();
-    let value = tag[start..].trim_start();
-    let quote = value.chars().next()?;
-    if quote != '"' && quote != '\'' {
-        return None;
-    }
-    let value = &value[quote.len_utf8()..];
-    let end = value.find(quote)?;
-    value[..end].parse().ok()
 }
 
 fn simplified_indices(points: &[TrackPoint]) -> Vec<usize> {

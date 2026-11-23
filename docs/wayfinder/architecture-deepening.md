@@ -33,6 +33,7 @@ release run), and CLAUDE.md describing the result.
 
 - [T1 — One persisted-collection module](#t1--one-persisted-collection-module-geofile) — `GeoFile<R>` in `geo_data.rs`, generic over a `GeoRecord`, with two optional legacy adapters and a `load` that never fails; route, track and waypoints each own one, `State` reuses `set_aside`.
 - [T4 — Menu entries carry their action](#t4--menu-entries-carry-their-action) — `MenuBar::event -> Option<AppAction>`; `AppAction` moved to `action.rs`; the 26 string constants and the `input.rs` match are gone.
+- [T5 — One gpx module](#t5--one-gpx-module) — `src/gpx.rs`: three writers returning a `String`, one strict reader; creator "SDL2 Plotter"; `route/gpx.rs` deleted.
 
 ## Not yet specified
 
@@ -81,7 +82,8 @@ release run), and CLAUDE.md describing the result.
   fallback?
 
 ### T5 — One `gpx` module
-- type: task · status: open · blocked by: T1 (callers save through GeoFile)
+- type: task · status: closed · blocked by: T1 (callers save through GeoFile)
+- Resolution: `gpx::write_route/write_track/write_waypoints` build the document and the caller saves it with `atomic_write`; `gpx::read_points` (and `load_points` on a file) accepts `trkpt`, `rtept` and `wpt`, both quote styles and either attribute order, and rejects a missing, unparseable or out-of-range coordinate with `InvalidData`, which is the stricter of the two old readers. The surviving creator string is "SDL2 Plotter"; the surviving escaper handles all five reserved characters (the waypoint one missed quotes). `route/gpx.rs`, `track::load_gpx` and `waypoints::escape_xml` are deleted.
 - Question: one writer per kind and one validating reader; which of the
   three creator strings and two escapers survives?
 

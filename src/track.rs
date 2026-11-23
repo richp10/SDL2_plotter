@@ -1,8 +1,7 @@
 use sdl2::pixels::Color;
 use sdl2::rect::Point;
 use sdl2::render::WindowCanvas;
-use std::fs::{self, File};
-use std::io::{self, BufWriter, Write};
+use std::io;
 use std::path::Path;
 use std::time::{Duration, Instant};
 use chrono::Local;
@@ -233,41 +232,30 @@ impl Track
 		if self.points.is_empty() {
 			return Err(io::Error::new(io::ErrorKind::InvalidInput, "trace vide"));
 		}
-		if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
-			fs::create_dir_all(parent)?;
+		let now = Local::now();
+		let mut gpx = String::new();
+		gpx.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+");
+		gpx.push_str("<gpx version=\"1.1\" creator=\"boat-tracker\" xmlns=\"http://www.topografix.com/GPX/1/1\">
+");
+		gpx.push_str("  <trk>
+");
+		gpx.push_str(&format!("    <name>Track {}</name>
+", now.format("%Y-%m-%d %H:%M:%S")));
+		gpx.push_str("    <trkseg>
+");
+		for index in simplified_indices(&self.points) {
+			let point = &self.points[index];
+			gpx.push_str(&format!("      <trkpt lat=\"{:.6}\" lon=\"{:.6}\"/>
+", point.lat, point.lon));
 		}
-		let file_name = path
-			.file_name()
-			.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "nom de fichier GPX manquant"))?;
-		let temp_path = path.with_file_name(format!(
-			".{}.{}.tmp",
-			file_name.to_string_lossy(),
-			std::process::id()
-		));
-		let result = (|| {
-			let now = Local::now();
-			let mut writer = BufWriter::new(File::create(&temp_path)?);
-			writeln!(writer, r#"<?xml version="1.0" encoding="UTF-8"?>"#)?;
-			writeln!(writer, r#"<gpx version="1.1" creator="boat-tracker" xmlns="http://www.topografix.com/GPX/1/1">"#)?;
-			writeln!(writer, "  <trk>")?;
-			writeln!(writer, "    <name>Track {}</name>", now.format("%Y-%m-%d %H:%M:%S"))?;
-			writeln!(writer, "    <trkseg>")?;
-			for index in simplified_indices(&self.points) {
-				let point = &self.points[index];
-				writeln!(writer, r#"      <trkpt lat="{:.6}" lon="{:.6}"/>"#, point.lat, point.lon)?;
-			}
-			writeln!(writer, "    </trkseg>")?;
-			writeln!(writer, "  </trk>")?;
-			writeln!(writer, "</gpx>")?;
-			writer.flush()?;
-			writer.get_ref().sync_all()?;
-			drop(writer);
-			fs::rename(&temp_path, path)
-		})();
-		if result.is_err() {
-			let _ = fs::remove_file(temp_path);
-		}
-		result
+		gpx.push_str("    </trkseg>
+");
+		gpx.push_str("  </trk>
+");
+		gpx.push_str("</gpx>
+");
+		crate::geo_data::atomic_write(path, gpx.as_bytes())
 	}
 	}
 

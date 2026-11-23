@@ -1,6 +1,4 @@
 use std::fs;
-use std::fs::File;
-use std::io::{BufWriter, Write};
 use std::path::Path;
 
 fn xml_escape(s: &str) -> String {
@@ -11,29 +9,24 @@ fn xml_escape(s: &str) -> String {
 }
 
 pub fn save_route_gpx(path: &Path, name: &str, route: &[(f64, f64)]) -> std::io::Result<()> {
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        fs::create_dir_all(parent)?;
-    }
-    let mut w = BufWriter::new(File::create(path)?);
-
-    writeln!(w, r#"<?xml version="1.0" encoding="UTF-8"?>"#)?;
-    writeln!(
-        w,
-        r#"<gpx version="1.1" creator="ma_carte" xmlns="http://www.topografix.com/GPX/1/1">"#
-    )?;
-    writeln!(w, "  <rte>")?;
-    writeln!(w, "    <name>{}</name>", xml_escape(name))?;
-
+    let mut gpx = String::new();
+    gpx.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+");
+    gpx.push_str("<gpx version=\"1.1\" creator=\"ma_carte\" xmlns=\"http://www.topografix.com/GPX/1/1\">
+");
+    gpx.push_str("  <rte>
+");
+    gpx.push_str(&format!("    <name>{}</name>
+", xml_escape(name)));
     for &(lon, lat) in route {
-        writeln!(w, r#"    <rtept lat="{:.6}" lon="{:.6}"/>"#, lat, lon)?;
+        gpx.push_str(&format!("    <rtept lat=\"{:.6}\" lon=\"{:.6}\"/>
+", lat, lon));
     }
-
-    writeln!(w, "  </rte>")?;
-    writeln!(w, "</gpx>")?;
-    w.flush()
+    gpx.push_str("  </rte>
+");
+    gpx.push_str("</gpx>
+");
+    crate::geo_data::atomic_write(path, gpx.as_bytes())
 }
 
 pub fn load_gpx(path: &Path) -> std::io::Result<Vec<(f64, f64)>> {

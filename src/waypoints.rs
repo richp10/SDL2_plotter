@@ -1,8 +1,8 @@
 use sdl2::gfx::primitives::DrawRenderer;
 use serde::{Deserialize, Serialize};
 use std::{
-    fs::{self, File},
-    io::{self, BufWriter, Write},
+    fs,
+    io,
     path::Path,
 };
 
@@ -130,43 +130,23 @@ impl Waypoints {
     }
 
     pub fn export_gpx(&self, path: &Path) -> io::Result<()> {
-        if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
-            fs::create_dir_all(parent)?;
+        let mut gpx = String::new();
+        gpx.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+");
+        gpx.push_str("<gpx version=\"1.1\" creator=\"SDL2 Plotter\" xmlns=\"http://www.topografix.com/GPX/1/1\">
+");
+        for waypoint in &self.waypoints {
+            gpx.push_str(&format!(
+                "  <wpt lat=\"{:.6}\" lon=\"{:.6}\"><name>{}</name></wpt>
+",
+                waypoint.lat,
+                waypoint.lon,
+                escape_xml(&waypoint.name)
+            ));
         }
-        let file_name = path
-            .file_name()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "nom de fichier GPX manquant"))?;
-        let temp_path = path.with_file_name(format!(
-            ".{}.{}.tmp",
-            file_name.to_string_lossy(),
-            std::process::id()
-        ));
-        let result = (|| {
-            let mut writer = BufWriter::new(File::create(&temp_path)?);
-            writeln!(writer, r#"<?xml version="1.0" encoding="UTF-8"?>"#)?;
-            writeln!(
-                writer,
-                r#"<gpx version="1.1" creator="SDL2 Plotter" xmlns="http://www.topografix.com/GPX/1/1">"#
-            )?;
-            for waypoint in &self.waypoints {
-                writeln!(
-                    writer,
-                    r#"  <wpt lat="{:.6}" lon="{:.6}"><name>{}</name></wpt>"#,
-                    waypoint.lat,
-                    waypoint.lon,
-                    escape_xml(&waypoint.name)
-                )?;
-            }
-            writeln!(writer, "</gpx>")?;
-            writer.flush()?;
-            writer.get_ref().sync_all()?;
-            drop(writer);
-            fs::rename(&temp_path, path)
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(temp_path);
-        }
-        result
+        gpx.push_str("</gpx>
+");
+        crate::geo_data::atomic_write(path, gpx.as_bytes())
     }
 
     fn save_to(&self, path: &Path) -> io::Result<()> {

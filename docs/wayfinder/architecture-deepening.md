@@ -34,6 +34,7 @@ release run), and CLAUDE.md describing the result.
 - [T1 — One persisted-collection module](#t1--one-persisted-collection-module-geofile) — `GeoFile<R>` in `geo_data.rs`, generic over a `GeoRecord`, with two optional legacy adapters and a `load` that never fails; route, track and waypoints each own one, `State` reuses `set_aside`.
 - [T4 — Menu entries carry their action](#t4--menu-entries-carry-their-action) — `MenuBar::event -> Option<AppAction>`; `AppAction` moved to `action.rs`; the 26 string constants and the `input.rs` match are gone.
 - [T5 — One gpx module](#t5--one-gpx-module) — `src/gpx.rs`: three writers returning a `String`, one strict reader; creator "SDL2 Plotter"; `route/gpx.rs` deleted.
+- [T2 — ChartView as the screen-to-chart seam](#t2--chartview-as-the-screen-to-chart-seam) — copyable snapshot from `renderer.view()`; absolute pixels in, validated wrapped positions out; one `nearest` hit test; six "centre minus click" copies and four hit-test copies gone.
 
 ## Not yet specified
 
@@ -62,7 +63,8 @@ release run), and CLAUDE.md describing the result.
   that no saved file can stop the app from starting?
 
 ### T2 — `ChartView` as the screen-to-chart seam
-- type: grilling + task · status: open · blocked by: none
+- type: grilling + task · status: closed · blocked by: none
+- Resolution: `mbtiles_renderer::view::ChartView` (Copy: centre in world pixels, display zoom, rotation, size), built by `MBTilesRenderer::view()`. Interface: `to_pixel`, `norm_to_pixel`, `to_lonlat -> Option` (absolute pixels; longitude wrapped into range; `None` when the pixel leaves the Mercator square, which is the real "beyond the poles" condition since Mercator latitude never exceeds 90), `panned_center(dx, dy)`, `nearest(points, pixel, radius)`, `contains(pixel, margin)`, `course_to_screen`. `screen_to_gps` and its centre-minus-click convention are deleted; `gps_to_point`/`norm_to_point` stay on the renderer as delegates for the overlays until T7. Mesure, Route and Waypoints take `&ChartView` and absolute `Point`s; their four hit tests are one `nearest`. `render_rect`, `texture_rect`, `display_dimensions`, `rotation_degrees` and `Route::calc_route` are private. A click with no position (off the world) is ignored rather than stored. Deferred to T7: `boat.rs` still reads `Screen` size for its culling.
 - Question: what does a copyable view snapshot expose so that input, hit
   testing and overlays take absolute pixels, get validated coordinates, and
   stop reading `Screen`'s public size and repeating "centre minus click"?

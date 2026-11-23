@@ -7,6 +7,7 @@
 
 mod projection;
 mod tile_store;
+mod view;
 
 use std::time::{Duration, Instant};
 
@@ -17,12 +18,12 @@ use crate::config::RenderingConfig;
 pub use projection::project_norm;
 use projection::{
     course_to_screen, lonlat_to_world, rotated_bounds, screen_to_world_delta, smooth_zoom_progress,
-    source_dimensions, source_zoom_for, world_scale, world_to_lonlat, world_to_screen_delta,
-    TILE_SIZE,
+    source_dimensions, source_zoom_for, world_to_lonlat, TILE_SIZE,
 };
 #[cfg(test)]
 pub(crate) use tile_store::test_support;
 use tile_store::TileStore;
+pub use view::ChartView;
 
 const ZOOM_ANIMATION_DURATION: Duration = Duration::from_millis(240);
 const ROTATION_MARGIN: u32 = 4;
@@ -122,7 +123,7 @@ impl MBTilesRenderer {
         (scaled_side, scaled_side)
     }
 
-    pub fn rotation_degrees(&self) -> f64 {
+    fn rotation_degrees(&self) -> f64 {
         -self.rotation.to_degrees()
     }
 
@@ -137,7 +138,7 @@ impl MBTilesRenderer {
         }
     }
 
-    pub fn render_rect(&self) -> Rect {
+    fn render_rect(&self) -> Rect {
         let (width, height) = if self.rotation.abs() < f64::EPSILON {
             (self.width, self.height)
         } else {
@@ -152,7 +153,7 @@ impl MBTilesRenderer {
         )
     }
 
-    pub fn texture_rect(&self) -> Rect {
+    fn texture_rect(&self) -> Rect {
         let display_rect = self.render_rect();
         let zoom_scale = 2.0_f64.powf(self.display_zoom - self.source_zoom() as f64);
         let (width, height) =
@@ -165,7 +166,7 @@ impl MBTilesRenderer {
         )
     }
 
-    pub fn display_dimensions(&self) -> (u32, u32) {
+    fn display_dimensions(&self) -> (u32, u32) {
         let rect = self.render_rect();
         (rect.width(), rect.height())
     }
@@ -357,35 +358,24 @@ impl MBTilesRenderer {
         self.pixel_to_lonlat(center_x - offset_x, center_y - offset_y)
     }
 
-    pub fn gps_to_point(&self, pos: (f64, f64)) -> Point {
-        let (world_x, world_y) = self.project(pos.0, pos.1);
-        let (x, y) = self.world_to_screen(world_x, world_y);
-        Point::new(x as i32, y as i32)
+    /// The screen-to-chart conversions for the current view, as a copyable
+    /// snapshot. Input, hit testing and overlays all go through it.
+    pub fn view(&self) -> ChartView {
+        ChartView::new(
+            self.center_world,
+            self.display_zoom,
+            self.rotation,
+            self.width,
+            self.height,
+        )
     }
 
-    /// The position under a click. `dx`/`dy` are *centre minus click* in
-    /// screen pixels, the way `input.rs` computes them, so a click right of
-    /// centre has a negative `dx`.
-    pub fn screen_to_gps(&self, dx: i32, dy: i32) -> (f64, f64) {
-        let (offset_x, offset_y) = screen_to_world_delta(dx as f64, dy as f64, self.rotation);
-        let (x, y) = self.center_world;
-        self.pixel_to_lonlat(x - offset_x, y - offset_y)
+    pub fn gps_to_point(&self, pos: (f64, f64)) -> Point {
+        self.view().to_pixel(pos)
     }
 
     pub fn norm_to_point(&self, nx: f64, ny: f64) -> Point {
-        let scale = world_scale(self.display_zoom);
-        let (x, y) = self.world_to_screen(nx * scale, ny * scale);
-        Point::new(x as i32, y as i32)
-    }
-
-    /// World pixels to screen pixels relative to the view centre.
-    fn world_to_screen(&self, world_x: f64, world_y: f64) -> (i64, i64) {
-        let (center_x, center_y) = self.center_world;
-        let (x, y) = world_to_screen_delta(world_x - center_x, world_y - center_y, self.rotation);
-        (
-            (x + self.width as f64 / 2.0).round() as i64,
-            (y + self.height as f64 / 2.0).round() as i64,
-        )
+        self.view().norm_to_pixel(nx, ny)
     }
 
     fn project(&self, lon: f64, lat: f64) -> (f64, f64) {
@@ -608,7 +598,10 @@ mod tests {
 
         renderer.look_at(brest.0, brest.1, (0, 0));
 
-        assert_close(renderer.screen_to_gps(0, 0), brest);
+        assert_close(
+            renderer.view().to_lonlat(Point::new(256, 128)).unwrap(),
+            brest,
+        );
         assert_eq!(renderer.gps_to_point(brest), Point::new(256, 128));
         drop(renderer);
         std::fs::remove_file(path).unwrap();
@@ -623,8 +616,10 @@ mod tests {
         renderer.look_at(0.0, 0.0, (100, 0));
 
         assert_eq!(renderer.gps_to_point((0.0, 0.0)), Point::new(356, 128));
-        // screen_to_gps takes centre minus click: a click at x = 356 is dx = -100.
-        assert_close(renderer.screen_to_gps(-100, 0), (0.0, 0.0));
+        assert_close(
+            renderer.view().to_lonlat(Point::new(356, 128)).unwrap(),
+            (0.0, 0.0),
+        );
         drop(renderer);
         std::fs::remove_file(path).unwrap();
     }
@@ -639,7 +634,10 @@ mod tests {
         assert_eq!(renderer.zoom_increase(), 3);
         std::thread::sleep(Duration::from_millis(120)); // mid-animation
         assert!(renderer.advance_zoom_animation());
-        assert_close(renderer.screen_to_gps(0, 0), brest);
+        assert_close(
+            renderer.view().to_lonlat(Point::new(256, 128)).unwrap(),
+            brest,
+        );
 
         std::thread::sleep(ZOOM_ANIMATION_DURATION);
         renderer.advance_zoom_animation();
@@ -657,7 +655,10 @@ mod tests {
 
         renderer.change_map(second.to_str().unwrap()).unwrap();
 
-        assert_close(renderer.screen_to_gps(0, 0), (10.0, 20.0));
+        assert_close(
+            renderer.view().to_lonlat(Point::new(256, 128)).unwrap(),
+            (10.0, 20.0),
+        );
         drop(renderer);
         std::fs::remove_file(first).unwrap();
         std::fs::remove_file(second).unwrap();

@@ -60,15 +60,14 @@ pub fn show_targets(
     renderer: &MBTilesRenderer,
     screen: &mut Screen,
 ) -> Result<(), String> {
-    let width = screen.screen_width as i32;
-    let height = screen.screen_height as i32;
+    let view = renderer.view();
 
     for target in targets {
         let Some(position) = target.position else {
             continue;
         };
-        let point = renderer.gps_to_point(position);
-        if point.x < -32 || point.x > width + 32 || point.y < -32 || point.y > height + 32 {
+        let point = view.to_pixel(position);
+        if !view.contains(point, 32) {
             continue;
         }
 
@@ -77,7 +76,7 @@ pub fn show_targets(
             point.y,
             target
                 .course_over_ground
-                .map(|course| renderer.course_to_screen(course)),
+                .map(|course| view.course_to_screen(course)),
         )?;
         screen.show_text(&target.label(), point.x + 10, point.y - 10)?;
     }

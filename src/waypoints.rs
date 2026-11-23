@@ -2,8 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::{io, path::Path};
 
 use crate::geo_data::{GeoFile, GeoRecord};
-use crate::mbtiles_renderer::MBTilesRenderer;
+use crate::mbtiles_renderer::{ChartView, MBTilesRenderer};
 use crate::screen::Screen;
+use sdl2::rect::Point;
 
 const WAYPOINTS_FILE: &str = "default/waypoints.json";
 
@@ -104,25 +105,13 @@ impl Waypoints {
         }
     }
 
-    pub fn find_point_at(
-        &self,
-        renderer: &MBTilesRenderer,
-        mouse: (i32, i32),
-        radius: i32,
-    ) -> Option<usize> {
-        let r2 = (radius as i64) * (radius as i64);
-        self.waypoints
-            .iter()
-            .enumerate()
-            .map(|(i, waypoint)| {
-                let pt = renderer.gps_to_point((waypoint.longitude, waypoint.latitude));
-                let dx = pt.x as i64 - mouse.0 as i64;
-                let dy = pt.y as i64 - mouse.1 as i64;
-                (i, dx * dx + dy * dy)
-            })
-            .filter(|&(_, d2)| d2 <= r2)
-            .min_by_key(|&(_, d2)| d2)
-            .map(|(i, _)| i)
+    /// The waypoint drawn within `radius` pixels of `pixel`, if any.
+    pub fn find_point_at(&self, view: &ChartView, pixel: Point, radius: i32) -> Option<usize> {
+        view.nearest(
+            self.waypoints.iter().map(|w| (w.longitude, w.latitude)),
+            pixel,
+            radius,
+        )
     }
 
     pub fn remove(&mut self, i: usize) {

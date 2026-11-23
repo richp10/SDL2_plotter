@@ -1,6 +1,7 @@
 use crate::gps;
-use crate::mbtiles_renderer::MBTilesRenderer;
+use crate::mbtiles_renderer::{ChartView, MBTilesRenderer};
 use crate::screen::Screen;
+use sdl2::rect::Point;
 
 pub struct Mesure {
     mark1: Option<(f64, f64)>,
@@ -19,20 +20,24 @@ impl Mesure {
         })
     }
 
-    pub fn add_mark(&mut self, renderer: &MBTilesRenderer, dx: i32, dy: i32) {
-        match (self.mark1, self.mark2) {
+    /// Places the first mark, or places/moves the second one, at the chart
+    /// position under `pixel`. A pixel with no position (beyond the poles)
+    /// is ignored.
+    pub fn add_mark(&mut self, view: &ChartView, pixel: Point) {
+        let Some(position) = view.to_lonlat(pixel) else {
+            return;
+        };
+        match self.mark1 {
             // Étape 1 : rien de posé -> premier point
-            (None, _) => {
-                self.mark1 = Some(renderer.screen_to_gps(dx, dy));
+            None => {
+                self.mark1 = Some(position);
                 self.mark2 = None;
                 (self.distance, self.bearing) = (0.0, 0.0);
             }
             // Étapes suivantes : poser ou déplacer le point d'arrivée
-            (Some((lon1, lat1)), _) => {
-                let (lon2, lat2) = renderer.screen_to_gps(dx, dy);
-                self.mark2 = Some((lon2, lat2));
-                (self.distance, self.bearing) =
-                    gps::distance_bearing_nm((lon1, lat1), (lon2, lat2));
+            Some(mark1) => {
+                self.mark2 = Some(position);
+                (self.distance, self.bearing) = gps::distance_bearing_nm(mark1, position);
             }
         }
     }
@@ -43,29 +48,21 @@ impl Mesure {
         (self.distance, self.bearing) = (0.0, 0.0);
     }
 
-    pub fn find_mark1_at(
-        &self,
-        renderer: &MBTilesRenderer,
-        x: i32,
-        y: i32,
-        tolerance: i32,
-    ) -> bool {
-        let Some((px, py)) = self.get_pt1(renderer) else {
-            return false;
-        };
-        let dx = px - x;
-        let dy = py - y;
-        dx * dx + dy * dy <= tolerance * tolerance
+    /// True when `pixel` is within `tolerance` pixels of the first mark.
+    pub fn find_mark1_at(&self, view: &ChartView, pixel: Point, tolerance: i32) -> bool {
+        view.nearest(self.mark1, pixel, tolerance).is_some()
     }
 
-    pub fn modify_mark1(&mut self, renderer: &MBTilesRenderer, dx: i32, dy: i32) {
-        let (lon1, lat1) = renderer.screen_to_gps(dx, dy);
-        self.mark1 = Some((lon1, lat1));
-        if let Some((lon2, lat2)) = self.mark2 {
-            (self.distance, self.bearing) = gps::distance_bearing_nm((lon1, lat1), (lon2, lat2));
-        } else {
-            (self.distance, self.bearing) = (0.0, 0.0);
-        }
+    /// Moves the first mark to the chart position under `pixel`.
+    pub fn modify_mark1(&mut self, view: &ChartView, pixel: Point) {
+        let Some(mark1) = view.to_lonlat(pixel) else {
+            return;
+        };
+        self.mark1 = Some(mark1);
+        (self.distance, self.bearing) = match self.mark2 {
+            Some(mark2) => gps::distance_bearing_nm(mark1, mark2),
+            None => (0.0, 0.0),
+        };
     }
 
     pub fn show(&mut self, renderer: &MBTilesRenderer, screen: &mut Screen) {

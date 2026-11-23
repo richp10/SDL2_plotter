@@ -123,8 +123,8 @@ impl Session {
                 if self.state.follow {
                     self.state.map_offset.0 += dx;
                     self.state.map_offset.1 += dy;
-                } else {
-                    self.state.position = Some(self.renderer.screen_to_gps(dx, dy));
+                } else if let Some(center) = self.renderer.view().panned_center(dx, dy) {
+                    self.state.position = Some(center);
                     self.state.map_offset = (0, 0);
                 }
             }

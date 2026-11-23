@@ -2,7 +2,7 @@ const DEFAULT_ROUTE: &str = "default/route.json";
 
 use crate::geo_data::{GeoFile, GeoPoint};
 use crate::gps;
-use crate::mbtiles_renderer::MBTilesRenderer;
+use crate::mbtiles_renderer::{ChartView, MBTilesRenderer};
 use crate::screen::Screen;
 use crate::Mode;
 use sdl2::rect::Point;
@@ -157,7 +157,7 @@ impl Route {
         self.calc_route();
     }
 
-    pub fn calc_route(&mut self) {
+    fn calc_route(&mut self) {
         self.distance.clear();
 
         for w in self.track.windows(2) {
@@ -183,49 +183,17 @@ impl Route {
         Some((dist_wp, bearing_wp, dist_total))
     }
 
-    pub fn find_point_at(
-        &mut self,
-        renderer: &MBTilesRenderer,
-        mouse: (i32, i32),
-        radius: i32,
-    ) -> Option<usize> {
-        let r2 = (radius as i64) * (radius as i64);
-        self.track
-            .iter()
-            .enumerate()
-            .map(|(i, &(lon, lat))| {
-                let pt = renderer.gps_to_point((lon, lat));
-                let dx = pt.x as i64 - mouse.0 as i64;
-                let dy = pt.y as i64 - mouse.1 as i64;
-                (i, dx * dx + dy * dy)
-            })
-            .filter(|&(_, d2)| d2 <= r2)
-            .min_by_key(|&(_, d2)| d2)
-            .map(|(i, _)| i)
+    /// The route point drawn within `radius` pixels of `pixel`, if any.
+    pub fn find_point_at(&self, view: &ChartView, pixel: Point, radius: i32) -> Option<usize> {
+        view.nearest(self.track.iter().copied(), pixel, radius)
     }
 
-    pub fn find_midpoint_at(
-        &mut self,
-        renderer: &MBTilesRenderer,
-        mouse: (i32, i32),
-        radius: i32,
-    ) -> Option<usize> {
-        let r2 = (radius as i64) * (radius as i64);
-        self.midpoints()
-            .iter()
-            .enumerate()
-            .map(|(i, &(lon, lat))| {
-                let pt = renderer.gps_to_point((lon, lat));
-                let dx = pt.x as i64 - mouse.0 as i64;
-                let dy = pt.y as i64 - mouse.1 as i64;
-                (i, dx * dx + dy * dy)
-            })
-            .filter(|&(_, d2)| d2 <= r2)
-            .min_by_key(|&(_, d2)| d2)
-            .map(|(i, _)| i)
+    /// The leg whose midpoint handle is within `radius` pixels of `pixel`.
+    pub fn find_midpoint_at(&self, view: &ChartView, pixel: Point, radius: i32) -> Option<usize> {
+        view.nearest(self.midpoints(), pixel, radius)
     }
 
-    pub fn midpoints(&mut self) -> Vec<(f64, f64)> {
+    pub fn midpoints(&self) -> Vec<(f64, f64)> {
         self.track
             .windows(2)
             .map(|w| ((w[0].0 + w[1].0) / 2.0, (w[0].1 + w[1].1) / 2.0))

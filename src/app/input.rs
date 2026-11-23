@@ -5,6 +5,7 @@ use std::time::Instant;
 use super::{AppAction, Mouse, PendingWaypoint, Plotter, Press, LONG_CLICK, MOVE_TOLERANCE};
 use crate::screen::Screen;
 use crate::Mode;
+use sdl2::rect::Point;
 
 impl Plotter<'_> {
     pub(super) fn handle_pending_waypoint_event(&mut self, event: &Event) {
@@ -243,9 +244,8 @@ impl Plotter<'_> {
             self.drag_start = (x as i32, y as i32);
             self.dragging_measure_start = self.session.mode == Mode::Measurement
                 && self.session.mesure.find_mark1_at(
-                    &self.session.renderer,
-                    x as i32,
-                    y as i32,
+                    &self.session.renderer.view(),
+                    Point::new(x as i32, y as i32),
                     12,
                 );
             self.press = Some(Press {
@@ -258,7 +258,7 @@ impl Plotter<'_> {
         }
     }
 
-    fn handle_mouse_up(&mut self, x: i32, y: i32, screen: &mut Screen<'_>) {
+    fn handle_mouse_up(&mut self, x: i32, y: i32) {
         if let Some(p) = self.press.take() {
             if p.moved {
                 if self.dragging_measure_start {
@@ -298,7 +298,7 @@ impl Plotter<'_> {
                     self.dragging_measure_start = false;
                     self.mouse = Mouse::Move;
                 } else {
-                    self.handle_short_click(screen, x, y);
+                    self.handle_short_click(x, y);
                 }
             }
         }
@@ -366,7 +366,7 @@ impl Plotter<'_> {
                 mouse_btn, x, y, ..
             } => {
                 if *mouse_btn == sdl2::mouse::MouseButton::Left {
-                    self.handle_mouse_up(*x, *y, screen);
+                    self.handle_mouse_up(*x, *y);
                 }
             }
             Event::MouseMotion {
@@ -431,10 +431,11 @@ impl Plotter<'_> {
         screen: &mut Screen<'_>,
         texture: &sdl2::render::Texture,
     ) -> Result<(), String> {
+        let view = self.session.renderer.view();
         let over_mark1 = self
             .session
             .mesure
-            .find_mark1_at(&self.session.renderer, x, y, 12);
+            .find_mark1_at(&view, Point::new(x, y), 12);
         if let Some(p) = self.press.as_mut() {
             if self.dragging_measure_start {
                 let (dx, dy) = (x - p.x, y - p.y);
@@ -442,11 +443,7 @@ impl Plotter<'_> {
                     p.moved = true;
                 }
                 if p.moved {
-                    let dx = screen.screen_width as i32 / 2 - x;
-                    let dy = screen.screen_height as i32 / 2 - y;
-                    self.session
-                        .mesure
-                        .modify_mark1(&self.session.renderer, dx, dy);
+                    self.session.mesure.modify_mark1(&view, Point::new(x, y));
                     self.mouse = Mouse::Move;
                     self.dirty = true;
                 }
@@ -461,30 +458,21 @@ impl Plotter<'_> {
         Ok(())
     }
 
-    fn handle_click_mesure(&mut self, screen: &mut Screen<'_>, x: i32, y: i32) {
-        let dx = screen.screen_width as i32 / 2 - x;
-        let dy = screen.screen_height as i32 / 2 - y;
-        self.session.mesure.add_mark(&self.session.renderer, dx, dy);
+    fn handle_click_mesure(&mut self, x: i32, y: i32) {
+        let view = self.session.renderer.view();
+        self.session.mesure.add_mark(&view, Point::new(x, y));
         self.dirty = true;
     }
 
-    fn handle_click_edit_route(&mut self, screen: &mut Screen<'_>, x: i32, y: i32) {
-        self.selected = self
-            .session
-            .route
-            .find_point_at(&self.session.renderer, (x, y), 8);
+    fn handle_click_edit_route(&mut self, x: i32, y: i32) {
+        let view = self.session.renderer.view();
+        let pixel = Point::new(x, y);
+        self.selected = self.session.route.find_point_at(&view, pixel, 8);
         if self.selected.is_none() {
-            if let Some(k) = self
-                .session
-                .route
-                .find_midpoint_at(&self.session.renderer, (x, y), 8)
-            {
+            if let Some(k) = self.session.route.find_midpoint_at(&view, pixel, 8) {
                 let (longitude, latitude) = self.session.route.midpoints()[k];
                 self.session.route.insert(k, longitude, latitude);
-            } else {
-                let dx = screen.screen_width as i32 / 2 - x;
-                let dy = screen.screen_height as i32 / 2 - y;
-                let (longitude, latitude) = self.session.renderer.screen_to_gps(dx, dy);
+            } else if let Some((longitude, latitude)) = view.to_lonlat(pixel) {
                 self.session.route.add(longitude, latitude);
             }
             self.mouse = Mouse::Cross;
@@ -495,30 +483,31 @@ impl Plotter<'_> {
         self.dirty = true;
     }
 
-    fn handle_click_edit_wp(&mut self, screen: &mut Screen<'_>, x: i32, y: i32) {
-        let dx = screen.screen_width as i32 / 2 - x;
-        let dy = screen.screen_height as i32 / 2 - y;
+    fn handle_click_edit_wp(&mut self, x: i32, y: i32) {
+        let Some(position) = self.session.renderer.view().to_lonlat(Point::new(x, y)) else {
+            return;
+        };
         self.pending_waypoint = Some(PendingWaypoint {
-            position: self.session.renderer.screen_to_gps(dx, dy),
+            position,
             name: String::new(),
         });
         self.text_input.start();
         self.dirty = true;
     }
 
-    fn handle_short_click(&mut self, screen: &mut Screen<'_>, x: i32, y: i32) {
+    fn handle_short_click(&mut self, x: i32, y: i32) {
         match self.session.mode {
-            Mode::Measurement => self.handle_click_mesure(screen, x, y),
-            Mode::EditRoute => self.handle_click_edit_route(screen, x, y),
-            Mode::EditWaypoint => self.handle_click_edit_wp(screen, x, y),
+            Mode::Measurement => self.handle_click_mesure(x, y),
+            Mode::EditRoute => self.handle_click_edit_route(x, y),
+            Mode::EditWaypoint => self.handle_click_edit_wp(x, y),
         };
     }
 
     fn handle_long_click_edit_route(&mut self, x: i32, y: i32) {
-        if let Some(i) = self
-            .session
-            .route
-            .find_point_at(&self.session.renderer, (x, y), 8)
+        if let Some(i) =
+            self.session
+                .route
+                .find_point_at(&self.session.renderer.view(), Point::new(x, y), 8)
         {
             self.session.route.remove(i);
             if let Err(error) = self.session.route.save() {
@@ -530,10 +519,10 @@ impl Plotter<'_> {
     }
 
     fn handle_long_click_edit_wp(&mut self, x: i32, y: i32) {
-        if let Some(i) = self
-            .session
-            .waypoints
-            .find_point_at(&self.session.renderer, (x, y), 8)
+        if let Some(i) =
+            self.session
+                .waypoints
+                .find_point_at(&self.session.renderer.view(), Point::new(x, y), 8)
         {
             self.session.waypoints.remove(i);
             if let Err(error) = self.session.waypoints.save() {
@@ -582,10 +571,10 @@ impl Plotter<'_> {
         texture: &sdl2::render::Texture,
     ) -> Result<(), String> {
         let previous_selection = self.selected;
-        self.selected = self
-            .session
-            .route
-            .find_point_at(&self.session.renderer, (x, y), 8);
+        self.selected =
+            self.session
+                .route
+                .find_point_at(&self.session.renderer.view(), Point::new(x, y), 8);
 
         if self.selected.is_some() {
             if self.selected != previous_selection {
@@ -599,7 +588,7 @@ impl Plotter<'_> {
         if self
             .session
             .route
-            .find_midpoint_at(&self.session.renderer, (x, y), 8)
+            .find_midpoint_at(&self.session.renderer.view(), Point::new(x, y), 8)
             .is_some()
         {
             self.mouse = Mouse::Arrow;
@@ -610,11 +599,12 @@ impl Plotter<'_> {
                     p.moved = true;
                 }
                 if p.moved {
-                    let dx = screen.screen_width as i32 / 2 - x;
-                    let dy = screen.screen_height as i32 / 2 - y;
                     self.mouse = Mouse::Move;
-                    let (lon, lat) = self.session.renderer.screen_to_gps(dx, dy);
-                    self.session.route.modify(i, lon, lat);
+                    if let Some((lon, lat)) =
+                        self.session.renderer.view().to_lonlat(Point::new(x, y))
+                    {
+                        self.session.route.modify(i, lon, lat);
+                    }
                     self.dirty = true;
                 }
             } else {
@@ -634,10 +624,11 @@ impl Plotter<'_> {
         texture: &sdl2::render::Texture,
     ) -> Result<(), String> {
         let previous_selection = self.selected;
-        self.selected = self
-            .session
-            .waypoints
-            .find_point_at(&self.session.renderer, (x, y), 8);
+        self.selected = self.session.waypoints.find_point_at(
+            &self.session.renderer.view(),
+            Point::new(x, y),
+            8,
+        );
 
         if self.selected.is_some() {
             if self.selected != previous_selection {
@@ -655,11 +646,11 @@ impl Plotter<'_> {
                     p.moved = true;
                 }
                 if p.moved {
-                    let dx = screen.screen_width as i32 / 2 - x;
-                    let dy = screen.screen_height as i32 / 2 - y;
                     self.mouse = Mouse::Move;
-                    let (lon, lat) = self.session.renderer.screen_to_gps(dx, dy);
-                    self.session.waypoints.modify(i, (lon, lat));
+                    if let Some(position) = self.session.renderer.view().to_lonlat(Point::new(x, y))
+                    {
+                        self.session.waypoints.modify(i, position);
+                    }
                     self.dirty = true;
                 }
             } else {

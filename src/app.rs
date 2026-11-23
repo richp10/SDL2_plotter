@@ -17,6 +17,8 @@ mod input;
 mod render;
 mod session;
 
+pub(crate) use crate::action::AppAction;
+
 use confirm_dialog::{ConfirmAction, Confirmation};
 use session::{valid_boat_position, Session};
 
@@ -25,72 +27,6 @@ const DEFAULT_TRACK_PATH: &str = "default/track.json";
 const LONG_CLICK: Duration = Duration::from_millis(500);
 const MOVE_TOLERANCE: i32 = 5;
 const DIAGNOSTICS_INTERVAL: Duration = Duration::from_secs(10);
-
-enum AppAction {
-    SetMode(Mode),
-    CycleMode,
-    ToggleFollow,
-    FollowOn,
-    FollowOff,
-    ToggleGoto,
-    ClearRoute,
-    PreviousWaypoint,
-    NextWaypoint,
-    Quit,
-    ClearTrack,
-    ExportRouteGpx,
-    ExportTrackGpx,
-    ClearWaypoints,
-    ExportWaypointsGpx,
-    ChangeChart(usize),
-    Pan(i32, i32),
-    ZoomIn,
-    ZoomOut,
-    ShowWaypoints,
-    HideWaypoints,
-    ShowRoute,
-    HideRoute,
-    ShowTrack,
-    HideTrack,
-    ShowAis,
-    HideAis,
-    SetCourseUp(bool),
-}
-
-impl AppAction {
-    fn name(&self) -> &'static str {
-        match self {
-            Self::SetMode(_) => "SetMode",
-            Self::CycleMode => "CycleMode",
-            Self::ToggleFollow => "ToggleFollow",
-            Self::FollowOn => "On",
-            Self::FollowOff => "Off",
-            Self::ToggleGoto => "ToggleGoto",
-            Self::ClearRoute => "ClearRoute",
-            Self::PreviousWaypoint => "PreviousWaypoint",
-            Self::NextWaypoint => "NextWaypoint",
-            Self::Quit => "Quit",
-            Self::ClearTrack => "ClearTrack",
-            Self::ExportRouteGpx => "ExportRouteGpx",
-            Self::ExportTrackGpx => "ExportTrackGpx",
-            Self::ClearWaypoints => "ClearWaypoints",
-            Self::ExportWaypointsGpx => "ExportWaypointsGpx",
-            Self::ChangeChart(_) => "ChangeChart",
-            Self::Pan(_, _) => "Pan",
-            Self::ZoomIn => "ZoomIn",
-            Self::ZoomOut => "ZoomOut",
-            Self::ShowWaypoints => "ShowWaypoints",
-            Self::HideWaypoints => "HideWaypoints",
-            Self::ShowRoute => "ShowRoute",
-            Self::HideRoute => "HideRoute",
-            Self::ShowTrack => "ShowTrack",
-            Self::HideTrack => "HideTrack",
-            Self::ShowAis => "ShowAis",
-            Self::HideAis => "HideAis",
-            Self::SetCourseUp(_) => "SetCourseUp",
-        }
-    }
-}
 
 struct Press {
     start: Instant,
@@ -126,7 +62,6 @@ pub(crate) struct Plotter<'ttf> {
     confirm_dialog: confirm_dialog::ConfirmDialog<'ttf>,
     pending_waypoint: Option<PendingWaypoint>,
     text_input: sdl2::keyboard::TextInputUtil,
-    charts_name: Vec<String>,
     press: Option<Press>,
     selected: Option<usize>,
     dragging_measure_start: bool,
@@ -237,7 +172,6 @@ impl<'ttf> Plotter<'ttf> {
             confirm_dialog,
             pending_waypoint: None,
             text_input,
-            charts_name,
             press: None,
             selected: None,
             dragging_measure_start: false,

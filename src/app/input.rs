@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use super::{AppAction, Mouse, PendingWaypoint, Plotter, Press, LONG_CLICK, MOVE_TOLERANCE};
 use crate::screen::Screen;
-use crate::{topbar, Mode};
+use crate::Mode;
 
 impl Plotter<'_> {
     pub(super) fn handle_pending_waypoint_event(&mut self, event: &Event) {
@@ -116,42 +116,8 @@ impl Plotter<'_> {
     }
 
     pub(super) fn handle_topbar_event(&mut self, x: u32, y: u32) {
-        if let Some(name) = self.topbar.event(x, y) {
-            let action = match name.as_str() {
-                topbar::EDIT_ROUTE => Some(AppAction::SetMode(Mode::EditRoute)),
-                topbar::EDIT_WP => Some(AppAction::SetMode(Mode::EditWaypoint)),
-                topbar::EDIT_MESURE => Some(AppAction::SetMode(Mode::Measurement)),
-                topbar::CLEAR_ROUTE => Some(AppAction::ClearRoute),
-                topbar::FOLLOW_ON => Some(AppAction::FollowOn),
-                topbar::FOLLOW_OFF => Some(AppAction::FollowOff),
-                topbar::PREVIOUS => Some(AppAction::PreviousWaypoint),
-                topbar::GOTO => Some(AppAction::ToggleGoto),
-                topbar::NEXT => Some(AppAction::NextWaypoint),
-                topbar::QUITTE => Some(AppAction::Quit),
-                topbar::CLEAR_TRACK => Some(AppAction::ClearTrack),
-                topbar::EXPORT_ROUTE_GPX => Some(AppAction::ExportRouteGpx),
-                topbar::EXPORT_TRACK_GPX => Some(AppAction::ExportTrackGpx),
-                topbar::CLEAR_WP => Some(AppAction::ClearWaypoints),
-                topbar::EXPORT_WP_GPX => Some(AppAction::ExportWaypointsGpx),
-                topbar::SHOW_WP => Some(AppAction::ShowWaypoints),
-                topbar::HIDE_WP => Some(AppAction::HideWaypoints),
-                topbar::SHOW_TRACK => Some(AppAction::ShowTrack),
-                topbar::HIDE_TRACK => Some(AppAction::HideTrack),
-                topbar::SHOW_ROUTE => Some(AppAction::ShowRoute),
-                topbar::HIDE_ROUTE => Some(AppAction::HideRoute),
-                topbar::SHOW_AIS => Some(AppAction::ShowAis),
-                topbar::HIDE_AIS => Some(AppAction::HideAis),
-                topbar::NORTH_UP => Some(AppAction::SetCourseUp(false)),
-                topbar::COURSE_UP => Some(AppAction::SetCourseUp(true)),
-                _ => self
-                    .charts_name
-                    .iter()
-                    .position(|chart_name| chart_name == &name)
-                    .map(AppAction::ChangeChart),
-            };
-            if let Some(action) = action {
-                self.execute_action(action);
-            }
+        if let Some(action) = self.topbar.event(x, y) {
+            self.execute_action(action);
         }
     }
 

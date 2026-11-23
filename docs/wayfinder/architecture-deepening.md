@@ -32,6 +32,7 @@ release run), and CLAUDE.md describing the result.
 <!-- one line per closed ticket, appended as each is resolved -->
 
 - [T1 — One persisted-collection module](#t1--one-persisted-collection-module-geofile) — `GeoFile<R>` in `geo_data.rs`, generic over a `GeoRecord`, with two optional legacy adapters and a `load` that never fails; route, track and waypoints each own one, `State` reuses `set_aside`.
+- [T4 — Menu entries carry their action](#t4--menu-entries-carry-their-action) — `MenuBar::event -> Option<AppAction>`; `AppAction` moved to `action.rs`; the 26 string constants and the `input.rs` match are gone.
 
 ## Not yet specified
 
@@ -73,7 +74,8 @@ release run), and CLAUDE.md describing the result.
   bypassing actions) have a seam and a test?
 
 ### T4 — Menu entries carry their action
-- type: task · status: open · blocked by: none
+- type: task · status: closed · blocked by: none
+- Resolution: each `Entry { label, action }` is built in `MenuBar::new`, chart entries as `ChangeChart(i)` in `charts_path` order; `event` returns the entry's action. `AppAction` moved from `app.rs` to its own `action.rs` (re-exported by `app`) so `topbar` does not depend on `app`; it derives `Copy` and `PartialEq` for the tests. The string constants, the chart-name fallback and `Plotter::charts_name` are deleted. Tests: a chart named "Exit" or "On" still switches chart; every entry of every menu yields an action.
 - Question: `MenuBar::event` returns `Option<AppAction>` built from the menu
   definition; what happens to the 26 string constants and the chart-name
   fallback?

@@ -1,5 +1,7 @@
+use crate::action::AppAction;
 use crate::config::FontConfig;
 use crate::screen::{draw_text, TextAlign};
+use crate::Mode;
 use sdl2::pixels::Color;
 use sdl2::rect::Rect;
 use sdl2::render::{BlendMode, WindowCanvas};
@@ -14,35 +16,21 @@ const MENU_WIDTH: u32 = 170; // largeur d'un menu déroulant
 const ENTRY_HEIGHT: u32 = 28; // hauteur d'une entrée du menu
 const HEIGHT: u32 = 32; // hauteur de la barre
 
-pub const EDIT_ROUTE: &str = "Edit Route";
-pub const EDIT_WP: &str = "Edit Waypoint";
-pub const EDIT_MESURE: &str = "Measurement";
-pub const CLEAR_ROUTE: &str = "Clear Route";
-pub const GOTO: &str = "From Boat";
-pub const PREVIOUS: &str = "Previous Wp";
-pub const NEXT: &str = "Next Wp";
-pub const QUITTE: &str = "Exit";
-pub const CLEAR_TRACK: &str = "Clear Track";
-pub const EXPORT_ROUTE_GPX: &str = "Export Route GPX";
-pub const EXPORT_TRACK_GPX: &str = "Export Track GPX";
-pub const CLEAR_WP: &str = "Clear Waypoint";
-pub const EXPORT_WP_GPX: &str = "Export Waypoints GPX";
-pub const SHOW_WP: &str = "Show Waypoint";
-pub const HIDE_WP: &str = "Hide Waypoint";
-pub const SHOW_TRACK: &str = "Show Track";
-pub const HIDE_TRACK: &str = "Hide Track";
-pub const SHOW_ROUTE: &str = "Show Route";
-pub const HIDE_ROUTE: &str = "Hide Route";
-pub const SHOW_AIS: &str = "Show Ais";
-pub const HIDE_AIS: &str = "Hide Ais";
-pub const NORTH_UP: &str = "North Up";
-pub const COURSE_UP: &str = "Course Up";
-pub const FOLLOW_ON: &str = "On";
-pub const FOLLOW_OFF: &str = "Off";
+struct Entry {
+    label: String,
+    action: AppAction,
+}
 
 struct Menu {
     title: &'static str,
-    entries: Vec<String>,
+    entries: Vec<Entry>,
+}
+
+fn entry(label: &str, action: AppAction) -> Entry {
+    Entry {
+        label: label.to_string(),
+        action,
+    }
 }
 
 /// Menu state and hit testing. Knows nothing about SDL so it can be
@@ -61,61 +49,82 @@ pub struct Topbar<'ttf> {
 }
 
 impl MenuBar {
-    pub fn new(names: Vec<String>) -> Self {
+    /// The menu bar. `chart_names` are the Charts entries, in the order of
+    /// `Session::charts_path`, so entry `i` is `ChangeChart(i)`; a chart
+    /// whose name matches another entry's label is still a chart.
+    pub fn new(chart_names: Vec<String>) -> Self {
+        let charts = chart_names
+            .into_iter()
+            .enumerate()
+            .map(|(index, name)| entry(&name, AppAction::ChangeChart(index)))
+            .collect();
         let menus = vec![
             Menu {
                 title: "App",
-                entries: vec![QUITTE.into()],
+                entries: vec![entry("Exit", AppAction::Quit)],
             },
             Menu {
                 title: "Charts",
-                entries: names.clone(),
+                entries: charts,
             },
             Menu {
                 title: "Route",
                 entries: vec![
-                    CLEAR_ROUTE.into(),
-                    EXPORT_ROUTE_GPX.into(),
-                    GOTO.into(),
-                    PREVIOUS.into(),
-                    NEXT.into(),
-                    SHOW_ROUTE.into(),
-                    HIDE_ROUTE.into(),
+                    entry("Clear Route", AppAction::ClearRoute),
+                    entry("Export Route GPX", AppAction::ExportRouteGpx),
+                    entry("From Boat", AppAction::ToggleGoto),
+                    entry("Previous Wp", AppAction::PreviousWaypoint),
+                    entry("Next Wp", AppAction::NextWaypoint),
+                    entry("Show Route", AppAction::ShowRoute),
+                    entry("Hide Route", AppAction::HideRoute),
                 ],
             },
             Menu {
                 title: "Track",
                 entries: vec![
-                    CLEAR_TRACK.into(),
-                    EXPORT_TRACK_GPX.into(),
-                    SHOW_TRACK.into(),
-                    HIDE_TRACK.into(),
+                    entry("Clear Track", AppAction::ClearTrack),
+                    entry("Export Track GPX", AppAction::ExportTrackGpx),
+                    entry("Show Track", AppAction::ShowTrack),
+                    entry("Hide Track", AppAction::HideTrack),
                 ],
             },
             Menu {
                 title: "Waypoints",
                 entries: vec![
-                    CLEAR_WP.into(),
-                    EXPORT_WP_GPX.into(),
-                    SHOW_WP.into(),
-                    HIDE_WP.into(),
+                    entry("Clear Waypoint", AppAction::ClearWaypoints),
+                    entry("Export Waypoints GPX", AppAction::ExportWaypointsGpx),
+                    entry("Show Waypoint", AppAction::ShowWaypoints),
+                    entry("Hide Waypoint", AppAction::HideWaypoints),
                 ],
             },
             Menu {
                 title: "AIS",
-                entries: vec![SHOW_AIS.into(), HIDE_AIS.into()],
+                entries: vec![
+                    entry("Show Ais", AppAction::ShowAis),
+                    entry("Hide Ais", AppAction::HideAis),
+                ],
             },
             Menu {
                 title: "Mode",
-                entries: vec![EDIT_MESURE.into(), EDIT_ROUTE.into(), EDIT_WP.into()],
+                entries: vec![
+                    entry("Measurement", AppAction::SetMode(Mode::Measurement)),
+                    entry("Edit Route", AppAction::SetMode(Mode::EditRoute)),
+                    entry("Edit Waypoint", AppAction::SetMode(Mode::EditWaypoint)),
+                ],
             },
             Menu {
                 title: "Orientation",
-                entries: vec![NORTH_UP.into(), COURSE_UP.into()],
+                entries: vec![
+                    entry("North Up", AppAction::SetCourseUp(false)),
+                    entry("Course Up", AppAction::SetCourseUp(true)),
+                ],
             },
             Menu {
                 title: "Follow",
-                entries: vec![FOLLOW_ON.into(), FOLLOW_OFF.into()],
+                entries: vec![
+                    entry("On", AppAction::FollowOn),
+                    entry("Off", AppAction::FollowOff),
+                ],
             },
         ];
 
@@ -147,8 +156,8 @@ impl MenuBar {
     // ---------- Événements ----------
 
     /// À appeler sur un clic gauche.
-    /// Retourne Some((nom, état)) quand une entrée est choisie.
-    pub fn event(&mut self, x: u32, y: u32) -> Option<String> {
+    /// Returns the action of the entry chosen, if the click chose one.
+    pub fn event(&mut self, x: u32, y: u32) -> Option<AppAction> {
         // Clic dans la barre : ouvre / ferme le menu
         if y < HEIGHT {
             self.open = match self.menu_at(x) {
@@ -161,10 +170,10 @@ impl MenuBar {
 
         // Clic dans le menu déroulant
         if let (Some(i), Some(j)) = (self.open, self.entry_at(x, y)) {
-            let e = &mut self.menus[i].entries[j];
+            let action = self.menus[i].entries[j].action;
             self.open = None;
             self.hover_entry = None;
-            return Some(e.to_string());
+            return Some(action);
         }
 
         // Clic ailleurs : on ferme le menu
@@ -222,7 +231,7 @@ impl<'ttf> Topbar<'ttf> {
         })
     }
 
-    pub fn event(&mut self, x: u32, y: u32) -> Option<String> {
+    pub fn event(&mut self, x: u32, y: u32) -> Option<AppAction> {
         self.bar.event(x, y)
     }
 
@@ -275,7 +284,7 @@ impl<'ttf> Topbar<'ttf> {
             canvas.set_draw_color(COLOR);
             let _ = canvas.fill_rect(Rect::new(x0, HEIGHT as i32, MENU_WIDTH, h));
 
-            for (j, e) in menu.entries.iter().enumerate() {
+            for (j, entry) in menu.entries.iter().enumerate() {
                 let y = (HEIGHT + j as u32 * ENTRY_HEIGHT) as i32;
                 if self.bar.hover_entry == Some(j) {
                     canvas.set_draw_color(HOVER_COLOR);
@@ -285,7 +294,7 @@ impl<'ttf> Topbar<'ttf> {
                 let _ = draw_text(
                     canvas,
                     &self.font,
-                    e,
+                    &entry.label,
                     Rect::new(x0 + 10, y, MENU_WIDTH - 10, ENTRY_HEIGHT),
                     TextAlign::Left,
                     Color::BLACK,
@@ -325,7 +334,7 @@ mod tests {
         let second_entry_y = HEIGHT + ENTRY_HEIGHT + ENTRY_HEIGHT / 2;
         assert_eq!(
             bar.event(ROUTE_X, second_entry_y),
-            Some(EXPORT_ROUTE_GPX.to_string())
+            Some(AppAction::ExportRouteGpx)
         );
         assert!(!bar.is_open());
     }
@@ -336,7 +345,7 @@ mod tests {
         bar.event(ITEM_WIDTH + 10, 10);
         assert_eq!(
             bar.event(ITEM_WIDTH + 10, HEIGHT + ENTRY_HEIGHT + 5),
-            Some("Channel".to_string())
+            Some(AppAction::ChangeChart(1))
         );
     }
 
@@ -363,8 +372,40 @@ mod tests {
         let first_entry_y = HEIGHT + ENTRY_HEIGHT / 2;
         assert_eq!(
             bar.event(3 * ITEM_WIDTH + 10, first_entry_y),
-            Some(CLEAR_TRACK.to_string())
+            Some(AppAction::ClearTrack)
         );
+    }
+
+    #[test]
+    fn a_chart_named_like_a_menu_entry_still_switches_chart() {
+        let mut bar = MenuBar::new(vec!["Exit".to_string(), "On".to_string()]);
+        bar.event(ITEM_WIDTH + 10, 10); // open Charts
+        assert_eq!(
+            bar.event(ITEM_WIDTH + 10, HEIGHT + 5),
+            Some(AppAction::ChangeChart(0))
+        );
+        bar.event(ITEM_WIDTH + 10, 10);
+        assert_eq!(
+            bar.event(ITEM_WIDTH + 10, HEIGHT + ENTRY_HEIGHT + 5),
+            Some(AppAction::ChangeChart(1))
+        );
+    }
+
+    #[test]
+    fn every_entry_of_every_menu_maps_to_an_action() {
+        let mut bar = bar();
+        let menus = bar.menus.len();
+        for i in 0..menus {
+            let x = i as u32 * ITEM_WIDTH + 10;
+            let entries = bar.menus[i].entries.len();
+            assert!(entries > 0, "menu {i} is empty");
+            for j in 0..entries {
+                bar.close();
+                bar.event(x, 10);
+                let y = HEIGHT + j as u32 * ENTRY_HEIGHT + 5;
+                assert!(bar.event(x, y).is_some(), "menu {i} entry {j}");
+            }
+        }
     }
 
     #[test]

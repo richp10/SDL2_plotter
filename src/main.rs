@@ -5,6 +5,7 @@
 // pkill -9 plotter
 // sudo apt install libsdl2-gfx-1.0-0
 
+mod action;
 mod ais;
 mod app;
 mod boat;

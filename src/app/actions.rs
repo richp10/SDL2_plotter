@@ -106,10 +106,12 @@ impl Session {
                 }
             }
             AppAction::ChangeChart(index) => {
+                // The new chart may open at another zoom, where a pixel offset
+                // means a different distance: anchor on what is visible first.
+                self.anchor_on_visible_center();
                 match self.renderer.change_map(&self.charts_path[index]) {
                     Ok(()) => {
                         self.state.map = self.charts_path[index].clone();
-                        self.state.map_offset = (0, 0);
                     }
                     Err(error) => {
                         crate::diagnostics::record(
@@ -120,18 +122,22 @@ impl Session {
                 }
             }
             AppAction::Pan(dx, dy) => {
-                if self.state.follow {
+                if self.following_boat() {
+                    // The boat stays the anchor; the drag is an offset from it.
                     self.state.map_offset.0 += dx;
                     self.state.map_offset.1 += dy;
                 } else if let Some(center) = self.renderer.view().panned_center(dx, dy) {
+                    // Nothing to be offset from: the saved position moves.
                     self.state.position = Some(center);
                     self.state.map_offset = (0, 0);
                 }
             }
             AppAction::ZoomIn => {
+                self.anchor_on_visible_center();
                 self.state.zoom = self.renderer.zoom_increase();
             }
             AppAction::ZoomOut => {
+                self.anchor_on_visible_center();
                 self.state.zoom = self.renderer.zoom_decrease();
             }
             AppAction::HideWaypoints => self.state.display_waypoint = false,
@@ -173,6 +179,20 @@ impl Session {
             }
         }
         self.sync_view();
+    }
+
+    /// True while the view is anchored on a live boat fix.
+    fn following_boat(&self) -> bool {
+        self.state.follow && super::session::valid_boat_position(&self.boat)
+    }
+
+    /// Unless the boat is the anchor, folds the pan offset into the saved
+    /// position so that whatever changes the zoom keeps the visible centre.
+    /// A pixel offset is a different distance at each zoom; a position is not.
+    fn anchor_on_visible_center(&mut self) {
+        if !self.following_boat() {
+            self.center_map_on_visible_center();
+        }
     }
 
     pub(super) fn center_map_on_visible_center(&mut self) {
@@ -233,10 +253,90 @@ mod tests {
         fx.finish();
     }
 
+    fn valid_boat() -> crate::boat::BoatState {
+        crate::boat::BoatState {
+            longitude: 0.0,
+            latitude: 0.0,
+            position_valid: true,
+            speed_over_ground: 4.0,
+            course_over_ground: 0.0,
+        }
+    }
+
+    fn visible_centre(session: &Session) -> (f64, f64) {
+        session
+            .renderer
+            .view()
+            .to_lonlat(sdl2::rect::Point::new(256, 128))
+            .unwrap()
+    }
+
+    fn assert_close(actual: (f64, f64), expected: (f64, f64)) {
+        // Offsets are whole pixels; allow one pixel of rounding at zoom 2.
+        assert!(
+            (actual.0 - expected.0).abs() < 0.4 && (actual.1 - expected.1).abs() < 0.4,
+            "got {actual:?}, expected {expected:?}"
+        );
+    }
+
+    #[test]
+    fn panning_while_following_without_a_fix_moves_the_position_like_not_following() {
+        let mut fx = session(&[2]);
+        fx.session.state.follow = true;
+        fx.session.state.position = Some((0.0, 0.0));
+        fx.session.sync_view();
+        fx.session.execute_action(AppAction::Pan(100, 0));
+        assert_eq!(
+            fx.session.state.map_offset,
+            (0, 0),
+            "no boat to be offset from"
+        );
+        let (lon, _) = fx.session.state.position.unwrap();
+        assert!(lon < 0.0, "the saved position moved: {lon}");
+        fx.finish();
+    }
+
+    #[test]
+    fn changing_chart_keeps_the_visible_centre_when_the_view_was_dragged() {
+        let mut fx = session(&[2]);
+        fx.session.state.follow = false;
+        fx.session.state.position = Some((0.0, 0.0));
+        fx.session.state.map_offset = (90, 30);
+        fx.session.sync_view();
+        let before = visible_centre(&fx.session);
+        assert!(before.0 < -5.0, "the drag moved the view: {before:?}");
+
+        fx.session.execute_action(AppAction::ChangeChart(0));
+
+        assert_close(visible_centre(&fx.session), before);
+        assert_eq!(fx.session.state.map_offset, (0, 0));
+        fx.finish();
+    }
+
+    #[test]
+    fn zooming_keeps_the_visible_centre_when_the_view_was_dragged() {
+        let mut fx = session(&[2, 3]);
+        fx.session.state.follow = false;
+        fx.session.state.position = Some((0.0, 0.0));
+        fx.session.state.map_offset = (90, 30);
+        fx.session.sync_view();
+        let before = visible_centre(&fx.session);
+
+        fx.session.execute_action(AppAction::ZoomIn);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        fx.session.renderer.advance_zoom_animation();
+        fx.session.sync_view();
+
+        assert_close(visible_centre(&fx.session), before);
+        assert_eq!(fx.session.state.map_offset, (0, 0));
+        fx.finish();
+    }
+
     #[test]
     fn panning_while_following_drags_the_chart_by_an_offset() {
         let mut fx = session(&[2]);
         fx.session.state.follow = true;
+        fx.session.boat = valid_boat();
         fx.session.execute_action(AppAction::Pan(30, -10));
         fx.session.execute_action(AppAction::Pan(5, 5));
         assert_eq!(fx.session.state.map_offset, (35, -5));
@@ -262,6 +362,7 @@ mod tests {
     fn turning_follow_off_folds_the_pan_offset_into_the_position() {
         let mut fx = session(&[2]);
         fx.session.state.follow = true;
+        fx.session.boat = valid_boat();
         fx.session.state.position = Some((0.0, 0.0));
         fx.session.execute_action(AppAction::Pan(100, 0));
         fx.session.execute_action(AppAction::FollowOff);
@@ -319,12 +420,14 @@ mod tests {
         assert_eq!(fx.session.state.map_offset, (0, 0));
 
         fx.session.state.map_offset = (7, 7);
+        fx.session.sync_view();
+        let before = visible_centre(&fx.session);
         fx.session.execute_action(AppAction::ChangeChart(1));
         assert_eq!(
             fx.session.state.map, chart,
             "the missing chart is not recorded"
         );
-        assert_eq!(fx.session.state.map_offset, (7, 7));
+        assert_close(visible_centre(&fx.session), before);
         fx.finish();
     }
 

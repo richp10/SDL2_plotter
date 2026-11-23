@@ -19,9 +19,7 @@ impl Streamer {
     pub fn start(config: &StreamingConfig) -> anyhow::Result<Self> {
         let frame = Arc::new(RwLock::new(None));
         let address = format!("{}:{}", config.bind_address, config.port);
-        let listener =
-            TcpListener::bind(&address).map_err(|error| anyhow::anyhow!(error))?;
-        listener.set_nonblocking(true).ok();
+        let listener = listen(&address).map_err(|error| anyhow::anyhow!(error))?;
 
         crate::diagnostics::record(
             "INFO",
@@ -66,10 +64,28 @@ impl Streamer {
     }
 }
 
+fn listen(address: &str) -> std::io::Result<TcpListener> {
+    let listener = TcpListener::bind(address)?;
+    listener.set_nonblocking(true)?;
+    Ok(listener)
+}
+
 fn serve(listener: TcpListener, frame: Arc<RwLock<Option<Vec<u8>>>>) {
     loop {
         match listener.accept() {
             Ok((mut stream, _)) => {
+                // The listener is non-blocking so this loop can poll it. On
+                // Windows an accepted socket inherits that flag (Linux does
+                // not), and the handler's first read would then fail with
+                // WouldBlock whenever the request has not arrived yet,
+                // dropping the connection. Each client socket must block.
+                if let Err(error) = stream.set_nonblocking(false) {
+                    crate::diagnostics::record(
+                        "WARN",
+                        format!("Client MJPEG refusé (mode bloquant): {error}"),
+                    );
+                    continue;
+                }
                 let frame = Arc::clone(&frame);
                 std::thread::spawn(move || {
                     let _ = handle_client(&mut stream, frame);
@@ -91,6 +107,8 @@ fn handle_client(
     frame: Arc<RwLock<Option<Vec<u8>>>>,
 ) -> anyhow::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    // A viewer that stops reading must not keep this thread blocked forever.
+    stream.set_write_timeout(Some(Duration::from_secs(10)))?;
     let mut request = [0u8; 4096];
     let size = stream.read(&mut request)?;
     let request_text = String::from_utf8_lossy(&request[..size]);
@@ -141,4 +159,77 @@ fn handle_client(
         stream.write_all(html.as_bytes())?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FAKE_JPEG: &[u8] = &[0xff, 0xd8, 0x01, 0x02, 0x03, 0xff, 0xd9];
+
+    /// Starts the real server loop on a free loopback port with a frame
+    /// already available, exactly as `Streamer::start` would.
+    fn start_test_server() -> std::net::SocketAddr {
+        let listener = listen("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let frame = Arc::new(RwLock::new(Some(FAKE_JPEG.to_vec())));
+        std::thread::spawn(move || serve(listener, frame));
+        address
+    }
+
+    /// Connects, waits `request_delay` before sending the request (as a
+    /// browser or a slow network might), and returns how long the first
+    /// complete frame took to arrive.
+    fn time_to_first_frame(
+        address: std::net::SocketAddr,
+        request_delay: Duration,
+    ) -> Result<Duration, String> {
+        let started = Instant::now();
+        let mut client = TcpStream::connect(address).map_err(|e| e.to_string())?;
+        client
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        std::thread::sleep(request_delay);
+        client
+            .write_all(b"GET /stream HTTP/1.1\r\nHost: plotter\r\n\r\n")
+            .map_err(|e| format!("request not accepted: {e}"))?;
+
+        let mut received = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            match client.read(&mut chunk) {
+                Ok(0) => return Err(format!("connection closed after {} bytes", received.len())),
+                Ok(n) => {
+                    received.extend_from_slice(&chunk[..n]);
+                    if received.windows(FAKE_JPEG.len()).any(|w| w == FAKE_JPEG) {
+                        return Ok(started.elapsed());
+                    }
+                }
+                Err(e) => return Err(format!("no frame after {:?}: {e}", started.elapsed())),
+            }
+        }
+    }
+
+    #[test]
+    fn first_frame_arrives_promptly_when_the_request_is_sent_immediately() {
+        let address = start_test_server();
+        let elapsed = time_to_first_frame(address, Duration::ZERO).unwrap();
+        assert!(elapsed < Duration::from_millis(1500), "{elapsed:?}");
+    }
+
+    #[test]
+    fn first_frame_arrives_promptly_when_the_request_is_sent_after_a_pause() {
+        let address = start_test_server();
+        let elapsed = time_to_first_frame(address, Duration::from_millis(100)).unwrap();
+        assert!(elapsed < Duration::from_millis(1500), "{elapsed:?}");
+    }
+
+    #[test]
+    fn every_connection_in_a_burst_is_served() {
+        let address = start_test_server();
+        let failures: Vec<String> = (0..20)
+            .filter_map(|_| time_to_first_frame(address, Duration::from_millis(5)).err())
+            .collect();
+        assert!(failures.is_empty(), "{} of 20 failed: {:?}", failures.len(), failures.first());
+    }
 }

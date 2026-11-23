@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 
 use image::{imageops, ImageBuffer, Rgba, RgbaImage};
 use lru::LruCache;
@@ -14,8 +15,16 @@ const ZOOM_ANIMATION_DURATION: Duration = Duration::from_millis(240);
 const ROTATION_MARGIN: u32 = 4;
 const MAP_BACKGROUND: Rgba<u8> = Rgba([245, 245, 245, 255]);
 
+/// A decoded tile. `opaque` is computed once at decode time so that
+/// compositing can copy the tile instead of alpha-blending it.
+struct Tile {
+    image: RgbaImage,
+    opaque: bool,
+}
+
 /// Cached tile: `None` means "tile fetched but could not be decoded / did not exist".
-type CachedTile = Option<RgbaImage>;
+/// Shared through an `Arc` so a cache hit does not copy the image.
+type CachedTile = Option<Arc<Tile>>;
 
 pub struct MBTilesRenderer {
     #[allow(dead_code)]
@@ -527,14 +536,17 @@ impl MBTilesRenderer {
         }
 
         let data = self.fetch_tile_bytes(z, x, y).unwrap_or(None);
-        let img = data.and_then(|bytes| {
-            image::load_from_memory(&bytes)
-                .ok()
-                .map(|dyn_img| dyn_img.to_rgba8())
-        });
+        let tile = data
+            .and_then(|bytes| image::load_from_memory(&bytes).ok())
+            .map(|dyn_img| {
+                let has_alpha = dyn_img.color().has_alpha();
+                let image = dyn_img.to_rgba8();
+                let opaque = !has_alpha || image.chunks_exact(4).all(|pixel| pixel[3] == 255);
+                Arc::new(Tile { image, opaque })
+            });
 
-        self.cache.put(key, img.clone());
-        img
+        self.cache.put(key, tile.clone());
+        tile
     }
 
     fn clamp_zoom(&self, zoom: i32) -> i32 {
@@ -585,12 +597,16 @@ impl MBTilesRenderer {
 
                 let wrapped_x = tx.rem_euclid(n_tiles);
 
-                if let Some(tile_img) = self.get_tile_image(zoom, wrapped_x, ty) {
+                if let Some(tile) = self.get_tile_image(zoom, wrapped_x, ty) {
                     let px = (tx as f64 * tile_size - origin_x).round() as i64;
                     let py = (ty as f64 * tile_size - origin_y).round() as i64;
-                    // overlay applique la fusion alpha, equivalent de
-                    // canvas.paste(tile_img, (px, py), tile_img) en PIL
-                    imageops::overlay(&mut canvas, &tile_img, px, py);
+                    if tile.opaque {
+                        // Plain copy: no per-pixel alpha arithmetic needed.
+                        imageops::replace(&mut canvas, &tile.image, px, py);
+                    } else {
+                        // Alpha blend, for overlay charts with transparency.
+                        imageops::overlay(&mut canvas, &tile.image, px, py);
+                    }
                 }
             }
         }
@@ -775,6 +791,10 @@ mod tests {
     /// Writes a small raster MBTiles file holding every tile of the given
     /// zoom levels, each a solid-colour 256x256 PNG.
     fn fixture_chart(zooms: &[i32]) -> std::path::PathBuf {
+        fixture_chart_with(zooms, Rgba([0, 120, 200, 255]))
+    }
+
+    fn fixture_chart_with(zooms: &[i32], colour: Rgba<u8>) -> std::path::PathBuf {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -784,7 +804,7 @@ mod tests {
             std::process::id()
         ));
         let mut png = Vec::new();
-        RgbaImage::from_pixel(TILE_SIZE, TILE_SIZE, Rgba([0, 120, 200, 255]))
+        RgbaImage::from_pixel(TILE_SIZE, TILE_SIZE, colour)
             .write_to(&mut std::io::Cursor::new(&mut png), image::ImageOutputFormat::Png)
             .unwrap();
 
@@ -807,6 +827,37 @@ mod tests {
             }
         }
         path
+    }
+
+    /// Renders a 512x256 view centred on (0, 0) and returns the centre pixel.
+    fn centre_pixel_of(path: &std::path::Path) -> Rgba<u8> {
+        let path_str = path.to_str().unwrap();
+        let mut renderer =
+            MBTilesRenderer::new(path_str, 2, 512, 256, &RenderingConfig::default(), path_str)
+                .unwrap();
+        let (pixels, rect) = renderer.get_raw_rgba(0.0, 0.0, (0, 0));
+        let (width, height) = (rect.width() as usize, rect.height() as usize);
+        let index = ((height / 2) * width + width / 2) * 4;
+        Rgba([pixels[index], pixels[index + 1], pixels[index + 2], pixels[index + 3]])
+    }
+
+    #[test]
+    fn opaque_tiles_are_copied_exactly() {
+        let path = fixture_chart_with(&[2], Rgba([10, 20, 30, 255]));
+        assert_eq!(centre_pixel_of(&path), Rgba([10, 20, 30, 255]));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn translucent_tiles_blend_over_the_map_background() {
+        // Black at half opacity over the light grey background.
+        let path = fixture_chart_with(&[2], Rgba([0, 0, 0, 128]));
+        let Rgba([r, g, b, a]) = centre_pixel_of(&path);
+        let expected = MAP_BACKGROUND.0[0] as i32 / 2; // about 122
+        assert!((r as i32 - expected).abs() <= 2, "r={r}");
+        assert_eq!((r, g), (g, b));
+        assert!(a >= 254, "a={a}"); // blending rounds the alpha down by one
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

@@ -20,6 +20,8 @@ use projection::{
     source_dimensions, source_zoom_for, world_scale, world_to_lonlat, world_to_screen_delta,
     TILE_SIZE,
 };
+#[cfg(test)]
+pub(crate) use tile_store::test_support;
 use tile_store::TileStore;
 
 const ZOOM_ANIMATION_DURATION: Duration = Duration::from_millis(240);

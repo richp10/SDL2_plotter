@@ -367,7 +367,7 @@ impl TileStore {
 
 /// Fixture charts shared by the store's and the renderer's tests.
 #[cfg(test)]
-pub(super) mod test_support {
+pub(crate) mod test_support {
     use super::super::projection::TILE_SIZE;
     use image::{Rgba, RgbaImage};
     use rusqlite::Connection;

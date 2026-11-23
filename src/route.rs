@@ -1,6 +1,5 @@
 mod gpx;
 const DEFAULT_ROUTE: &str = "default/route.json";
-const LEGACY_ROUTE: &str = "default/route.gpx";
 
 use crate::gps;
 use crate::mbtiles_renderer::MBTilesRenderer;
@@ -8,7 +7,7 @@ use crate::screen::Screen;
 use crate::Mode;
 use sdl2::rect::Point;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
 pub struct Route {
@@ -16,31 +15,50 @@ pub struct Route {
     distance: Vec<f64>,
     restante: Vec<f64>,
     longueur: f64,
+    /// Where `save` writes; set by `load`.
+    path: PathBuf,
 }
 
 impl Route {
     pub fn new() -> Result<Self, String> {
-        let json_path = Path::new(DEFAULT_ROUTE);
-        let legacy_path = Path::new(LEGACY_ROUTE);
+        Self::load(Path::new(DEFAULT_ROUTE))
+    }
+
+    /// Loads the route saved at `json_path` (a missing file is an empty
+    /// route), migrating a legacy `.gpx` beside it if that is all there is.
+    /// `save` writes back to the same path.
+    pub fn load(json_path: &Path) -> Result<Self, String> {
+        let legacy_path = json_path.with_extension("gpx");
         let migrating = !json_path.exists() && legacy_path.exists();
-        let track = crate::geo_data::read_or_migrate(json_path, legacy_path, gpx::load_gpx)
+        let track = crate::geo_data::read_or_migrate(json_path, &legacy_path, gpx::load_gpx)
             .map_err(|error| format!("impossible de charger la route: {error}"))?;
         if migrating {
             crate::diagnostics::record(
                 "INFO",
-                format!("Route migrée de {LEGACY_ROUTE} vers {DEFAULT_ROUTE}"),
+                format!(
+                    "Route migrée de {} vers {}",
+                    legacy_path.display(),
+                    json_path.display()
+                ),
             );
         }
         crate::diagnostics::record("INFO", format!("Route chargée: {} points", track.len()));
-        Ok(Route::from_points(track))
+        Ok(Route::from_points_at(track, json_path))
     }
 
+    #[cfg(test)]
     fn from_points(track: Vec<(f64, f64)>) -> Self {
+        Self::from_points_at(track, Path::new(DEFAULT_ROUTE))
+    }
+
+    /// A route over `track` that `save` will write to `path`.
+    pub(crate) fn from_points_at(track: Vec<(f64, f64)>, path: &Path) -> Self {
         let mut route = Route {
             track,
             distance: Vec::new(),
             restante: Vec::new(),
             longueur: 0.0,
+            path: path.to_path_buf(),
         };
         route.calc_route();
         route
@@ -101,7 +119,7 @@ impl Route {
     }
 
     pub fn save(&self) -> io::Result<()> {
-        crate::geo_data::write(Path::new(DEFAULT_ROUTE), &self.track)
+        crate::geo_data::write(&self.path, &self.track)
     }
 
     pub fn export_gpx(&self, path: &Path) -> io::Result<()> {

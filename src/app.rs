@@ -7,7 +7,7 @@ use crate::{
 use mbtiles_renderer::MBTilesRenderer;
 use sdl2::event::Event;
 use sdl2::ttf::Sdl2TtfContext;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
 
@@ -15,20 +15,16 @@ mod actions;
 mod confirm_dialog;
 mod input;
 mod render;
+mod session;
+
+use confirm_dialog::{ConfirmAction, Confirmation};
+use session::{valid_boat_position, Session};
 
 const STATE_FILE: &str = "default/state.json";
 const DEFAULT_TRACK_PATH: &str = "default/track.json";
 const LONG_CLICK: Duration = Duration::from_millis(500);
 const MOVE_TOLERANCE: i32 = 5;
 const DIAGNOSTICS_INTERVAL: Duration = Duration::from_secs(10);
-
-fn valid_boat_position(boat: &BoatState) -> bool {
-    boat.position_valid
-        && boat.longitude.is_finite()
-        && boat.latitude.is_finite()
-        && (-180.0..=180.0).contains(&boat.longitude)
-        && (-90.0..=90.0).contains(&boat.latitude)
-}
 
 enum AppAction {
     SetMode(Mode),
@@ -118,26 +114,18 @@ enum Mouse {
 }
 
 pub(crate) struct Plotter<'ttf> {
-    renderer: MBTilesRenderer,
-    state: state::State,
-    mode: Mode,
-    running: bool,
+    /// Everything the actions act on; SDL-free and tested on its own.
+    session: Session,
     dirty: bool,
     is_draging: bool,
     xdrag: i32,
     ydrag: i32,
     drag_start: (i32, i32),
-    boat: BoatState,
     topbar: topbar::Topbar<'ttf>,
     buttombar: buttombar::Buttombar<'ttf>,
     confirm_dialog: confirm_dialog::ConfirmDialog<'ttf>,
-    route: route::Route,
-    mesure: mesure::Mesure,
-    track: track::Track,
-    waypoints: waypoints::Waypoints,
     pending_waypoint: Option<PendingWaypoint>,
     text_input: sdl2::keyboard::TextInputUtil,
-    charts_path: Vec<String>,
     charts_name: Vec<String>,
     press: Option<Press>,
     selected: Option<usize>,
@@ -220,27 +208,36 @@ impl<'ttf> Plotter<'ttf> {
         );
         let waypoints = waypoints::Waypoints::new()?;
 
-        let mut plotter = Self {
+        let mut session = Session {
             renderer,
             state,
             mode: Mode::default(),
             running: true,
+            boat,
+            route,
+            mesure,
+            track,
+            waypoints,
+            charts_path,
+            confirmation: Confirmation::default(),
+            track_path: PathBuf::from(DEFAULT_TRACK_PATH),
+            export_dir: PathBuf::from("export"),
+        };
+        // The renderer knows where it is looking before the first event or frame.
+        session.sync_view();
+
+        Ok(Self {
+            session,
             dirty: true,
             is_draging: false,
             xdrag: 0,
             ydrag: 0,
             drag_start: (0, 0),
-            boat,
             topbar,
             buttombar,
             confirm_dialog,
-            route,
-            mesure,
-            track,
-            waypoints,
             pending_waypoint: None,
             text_input,
-            charts_path,
             charts_name,
             press: None,
             selected: None,
@@ -252,37 +249,19 @@ impl<'ttf> Plotter<'ttf> {
             ais_targets: Vec::new(),
             last_ais_cleanup: Instant::now(),
             streamer,
-        };
-        // The renderer knows where it is looking before the first event or frame.
-        plotter.sync_view();
-        Ok(plotter)
+        })
     }
 
-    /// The position at the centre of the screen: the boat while following,
-    /// otherwise the saved position, falling back to the chart's own centre
-    /// the first time. Pushes it, the pan offset and the course-up rotation
-    /// into the renderer so `screen_to_gps`, `gps_to_point`, prefetching and
-    /// the next frame all use the same geometry.
-    pub(crate) fn sync_view(&mut self) {
-        let saved = *self
-            .state
-            .position
-            .get_or_insert_with(|| self.renderer.initial_center());
-        let (lon, lat) = if self.state.follow && valid_boat_position(&self.boat) {
-            (self.boat.longitude, self.boat.latitude)
-        } else {
-            saved
-        };
-        let rotation = if self.state.course_up
-            && self.boat.position_valid
-            && self.boat.course_over_ground.is_finite()
-        {
-            self.boat.course_over_ground
-        } else {
-            0.0
-        };
-        self.renderer.set_rotation(rotation);
-        self.renderer.look_at(lon, lat, self.state.map_offset);
+    /// Runs an action on the session and schedules a redraw.
+    fn execute_action(&mut self, action: AppAction) {
+        self.session.execute_action(action);
+        self.dirty = true;
+    }
+
+    /// Applies a confirmed destructive action and schedules a redraw.
+    fn apply_confirmation(&mut self, action: ConfirmAction) {
+        self.session.apply_confirmation(action);
+        self.dirty = true;
     }
 
     pub(crate) fn main_loop(
@@ -298,15 +277,15 @@ impl<'ttf> Plotter<'ttf> {
         let mut rendered_frames: u64 = 0;
         let mut last_input = Instant::now();
         crate::diagnostics::record("INFO", "Boucle SDL démarrée");
-        while self.running {
+        while self.session.running {
             let loop_started = Instant::now();
             if last_diagnostics.elapsed() >= DIAGNOSTICS_INTERVAL {
                 crate::diagnostics::record(
 					"INFO",
 					format!(
 						"État boucle: iterations={loop_count}, événements={event_count}, points ajoutés={track_updates}, images rendues={rendered_frames}, points trace={}, sauvegarde en attente={}, dernier événement utilisateur il y a {:?}",
-						self.track.point_count(),
-						self.track.save_pending(),
+						self.session.track.point_count(),
+						self.session.track.save_pending(),
 						last_input.elapsed()
 					),
 				);
@@ -316,7 +295,7 @@ impl<'ttf> Plotter<'ttf> {
             /////////////////////   Event /////////////////////////
             // Input converts clicks with the geometry the renderer holds;
             // make sure it reflects the current state, not the last frame.
-            self.sync_view();
+            self.session.sync_view();
             for event in event_pump.poll_iter() {
                 event_count += 1;
                 if matches!(
@@ -349,23 +328,27 @@ impl<'ttf> Plotter<'ttf> {
 
             ////////////////////// Track update ///////////////////////
             while let Ok(position) = self.track_rx.try_recv() {
-                if self.track.add(position) {
+                if self.session.track.add(position) {
                     track_updates += 1;
                     self.dirty = true;
-                    if self.track.point_count() == 1 {
-                        self.track.save_default_track(Path::new(DEFAULT_TRACK_PATH));
+                    if self.session.track.point_count() == 1 {
+                        self.session
+                            .track
+                            .save_default_track(Path::new(DEFAULT_TRACK_PATH));
                     }
                 }
             }
 
-            if self.track.checkpoint_due() {
-                self.track.save_default_track(Path::new(DEFAULT_TRACK_PATH));
+            if self.session.track.checkpoint_due() {
+                self.session
+                    .track
+                    .save_default_track(Path::new(DEFAULT_TRACK_PATH));
             }
 
             //////////////////////   Position update  /////////////////////////
             if self.state_rx.has_changed()? {
                 let boat = *self.state_rx.borrow_and_update();
-                if self.boat.position_valid != boat.position_valid {
+                if self.session.boat.position_valid != boat.position_valid {
                     crate::diagnostics::record(
                         "INFO",
                         if boat.position_valid {
@@ -375,10 +358,10 @@ impl<'ttf> Plotter<'ttf> {
                         },
                     );
                 }
-                self.boat = boat;
+                self.session.boat = boat;
 
-                if self.state.follow && valid_boat_position(&boat) {
-                    self.state.position = Some((boat.longitude, boat.latitude));
+                if self.session.state.follow && valid_boat_position(&boat) {
+                    self.session.state.position = Some((boat.longitude, boat.latitude));
                 }
                 self.dirty = true;
             }
@@ -386,7 +369,7 @@ impl<'ttf> Plotter<'ttf> {
             self.long_click();
 
             //////////////// Ais Update //////////////////////////
-            if self.state.display_ais {
+            if self.session.state.display_ais {
                 if self.ais_rx.has_changed().unwrap_or(false) {
                     self.ais_targets = self.ais_rx.borrow_and_update().clone();
                     self.dirty = true;
@@ -404,7 +387,7 @@ impl<'ttf> Plotter<'ttf> {
                     self.last_ais_cleanup = now;
                 }
             }
-            if self.renderer.advance_zoom_animation() {
+            if self.session.renderer.advance_zoom_animation() {
                 self.dirty = true;
             }
             //////////////////////   Display /////////////////////////
@@ -424,7 +407,7 @@ impl<'ttf> Plotter<'ttf> {
 
             /////////////// preload tiles on the edge ///////////////////////////
             let prefetch_started = Instant::now();
-            self.renderer.prefetch_step(8);
+            self.session.renderer.prefetch_step(8);
             let elapsed = prefetch_started.elapsed();
             if elapsed >= Duration::from_millis(500) {
                 crate::diagnostics::record(
@@ -443,11 +426,13 @@ impl<'ttf> Plotter<'ttf> {
                     format!("Itération principale lente: {elapsed:?}"),
                 );
             }
-        } // end while self.running
+        } // end while self.session.running
 
         crate::diagnostics::record("INFO", "Arrêt demandé, sauvegarde finale de la trace");
-        self.track.save_default_track(Path::new(DEFAULT_TRACK_PATH));
-        if let Err(error) = self.state.save(STATE_FILE) {
+        self.session
+            .track
+            .save_default_track(Path::new(DEFAULT_TRACK_PATH));
+        if let Err(error) = self.session.state.save(STATE_FILE) {
             crate::diagnostics::record("ERROR", format!("Erreur sauvegarde état: {error}"));
         }
         crate::diagnostics::record("INFO", "Boucle SDL terminée");

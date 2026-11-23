@@ -15,7 +15,7 @@ const BUTTON_GAP: i32 = 20;
 /// The prefix is the verb the dialog confirms; other verbs (Quit, Reset)
 /// are expected to join, so the names stay explicit.
 #[allow(clippy::enum_variant_names)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ConfirmAction {
     ClearRoute,
     ClearTrack,
@@ -38,11 +38,38 @@ impl ConfirmAction {
     }
 }
 
+/// The destructive action waiting for the navigator's yes, if any. Holds
+/// no SDL handle, so the action layer that owns it can be tested;
+/// `ConfirmDialog` only draws and hit-tests it.
+#[derive(Default)]
+pub(super) struct Confirmation {
+    pending: Option<ConfirmAction>,
+}
+
+impl Confirmation {
+    pub fn request(&mut self, action: ConfirmAction) {
+        self.pending = Some(action);
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    pub fn pending(&self) -> Option<ConfirmAction> {
+        self.pending
+    }
+
+    /// Closes the dialog; returns the action only when it was confirmed.
+    pub fn resolve(&mut self, confirm: bool) -> Option<ConfirmAction> {
+        let pending = self.pending.take()?;
+        confirm.then_some(pending)
+    }
+}
+
 pub(super) struct ConfirmDialog<'ttf> {
     font: Font<'ttf, 'static>,
     screen_width: u32,
     screen_height: u32,
-    pending: Option<ConfirmAction>,
 }
 
 impl<'ttf> ConfirmDialog<'ttf> {
@@ -56,25 +83,12 @@ impl<'ttf> ConfirmDialog<'ttf> {
             font: ttf_context.load_font(&font_config.file, font_config.ui_size)?,
             screen_width,
             screen_height,
-            pending: None,
         })
     }
 
-    pub fn request(&mut self, action: ConfirmAction) {
-        self.pending = Some(action);
-    }
-
-    pub fn is_open(&self) -> bool {
-        self.pending.is_some()
-    }
-
-    pub fn resolve(&mut self, confirm: bool) -> Option<ConfirmAction> {
-        let pending = self.pending.take()?;
-        confirm.then_some(pending)
-    }
-
+    /// Which button a click lands on while a confirmation is open:
+    /// `Some(true)` confirm, `Some(false)` cancel, `None` neither.
     pub fn handle_click(&self, x: i32, y: i32) -> Option<bool> {
-        self.pending?;
         let point = Point::new(x, y);
         if self.cancel_button().contains_point(point) {
             Some(false)
@@ -85,11 +99,7 @@ impl<'ttf> ConfirmDialog<'ttf> {
         }
     }
 
-    pub fn show(&self, canvas: &mut WindowCanvas) -> Result<(), String> {
-        let Some(action) = self.pending else {
-            return Ok(());
-        };
-
+    pub fn show(&self, canvas: &mut WindowCanvas, action: ConfirmAction) -> Result<(), String> {
         canvas.set_blend_mode(BlendMode::Blend);
         canvas.set_draw_color(Color::RGBA(0, 0, 0, 170));
         canvas.fill_rect(Rect::new(0, 0, self.screen_width, self.screen_height))?;

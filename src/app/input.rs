@@ -32,9 +32,10 @@ impl Plotter<'_> {
                 {
                     if let Some(pending) = self.pending_waypoint.take() {
                         self.text_input.stop();
-                        self.waypoints
+                        self.session
+                            .waypoints
                             .add(pending.position, pending.name.trim().to_string());
-                        if let Err(error) = self.waypoints.save() {
+                        if let Err(error) = self.session.waypoints.save() {
                             crate::diagnostics::record(
                                 "ERROR",
                                 format!("Erreur sauvegarde des waypoints: {error}"),
@@ -87,9 +88,9 @@ impl Plotter<'_> {
             let fast = keymod.intersects(Mod::LSHIFTMOD | Mod::RSHIFTMOD);
             let distance = if fast { 1000 } else { 100 };
             let action = match *keycode {
-                sdl2::keyboard::Keycode::Escape => match self.mode {
+                sdl2::keyboard::Keycode::Escape => match self.session.mode {
                     Mode::Measurement => {
-                        self.mesure.clear();
+                        self.session.mesure.clear();
                         self.dirty = true;
                         None
                     }
@@ -160,14 +161,14 @@ impl Plotter<'_> {
         screen: &mut Screen<'_>,
         texture: &sdl2::render::Texture,
     ) -> Result<(), String> {
-        if self.confirm_dialog.is_open() {
+        if self.session.confirmation.is_open() {
             match event {
                 Event::KeyDown {
                     keycode: Some(sdl2::keyboard::Keycode::Escape),
                     repeat: false,
                     ..
                 } => {
-                    self.confirm_dialog.resolve(false);
+                    self.session.confirmation.resolve(false);
                     self.dirty = true;
                 }
                 Event::KeyDown {
@@ -176,7 +177,7 @@ impl Plotter<'_> {
                     repeat: false,
                     ..
                 } => {
-                    if let Some(action) = self.confirm_dialog.resolve(true) {
+                    if let Some(action) = self.session.confirmation.resolve(true) {
                         self.apply_confirmation(action);
                     }
                 }
@@ -187,7 +188,7 @@ impl Plotter<'_> {
                     ..
                 } => {
                     if let Some(confirm) = self.confirm_dialog.handle_click(x, y) {
-                        if let Some(action) = self.confirm_dialog.resolve(confirm) {
+                        if let Some(action) = self.session.confirmation.resolve(confirm) {
                             self.apply_confirmation(action);
                         } else {
                             self.dirty = true;
@@ -248,7 +249,7 @@ impl Plotter<'_> {
             }
             Event::Quit { .. } => {
                 crate::diagnostics::record("INFO", "Événement SDL Quit reçu");
-                self.running = false;
+                self.session.running = false;
             }
             Event::Window { win_event, .. } => {
                 crate::diagnostics::record(
@@ -274,10 +275,13 @@ impl Plotter<'_> {
             self.dirty = true;
         } else {
             self.drag_start = (x as i32, y as i32);
-            self.dragging_measure_start = self.mode == Mode::Measurement
-                && self
-                    .mesure
-                    .find_mark1_at(&self.renderer, x as i32, y as i32, 12);
+            self.dragging_measure_start = self.session.mode == Mode::Measurement
+                && self.session.mesure.find_mark1_at(
+                    &self.session.renderer,
+                    x as i32,
+                    y as i32,
+                    12,
+                );
             self.press = Some(Press {
                 start: Instant::now(),
                 x: x as i32,
@@ -303,9 +307,9 @@ impl Plotter<'_> {
                     self.execute_action(AppAction::Pan(dx, dy));
                     self.mouse = Mouse::Cross;
                 } else {
-                    match self.mode {
+                    match self.session.mode {
                         Mode::EditRoute => {
-                            if let Err(error) = self.route.save() {
+                            if let Err(error) = self.session.route.save() {
                                 crate::diagnostics::record(
                                     "ERROR",
                                     format!("Erreur sauvegarde route: {error}"),
@@ -313,7 +317,7 @@ impl Plotter<'_> {
                             }
                         }
                         Mode::EditWaypoint => {
-                            if let Err(error) = self.waypoints.save() {
+                            if let Err(error) = self.session.waypoints.save() {
                                 crate::diagnostics::record(
                                     "ERROR",
                                     format!("Erreur sauvegarde des waypoints: {error}"),
@@ -351,7 +355,7 @@ impl Plotter<'_> {
         } else {
             let (x, y) = (x as i32, y as i32);
             self.mouse = Mouse::Cross;
-            match self.mode {
+            match self.session.mode {
                 Mode::EditRoute => {
                     self.handle_mouse_motion_edit_route(x, y, xrel, yrel, screen, texture)?
                 }
@@ -368,11 +372,11 @@ impl Plotter<'_> {
 
     fn handle_mouse_wheel(&mut self, delta: i32) {
         if delta > 0 {
-            self.state.zoom = self.renderer.zoom_increase();
+            self.session.state.zoom = self.session.renderer.zoom_increase();
         } else if delta < 0 {
-            self.state.zoom = self.renderer.zoom_decrease();
+            self.session.state.zoom = self.session.renderer.zoom_decrease();
         }
-        self.state.map_offset = (0, 0);
+        self.session.state.map_offset = (0, 0);
         self.dirty = true;
     }
 
@@ -441,7 +445,11 @@ impl Plotter<'_> {
             if p.moved && self.is_draging {
                 self.xdrag += xrel;
                 self.ydrag += yrel;
-                screen.drag_map(texture, (self.xdrag, self.ydrag), self.renderer.placement())?;
+                screen.drag_map(
+                    texture,
+                    (self.xdrag, self.ydrag),
+                    self.session.renderer.placement(),
+                )?;
                 self.mouse = Mouse::Hand;
             }
         }
@@ -457,7 +465,10 @@ impl Plotter<'_> {
         screen: &mut Screen<'_>,
         texture: &sdl2::render::Texture,
     ) -> Result<(), String> {
-        let over_mark1 = self.mesure.find_mark1_at(&self.renderer, x, y, 12);
+        let over_mark1 = self
+            .session
+            .mesure
+            .find_mark1_at(&self.session.renderer, x, y, 12);
         if let Some(p) = self.press.as_mut() {
             if self.dragging_measure_start {
                 let (dx, dy) = (x - p.x, y - p.y);
@@ -467,7 +478,9 @@ impl Plotter<'_> {
                 if p.moved {
                     let dx = screen.screen_width as i32 / 2 - x;
                     let dy = screen.screen_height as i32 / 2 - y;
-                    self.mesure.modify_mark1(&self.renderer, dx, dy);
+                    self.session
+                        .mesure
+                        .modify_mark1(&self.session.renderer, dx, dy);
                     self.mouse = Mouse::Move;
                     self.dirty = true;
                 }
@@ -485,25 +498,32 @@ impl Plotter<'_> {
     fn handle_click_mesure(&mut self, screen: &mut Screen<'_>, x: i32, y: i32) {
         let dx = screen.screen_width as i32 / 2 - x;
         let dy = screen.screen_height as i32 / 2 - y;
-        self.mesure.add_mark(&self.renderer, dx, dy);
+        self.session.mesure.add_mark(&self.session.renderer, dx, dy);
         self.dirty = true;
     }
 
     fn handle_click_edit_route(&mut self, screen: &mut Screen<'_>, x: i32, y: i32) {
-        self.selected = self.route.find_point_at(&self.renderer, (x, y), 8);
+        self.selected = self
+            .session
+            .route
+            .find_point_at(&self.session.renderer, (x, y), 8);
         if self.selected.is_none() {
-            if let Some(k) = self.route.find_midpoint_at(&self.renderer, (x, y), 8) {
-                let (longitude, latitude) = self.route.midpoints()[k];
-                self.route.insert(k, longitude, latitude);
+            if let Some(k) = self
+                .session
+                .route
+                .find_midpoint_at(&self.session.renderer, (x, y), 8)
+            {
+                let (longitude, latitude) = self.session.route.midpoints()[k];
+                self.session.route.insert(k, longitude, latitude);
             } else {
                 let dx = screen.screen_width as i32 / 2 - x;
                 let dy = screen.screen_height as i32 / 2 - y;
-                let (longitude, latitude) = self.renderer.screen_to_gps(dx, dy);
-                self.route.add(longitude, latitude);
+                let (longitude, latitude) = self.session.renderer.screen_to_gps(dx, dy);
+                self.session.route.add(longitude, latitude);
             }
             self.mouse = Mouse::Cross;
         }
-        if let Err(error) = self.route.save() {
+        if let Err(error) = self.session.route.save() {
             crate::diagnostics::record("ERROR", format!("Erreur sauvegarde route: {error}"));
         }
         self.dirty = true;
@@ -513,7 +533,7 @@ impl Plotter<'_> {
         let dx = screen.screen_width as i32 / 2 - x;
         let dy = screen.screen_height as i32 / 2 - y;
         self.pending_waypoint = Some(PendingWaypoint {
-            position: self.renderer.screen_to_gps(dx, dy),
+            position: self.session.renderer.screen_to_gps(dx, dy),
             name: String::new(),
         });
         self.text_input.start();
@@ -521,7 +541,7 @@ impl Plotter<'_> {
     }
 
     fn handle_short_click(&mut self, screen: &mut Screen<'_>, x: i32, y: i32) {
-        match self.mode {
+        match self.session.mode {
             Mode::Measurement => self.handle_click_mesure(screen, x, y),
             Mode::EditRoute => self.handle_click_edit_route(screen, x, y),
             Mode::EditWaypoint => self.handle_click_edit_wp(screen, x, y),
@@ -529,9 +549,13 @@ impl Plotter<'_> {
     }
 
     fn handle_long_click_edit_route(&mut self, x: i32, y: i32) {
-        if let Some(i) = self.route.find_point_at(&self.renderer, (x, y), 8) {
-            self.route.remove(i);
-            if let Err(error) = self.route.save() {
+        if let Some(i) = self
+            .session
+            .route
+            .find_point_at(&self.session.renderer, (x, y), 8)
+        {
+            self.session.route.remove(i);
+            if let Err(error) = self.session.route.save() {
                 crate::diagnostics::record("ERROR", format!("Erreur sauvegarde route: {error}"));
             }
             self.dirty = true;
@@ -540,9 +564,13 @@ impl Plotter<'_> {
     }
 
     fn handle_long_click_edit_wp(&mut self, x: i32, y: i32) {
-        if let Some(i) = self.waypoints.find_point_at(&self.renderer, (x, y), 8) {
-            self.waypoints.remove(i);
-            if let Err(error) = self.waypoints.save() {
+        if let Some(i) = self
+            .session
+            .waypoints
+            .find_point_at(&self.session.renderer, (x, y), 8)
+        {
+            self.session.waypoints.remove(i);
+            if let Err(error) = self.session.waypoints.save() {
                 crate::diagnostics::record(
                     "ERROR",
                     format!("Erreur sauvegarde des waypoints: {error}"),
@@ -554,7 +582,7 @@ impl Plotter<'_> {
     }
 
     fn handle_long_click(&mut self, x: i32, y: i32) {
-        match self.mode {
+        match self.session.mode {
             Mode::EditRoute => self.handle_long_click_edit_route(x, y),
             Mode::EditWaypoint => self.handle_long_click_edit_wp(x, y),
             Mode::Measurement => {}
@@ -588,7 +616,10 @@ impl Plotter<'_> {
         texture: &sdl2::render::Texture,
     ) -> Result<(), String> {
         let previous_selection = self.selected;
-        self.selected = self.route.find_point_at(&self.renderer, (x, y), 8);
+        self.selected = self
+            .session
+            .route
+            .find_point_at(&self.session.renderer, (x, y), 8);
 
         if self.selected.is_some() {
             if self.selected != previous_selection {
@@ -600,8 +631,9 @@ impl Plotter<'_> {
             self.mouse = Mouse::Move;
         }
         if self
+            .session
             .route
-            .find_midpoint_at(&self.renderer, (x, y), 8)
+            .find_midpoint_at(&self.session.renderer, (x, y), 8)
             .is_some()
         {
             self.mouse = Mouse::Arrow;
@@ -615,8 +647,8 @@ impl Plotter<'_> {
                     let dx = screen.screen_width as i32 / 2 - x;
                     let dy = screen.screen_height as i32 / 2 - y;
                     self.mouse = Mouse::Move;
-                    let (lon, lat) = self.renderer.screen_to_gps(dx, dy);
-                    self.route.modify(i, lon, lat);
+                    let (lon, lat) = self.session.renderer.screen_to_gps(dx, dy);
+                    self.session.route.modify(i, lon, lat);
                     self.dirty = true;
                 }
             } else {
@@ -636,7 +668,10 @@ impl Plotter<'_> {
         texture: &sdl2::render::Texture,
     ) -> Result<(), String> {
         let previous_selection = self.selected;
-        self.selected = self.waypoints.find_point_at(&self.renderer, (x, y), 8);
+        self.selected = self
+            .session
+            .waypoints
+            .find_point_at(&self.session.renderer, (x, y), 8);
 
         if self.selected.is_some() {
             if self.selected != previous_selection {
@@ -657,8 +692,8 @@ impl Plotter<'_> {
                     let dx = screen.screen_width as i32 / 2 - x;
                     let dy = screen.screen_height as i32 / 2 - y;
                     self.mouse = Mouse::Move;
-                    let (lon, lat) = self.renderer.screen_to_gps(dx, dy);
-                    self.waypoints.modify(i, (lon, lat));
+                    let (lon, lat) = self.session.renderer.screen_to_gps(dx, dy);
+                    self.session.waypoints.modify(i, (lon, lat));
                     self.dirty = true;
                 }
             } else {

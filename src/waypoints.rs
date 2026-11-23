@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
-use std::{fs, io, path::Path};
+use std::{
+    fs, io,
+    path::{Path, PathBuf},
+};
 
 use crate::mbtiles_renderer::MBTilesRenderer;
 use crate::screen::Screen;
@@ -16,19 +19,33 @@ struct Waypoint {
 
 pub struct Waypoints {
     waypoints: Vec<Waypoint>,
+    /// Where `save` writes; set by `load`.
+    path: PathBuf,
 }
 
 impl Waypoints {
     pub fn new() -> io::Result<Self> {
-        let mut waypoints = Self {
-            waypoints: Vec::new(),
-        };
-        match waypoints.load() {
+        Self::load(Path::new(WAYPOINTS_FILE))
+    }
+
+    /// Loads the list saved at `path`; a missing file is an empty list.
+    /// `save` writes back to the same path.
+    pub fn load(path: &Path) -> io::Result<Self> {
+        let mut waypoints = Self::empty_at(path);
+        match waypoints.load_from(path) {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
         }
         Ok(waypoints)
+    }
+
+    /// An empty list that `save` will write to `path`.
+    pub(crate) fn empty_at(path: &Path) -> Self {
+        Self {
+            waypoints: Vec::new(),
+            path: path.to_path_buf(),
+        }
     }
 
     pub fn add(&mut self, pos: (f64, f64), name: String) {
@@ -102,10 +119,6 @@ impl Waypoints {
         self.waypoints.shrink_to_fit();
     }
 
-    pub fn load(&mut self) -> io::Result<()> {
-        self.load_from(Path::new(WAYPOINTS_FILE))
-    }
-
     fn load_from(&mut self, path: &Path) -> io::Result<()> {
         let json = fs::read_to_string(path)?;
         let waypoints = serde_json::from_str(&json)
@@ -115,7 +128,7 @@ impl Waypoints {
     }
 
     pub fn save(&self) -> io::Result<()> {
-        self.save_to(Path::new(WAYPOINTS_FILE))
+        self.save_to(&self.path)
     }
 
     pub fn export_gpx(&self, path: &Path) -> io::Result<()> {
@@ -164,15 +177,11 @@ mod tests {
     fn save_and_load_waypoints() {
         let path =
             std::env::temp_dir().join(format!("plotter-waypoints-{}.json", std::process::id()));
-        let mut original = Waypoints {
-            waypoints: Vec::new(),
-        };
+        let mut original = Waypoints::empty_at(Path::new("unused.json"));
         original.add((178.1, -17.7), "Mouillage".to_string());
 
         original.save_to(&path).unwrap();
-        let mut loaded = Waypoints {
-            waypoints: Vec::new(),
-        };
+        let mut loaded = Waypoints::empty_at(Path::new("unused.json"));
         loaded.load_from(&path).unwrap();
 
         assert_eq!(loaded.waypoints.len(), 1);
@@ -194,16 +203,12 @@ mod tests {
                 .as_nanos()
         ));
         let path = dir.join("default").join("waypoints.json");
-        let mut waypoints = Waypoints {
-            waypoints: Vec::new(),
-        };
+        let mut waypoints = Waypoints::empty_at(Path::new("unused.json"));
         waypoints.add((178.1, -17.7), "Mouillage".to_string());
 
         waypoints.save_to(&path).unwrap();
 
-        let mut loaded = Waypoints {
-            waypoints: Vec::new(),
-        };
+        let mut loaded = Waypoints::empty_at(Path::new("unused.json"));
         loaded.load_from(&path).unwrap();
         assert_eq!(loaded.waypoints.len(), 1);
         let leftovers: Vec<_> = fs::read_dir(path.parent().unwrap())
@@ -221,9 +226,7 @@ mod tests {
             std::process::id()
         ));
         fs::write(&path, r#"[{"lon":178.1,"lat":-17.7}]"#).unwrap();
-        let mut loaded = Waypoints {
-            waypoints: Vec::new(),
-        };
+        let mut loaded = Waypoints::empty_at(Path::new("unused.json"));
 
         loaded.load_from(&path).unwrap();
 
@@ -238,9 +241,7 @@ mod tests {
             "plotter-waypoints-missing-{}.json",
             std::process::id()
         ));
-        let mut waypoints = Waypoints {
-            waypoints: Vec::new(),
-        };
+        let mut waypoints = Waypoints::empty_at(Path::new("unused.json"));
 
         assert_eq!(
             waypoints.load_from(&path).unwrap_err().kind(),
@@ -254,9 +255,7 @@ mod tests {
             "plotter-waypoints-export-{}.gpx",
             std::process::id()
         ));
-        let mut waypoints = Waypoints {
-            waypoints: Vec::new(),
-        };
+        let mut waypoints = Waypoints::empty_at(Path::new("unused.json"));
         waypoints.add((-122.3, 47.5), "A & B <C>".to_string());
 
         waypoints.export_gpx(&path).unwrap();

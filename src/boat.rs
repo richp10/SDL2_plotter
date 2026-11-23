@@ -38,7 +38,6 @@ impl BoatState
         if !self.position_valid {
             return Ok(());
         }
-        //println!("show longitude : {} / latitude : {}",self.longitude,self.latitude);
         let pt = renderer.gps_to_point((self.longitude, self.latitude));
         if pt.x < 0
             || pt.y < 0

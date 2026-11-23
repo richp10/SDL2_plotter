@@ -37,7 +37,6 @@ impl Mesure
 					    let (lon2, lat2) = renderer.screen_to_gps(dx, dy);
 					    self.mark2 = Some((lon2, lat2));
 					    (self.distance, self.bearing) = gps::distance_bearing_nm((lon1, lat1), (lon2, lat2));
-					    println!("{:.1} Mn  {:.0}°", self.distance, self.bearing);
 						}
 				   }
 		}

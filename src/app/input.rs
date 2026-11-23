@@ -34,9 +34,9 @@ impl Plotter<'_> {
                         self.waypoints
                             .add(pending.position, pending.name.trim().to_string());
                         if let Err(error) = self.waypoints.save() {
-                            eprintln!("Erreur sauvegarde des waypoints : {error}");
+                            crate::diagnostics::record("ERROR", format!("Erreur sauvegarde des waypoints: {error}"));
                         }
-                        println!("Waypoint ajouté : {}", pending.name.trim());
+                        crate::diagnostics::record("INFO", format!("Waypoint ajouté: {}", pending.name.trim()));
                     }
                 }
                 self.dirty = true;
@@ -298,12 +298,11 @@ impl Plotter<'_> {
                         Mode::EditRoute => {
                             if let Err(error) = self.route.save() {
                                 crate::diagnostics::record("ERROR", format!("Erreur sauvegarde route: {error}"));
-                                eprintln!("Erreur sauvegarde route : {error}");
                             }
                         }
                         Mode::EditWaypoint => {
                             if let Err(error) = self.waypoints.save() {
-                                eprintln!("Erreur sauvegarde des waypoints : {error}");
+                                crate::diagnostics::record("ERROR", format!("Erreur sauvegarde des waypoints: {error}"));
                             }
                         }
                         Mode::Measurement => {}
@@ -502,7 +501,6 @@ impl Plotter<'_> {
         }
         if let Err(error) = self.route.save() {
             crate::diagnostics::record("ERROR", format!("Erreur sauvegarde route: {error}"));
-            eprintln!("Erreur sauvegarde route : {error}");
         }
         self.dirty = true;
     }
@@ -531,7 +529,6 @@ impl Plotter<'_> {
             self.route.remove(i);
             if let Err(error) = self.route.save() {
                 crate::diagnostics::record("ERROR", format!("Erreur sauvegarde route: {error}"));
-                eprintln!("Erreur sauvegarde route : {error}");
             }
             self.dirty = true;
             self.mouse = Mouse::Cross;
@@ -542,7 +539,7 @@ impl Plotter<'_> {
         if let Some(i) = self.waypoints.find_point_at(&self.renderer, (x, y), 8) {
             self.waypoints.remove(i);
             if let Err(error) = self.waypoints.save() {
-                eprintln!("Erreur sauvegarde des waypoints : {error}");
+                crate::diagnostics::record("ERROR", format!("Erreur sauvegarde des waypoints: {error}"));
             }
             self.dirty = true;
             self.mouse = Mouse::Cross;

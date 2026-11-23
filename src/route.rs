@@ -38,7 +38,7 @@ impl Route
 				format!("Route migrée de {LEGACY_ROUTE} vers {DEFAULT_ROUTE}"),
 			);
 		}
-		println!("route chargée : {} points", track.len());
+		crate::diagnostics::record("INFO", format!("Route chargée: {} points", track.len()));
 		Ok(Route::from_points(track))
 		}
 

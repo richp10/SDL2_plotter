@@ -63,9 +63,6 @@ impl<'ttf> Topbar<'ttf> {
     ) -> Result<Self, String> {
         let font = ttf_context.load_font(&font_config.file, font_config.ui_size)?;
 
-
-        println!("names : {:?}", names);
-        
         let menus = vec![
             Menu { title: "App", entries: vec![
                     QUITTE.into(),

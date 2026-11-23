@@ -204,7 +204,7 @@ impl MBTilesRenderer {
         renderer.zoom = renderer.nearest_zoom( zoom)
                                 .unwrap_or_else(|| renderer.clamp_zoom(zoom));
         renderer.display_zoom = renderer.zoom as f64;
-        println!("nearest zoom: {}",renderer.zoom);
+        crate::diagnostics::record("DEBUG", format!("Zoom initial {} pour {mbtiles_path}", renderer.zoom));
 
         Ok(renderer)
         }
@@ -377,12 +377,11 @@ impl MBTilesRenderer {
                 self.set_zoom(prev);
                 }
             else{
-                println!("zomm mini");
+                crate::diagnostics::record("DEBUG", "Zoom minimal atteint, retour à la carte par défaut");
                 let fallback_map = self.default_map.clone();
                 let _ = self.change_map(&fallback_map);
                 }
             }
-        println!("zomm : {}",self.zoom);
         self.zoom
         }
         

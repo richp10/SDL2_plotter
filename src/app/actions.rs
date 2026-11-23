@@ -54,10 +54,9 @@ impl Plotter<'_> {
                 let path = Path::new("export")
                     .join(format!("Route-{}.gpx", now.format("%Y-%m-%d_%H-%M-%S")));
                 match self.route.export_gpx(&path) {
-                    Ok(()) => println!("Route exportée : {}", path.display()),
+                    Ok(()) => crate::diagnostics::record("INFO", format!("Route exportée: {}", path.display())),
                     Err(error) => {
                         crate::diagnostics::record("ERROR", format!("Erreur export route GPX: {error}"));
-                        eprintln!("Erreur export route GPX : {error}");
                     }
                 }
             }
@@ -66,10 +65,9 @@ impl Plotter<'_> {
                 let path = Path::new("export")
                     .join(format!("Track-{}.gpx", now.format("%Y-%m-%d_%H-%M-%S")));
                 match self.track.export_gpx(&path) {
-                    Ok(()) => println!("Trace exportée : {}", path.display()),
+                    Ok(()) => crate::diagnostics::record("INFO", format!("Trace exportée: {}", path.display())),
                     Err(error) => {
                         crate::diagnostics::record("ERROR", format!("Erreur export trace GPX: {error}"));
-                        eprintln!("Erreur export trace GPX : {error}");
                     }
                 }
             }
@@ -82,13 +80,12 @@ impl Plotter<'_> {
                 let path = Path::new("export")
                     .join(format!("Waypoints-{}.gpx", now.format("%Y-%m-%d_%H-%M-%S")));
                 match self.waypoints.export_gpx(&path) {
-                    Ok(()) => println!("Waypoints exportés : {}", path.display()),
+                    Ok(()) => crate::diagnostics::record("INFO", format!("Waypoints exportés: {}", path.display())),
                     Err(error) => {
                         crate::diagnostics::record(
                             "ERROR",
                             format!("Erreur export waypoints GPX: {error}"),
                         );
-                        eprintln!("Erreur export waypoints GPX : {error}");
                     }
                 }
             }
@@ -99,7 +96,10 @@ impl Plotter<'_> {
                         self.state.map_offset = (0, 0);
                     }
                     Err(error) => {
-                        eprintln!("Impossible d'ouvrir {} : {error}", &self.charts_path[index])
+                        crate::diagnostics::record(
+                            "ERROR",
+                            format!("Impossible d'ouvrir {}: {error}", &self.charts_path[index]),
+                        );
                     }
                 }
             }
@@ -141,7 +141,6 @@ impl Plotter<'_> {
                         "ERROR",
                         format!("Erreur sauvegarde route: {error}"),
                     );
-                    eprintln!("Erreur sauvegarde route : {error}");
                 }
             }
             ConfirmAction::ClearTrack => {
@@ -156,7 +155,6 @@ impl Plotter<'_> {
                         "ERROR",
                         format!("Erreur sauvegarde des waypoints: {error}"),
                     );
-                    eprintln!("Erreur sauvegarde des waypoints : {error}");
                 }
             }
         }

@@ -66,7 +66,10 @@ impl Track
 		let migrating = !path.exists() && legacy_path.exists();
 		let positions = crate::geo_data::read_or_migrate(path, &legacy_path, Self::load_gpx)?;
 		track.set_points(positions);
-		println!("Trace chargée : {} / {} points", path.display(), track.points.len());
+		crate::diagnostics::record(
+			"INFO",
+			format!("Trace chargée: {} / {} points", path.display(), track.points.len()),
+		);
 		if migrating {
 			crate::diagnostics::record(
 				"INFO",
@@ -133,7 +136,6 @@ impl Track
 			}
 			Err(error) => {
 				crate::diagnostics::record("ERROR", format!("Erreur sauvegarde trace: {error}"));
-				eprintln!("Erreur sauvegarde : {error}");
 			}
 		}
 	}

@@ -87,7 +87,7 @@ impl SignalKClient {
                 Ok(Message::Ping(_)) | Ok(Message::Pong(_)) => continue,
                 Ok(Message::Close(_)) => return None,
                 Err(e) => {
-                    eprintln!("Erreur de lecture WebSocket: {}", e);
+                    crate::diagnostics::record("WARN", format!("Erreur de lecture WebSocket: {e}"));
                     return None;
                 }
                 _ => continue,
@@ -104,13 +104,12 @@ impl SignalKClient {
 
                     if let Ok(json) = serde_json::from_str::<serde_json::Value>(text.as_str())
                         {
-                        //println!("json {}",json);
                         let status = &json["name"]; 
                                 {
                                 if status == "signalk-server" {
                                     self.self_context = json["self"].as_str().map(str::to_string);
                                     if self.self_context.is_none() {
-                                        eprintln!("Le serveur Signal K n'a pas fourni le contexte du bateau (self)");
+                                        crate::diagnostics::record("WARN", "Le serveur Signal K n'a pas fourni le contexte du bateau (self)");
                                     }
                                     crate::diagnostics::record("INFO", "Identification SignalK réussie");
                                     return true
@@ -125,7 +124,7 @@ impl SignalKClient {
                 Some(Ok(Message::Ping(_))) | Some(Ok(Message::Pong(_))) => return false,
                 Some(Ok(Message::Close(_))) => return false,
                 Some(Err(e)) => {
-                    eprintln!("Erreur de lecture WebSocket: {}", e);
+                    crate::diagnostics::record("WARN", format!("Erreur de lecture WebSocket: {e}"));
                     return false;
                 }
                 _ => return false,
@@ -334,11 +333,6 @@ async fn wait_for_signalk_connection(url: &str) -> WsStream {
                     "INFO",
                     format!("Connexion SignalK établie après {attempt} tentative(s), status {}", response.status()),
                 );
-                println!(
-                    "Connecté à SignalK après {} tentative(s) (status: {})",
-                    attempt,
-                    response.status()
-                );
                 return ws_stream;
             }
             Err(WsError::Http(response)) if response.status().as_u16() == 429 => {
@@ -350,7 +344,6 @@ async fn wait_for_signalk_connection(url: &str) -> WsStream {
                     .unwrap_or_else(|| (2u64.pow(attempt.min(5))).min(60));
 
                 crate::diagnostics::record("WARN", format!("SignalK HTTP 429: attente {wait}s (tentative {attempt})"));
-                eprintln!("429 recu, attente de {}s (tentative {})", wait, attempt);
                 tokio::time::sleep(Duration::from_secs(wait)).await;
             }
             Err(error) => {

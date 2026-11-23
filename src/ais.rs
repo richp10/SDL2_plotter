@@ -4,13 +4,21 @@ use std::time::{Duration, Instant};
 use crate::mbtiles_renderer::MBTilesRenderer;
 use crate::screen::Screen;
 
-const TARGET_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+/// A target not heard from for this long is dropped from the display.
+pub const TARGET_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 /// Removes targets that have not been heard from within the timeout.
 /// Returns true when at least one target was removed.
 pub fn retain_fresh(targets: &mut HashMap<String, AisTarget>, now: Instant) -> bool {
     let before = targets.len();
     targets.retain(|_, target| target.is_fresh(now));
+    targets.len() != before
+}
+
+/// The same rule for the displayed list. Returns true when one was removed.
+pub fn expire(targets: &mut Vec<AisTarget>, now: Instant) -> bool {
+    let before = targets.len();
+    targets.retain(|target| target.is_fresh(now));
     targets.len() != before
 }
 

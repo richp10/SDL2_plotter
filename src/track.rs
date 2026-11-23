@@ -81,7 +81,7 @@ impl Track {
         }
     }
 
-    pub fn reset(&mut self) {
+    fn reset(&mut self) {
         self.points.clear();
         self.points.shrink_to_fit();
         self.save_pending = true;
@@ -95,14 +95,43 @@ impl Track {
         self.save_pending
     }
 
-    pub fn checkpoint_due(&self) -> bool {
-        self.save_pending && self.last_save.elapsed() >= self.checkpoint_interval
+    /// Records a live position. The very first point is checkpointed at
+    /// once so a track that has just started survives a power cut; later
+    /// points wait for `tick`. Returns true when the point was kept.
+    pub fn record(&mut self, pos: (f64, f64), now: Instant) -> bool {
+        if !self.add(pos) {
+            return false;
+        }
+        if self.points.len() == 1 {
+            self.checkpoint(now);
+        }
+        true
+    }
+
+    /// Called every loop iteration: checkpoints when points are pending and
+    /// the interval has passed.
+    pub fn tick(&mut self, now: Instant) {
+        if self.save_pending && now.duration_since(self.last_save) >= self.checkpoint_interval {
+            self.checkpoint(now);
+        }
+    }
+
+    /// Empties the track and removes its file at once (the user asked for
+    /// it; nothing to wait for).
+    pub fn clear(&mut self, now: Instant) {
+        self.reset();
+        self.checkpoint(now);
+    }
+
+    /// Final save on exit.
+    pub fn close(&mut self) {
+        self.checkpoint(Instant::now());
     }
 
     /// Checkpoints the track to its file, or removes the file when the track
     /// was cleared. Errors are logged, never propagated: the loop goes on.
-    pub fn save_default_track(&mut self) {
-        self.last_save = Instant::now();
+    fn checkpoint(&mut self, now: Instant) {
+        self.last_save = now;
         crate::diagnostics::record(
             "INFO",
             format!(
@@ -473,10 +502,70 @@ mod tests {
         track.add((-122.3, 47.5));
         track.save().unwrap();
 
-        track.reset();
-        track.save_default_track();
+        track.clear(Instant::now());
 
         assert!(!path.exists());
+    }
+
+    fn temp_track_path(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "desktop_plotter_track_{tag}_{}_{}.json",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    #[test]
+    fn the_first_point_is_checkpointed_immediately() {
+        let path = temp_track_path("first");
+        let mut track = Track::with_checkpoint_interval(&path, Duration::from_secs(60));
+        let t0 = Instant::now();
+        assert!(track.record((-122.3, 47.5), t0));
+        assert_eq!(crate::geo_data::read(&path).unwrap().len(), 1);
+        assert!(!track.save_pending());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn later_points_are_checkpointed_only_after_the_interval() {
+        let path = temp_track_path("interval");
+        let mut track = Track::with_checkpoint_interval(&path, Duration::from_secs(60));
+        let t0 = Instant::now();
+        track.record((-122.3, 47.5), t0);
+        assert!(track.record((-122.3, 47.5003), t0 + Duration::from_secs(1)));
+        assert!(track.save_pending());
+
+        track.tick(t0 + Duration::from_secs(30));
+        assert_eq!(
+            crate::geo_data::read(&path).unwrap().len(),
+            1,
+            "not due yet"
+        );
+
+        track.tick(t0 + Duration::from_secs(61));
+        assert_eq!(
+            crate::geo_data::read(&path).unwrap().len(),
+            2,
+            "checkpointed"
+        );
+        assert!(!track.save_pending());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn close_saves_whatever_is_pending() {
+        let path = temp_track_path("close");
+        let mut track = Track::with_checkpoint_interval(&path, Duration::from_secs(3600));
+        let t0 = Instant::now();
+        track.record((-122.3, 47.5), t0);
+        track.record((-122.3, 47.5003), t0);
+        track.record((-122.3, 47.5006), t0);
+        track.close();
+        assert_eq!(crate::geo_data::read(&path).unwrap().len(), 3);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

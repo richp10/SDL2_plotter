@@ -36,6 +36,7 @@ release run), and CLAUDE.md describing the result.
 - [T5 — One gpx module](#t5--one-gpx-module) — `src/gpx.rs`: three writers returning a `String`, one strict reader; creator "SDL2 Plotter"; `route/gpx.rs` deleted.
 - [T2 — ChartView as the screen-to-chart seam](#t2--chartview-as-the-screen-to-chart-seam) — copyable snapshot from `renderer.view()`; absolute pixels in, validated wrapped positions out; one `nearest` hit test; six "centre minus click" copies and four hit-test copies gone.
 - [T3 — Gesture recogniser separate from per-mode tools](#t3--gesture-recogniser-separate-from-per-mode-tools) — `app/gesture.rs` (pure, time-injected) emits Click/LongPress/Drag; `app/tools.rs` puts `target_at`, `click`, `long_press`, `drag_to`, `drag_end`, `name_waypoint` on `Session`; `input.rs` 705 -> 394 lines; the three defects fixed with tests.
+- [T6 — Main-loop policy onto its owners](#t6--main-loop-policy-onto-its-owners) — `Track::record/tick/clear/close` own checkpointing; `Session::on_boat`, `set_ais`, `expire_ais` own intake and expiry; the loop drains, calls, marks dirty; time injected.
 
 ## Not yet specified
 
@@ -92,7 +93,8 @@ release run), and CLAUDE.md describing the result.
   three creator strings and two escapers survives?
 
 ### T6 — Main-loop policy onto its owners
-- type: grilling + task · status: open · blocked by: none
+- type: grilling + task · status: closed · blocked by: none
+- Resolution: `Track::record(pos, now)` adds and checkpoints the first point at once, `tick(now)` checkpoints when pending and the interval has passed, `clear(now)` empties and removes the file, `close()` saves on exit; `checkpoint` is private and `last_save` is set from the injected `now`, so the policy is tested with fabricated instants. `Session::new(...)` replaces the struct literal (the fixture uses it too); `on_boat` logs validity transitions and follows a valid fix; `set_ais` stores the published list and `expire_ais(now)` thins it at most once a second with `ais::expire`, the same `is_fresh` rule the Signal K task applies through `retain_fresh`, kept in both places on purpose: the task evicts when deltas arrive, the session when the connection has gone quiet. `Plotter` lost `ais_targets` and `last_ais_cleanup`. Tests: first point checkpointed immediately; later points only after the interval; close saves pending points; a boat update moves the view only while following and never on an invalid fix; stale AIS targets expire after the timeout and at most once a second.
 - Question: which of the loop's inline rules (track checkpointing, boat
   intake while following, AIS expiry in two threads) move onto `Track` and
   `Session`, with what time injection, and what does the loop keep?

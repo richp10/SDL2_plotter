@@ -160,8 +160,7 @@ impl Session {
                 }
             }
             ConfirmAction::ClearTrack => {
-                self.track.reset();
-                self.track.save_default_track();
+                self.track.clear(std::time::Instant::now());
             }
             ConfirmAction::ClearWaypoints => {
                 self.waypoints.reset();

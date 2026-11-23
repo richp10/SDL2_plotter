@@ -1,8 +1,7 @@
 use crate::boat::BoatState;
-use crate::Mode;
 use crate::{
-    ais, buttombar, config::AppConfig, mbtiles_renderer, mesure, route, screen, signalk, state,
-    topbar, track, waypoints,
+    ais, buttombar, config::AppConfig, mbtiles_renderer, route, screen, signalk, state, topbar,
+    track, waypoints,
 };
 use mbtiles_renderer::MBTilesRenderer;
 use sdl2::event::Event;
@@ -21,9 +20,9 @@ mod tools;
 
 pub(crate) use crate::action::AppAction;
 
-use confirm_dialog::{ConfirmAction, Confirmation};
+use confirm_dialog::ConfirmAction;
 use gesture::GestureRecognizer;
-use session::{valid_boat_position, Session};
+use session::Session;
 use tools::Target;
 
 const STATE_FILE: &str = "default/state.json";
@@ -62,8 +61,6 @@ pub(crate) struct Plotter<'ttf> {
     state_rx: watch::Receiver<BoatState>,
     track_rx: tokio::sync::mpsc::UnboundedReceiver<(f64, f64)>,
     ais_rx: watch::Receiver<Vec<ais::AisTarget>>,
-    ais_targets: Vec<ais::AisTarget>,
-    last_ais_cleanup: Instant,
     streamer: Option<crate::stream::Streamer>,
 }
 
@@ -121,7 +118,6 @@ impl<'ttf> Plotter<'ttf> {
             confirm_dialog::ConfirmDialog::new(ttf_context, width, height, &config.fonts)
                 .map_err(anyhow::Error::msg)?;
         let route = route::Route::new();
-        let mesure = mesure::Mesure::new().map_err(anyhow::Error::msg)?;
         let track = track::Track::with_checkpoint_interval(
             Path::new(DEFAULT_TRACK_PATH),
             Duration::from_secs(config.track.checkpoint_interval_seconds),
@@ -136,22 +132,16 @@ impl<'ttf> Plotter<'ttf> {
         );
         let waypoints = waypoints::Waypoints::new();
 
-        let mut session = Session {
+        let session = Session::new(
             renderer,
             state,
-            mode: Mode::default(),
-            running: true,
             boat,
             route,
-            mesure,
             track,
             waypoints,
             charts_path,
-            confirmation: Confirmation::default(),
-            export_dir: PathBuf::from("export"),
-        };
-        // The renderer knows where it is looking before the first event or frame.
-        session.sync_view();
+            PathBuf::from("export"),
+        );
 
         Ok(Self {
             session,
@@ -167,8 +157,6 @@ impl<'ttf> Plotter<'ttf> {
             state_rx,
             track_rx,
             ais_rx,
-            ais_targets: Vec::new(),
-            last_ais_cleanup: Instant::now(),
             streamer,
         })
     }
@@ -247,61 +235,33 @@ impl<'ttf> Plotter<'ttf> {
                 }
             }
 
-            ////////////////////// Track update ///////////////////////
+            // Live data in: drain each channel, hand it to the session, and
+            // redraw when it says so. The rules live on Track and Session.
+            let now = Instant::now();
             while let Ok(position) = self.track_rx.try_recv() {
-                if self.session.track.add(position) {
+                if self.session.track.record(position, now) {
                     track_updates += 1;
                     self.dirty = true;
-                    if self.session.track.point_count() == 1 {
-                        self.session.track.save_default_track();
-                    }
                 }
             }
+            self.session.track.tick(now);
 
-            if self.session.track.checkpoint_due() {
-                self.session.track.save_default_track();
-            }
-
-            //////////////////////   Position update  /////////////////////////
             if self.state_rx.has_changed()? {
                 let boat = *self.state_rx.borrow_and_update();
-                if self.session.boat.position_valid != boat.position_valid {
-                    crate::diagnostics::record(
-                        "INFO",
-                        if boat.position_valid {
-                            "Position du bateau reçue; marqueur activé"
-                        } else {
-                            "Position du bateau invalide; marqueur masqué"
-                        },
-                    );
-                }
-                self.session.boat = boat;
-
-                if self.session.state.follow && valid_boat_position(&boat) {
-                    self.session.state.position = Some((boat.longitude, boat.latitude));
-                }
+                self.session.on_boat(boat);
                 self.dirty = true;
             }
 
             self.fire_long_press();
 
-            //////////////// Ais Update //////////////////////////
             if self.session.state.display_ais {
                 if self.ais_rx.has_changed().unwrap_or(false) {
-                    self.ais_targets = self.ais_rx.borrow_and_update().clone();
+                    self.session
+                        .set_ais(self.ais_rx.borrow_and_update().clone());
                     self.dirty = true;
                 }
-
-                if !self.ais_targets.is_empty()
-                    && self.last_ais_cleanup.elapsed() >= Duration::from_secs(1)
-                {
-                    let previous_count = self.ais_targets.len();
-                    let now = Instant::now();
-                    self.ais_targets.retain(|target| target.is_fresh(now));
-                    if self.ais_targets.len() != previous_count {
-                        self.dirty = true;
-                    }
-                    self.last_ais_cleanup = now;
+                if self.session.expire_ais(now) {
+                    self.dirty = true;
                 }
             }
             if self.session.renderer.advance_zoom_animation() {
@@ -346,7 +306,7 @@ impl<'ttf> Plotter<'ttf> {
         } // end while self.session.running
 
         crate::diagnostics::record("INFO", "Arrêt demandé, sauvegarde finale de la trace");
-        self.session.track.save_default_track();
+        self.session.track.close();
         if let Err(error) = self.session.state.save(STATE_FILE) {
             crate::diagnostics::record("ERROR", format!("Erreur sauvegarde état: {error}"));
         }
@@ -357,7 +317,7 @@ impl<'ttf> Plotter<'ttf> {
 
 #[cfg(test)]
 mod tests {
-    use super::valid_boat_position;
+    use super::session::valid_boat_position;
     use crate::boat::BoatState;
 
     #[test]

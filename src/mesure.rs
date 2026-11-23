@@ -11,13 +11,13 @@ pub struct Mesure {
 }
 
 impl Mesure {
-    pub fn new() -> Result<Self, String> {
-        Ok(Mesure {
+    pub fn new() -> Self {
+        Mesure {
             mark1: None,
             mark2: None,
             distance: 0.0,
             bearing: 0.0,
-        })
+        }
     }
 
     /// Places the first mark, or places/moves the second one, at the chart

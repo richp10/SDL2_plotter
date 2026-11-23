@@ -38,7 +38,7 @@ impl Plotter<'_> {
             .map_err(anyhow::Error::msg)?;
 
         if self.session.state.display_ais {
-            crate::ais::show_targets(&self.ais_targets, &self.session.renderer, screen)
+            crate::ais::show_targets(&self.session.ais_targets, &self.session.renderer, screen)
                 .map_err(anyhow::Error::msg)?;
         }
 

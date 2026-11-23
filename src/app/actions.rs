@@ -113,7 +113,7 @@ impl Plotter<'_> {
                 }
             }
             AppAction::ZoomIn => {
-                self.state.zoom = self.renderer.zoom_increase(&self.state.map);
+                self.state.zoom = self.renderer.zoom_increase();
             }
             AppAction::ZoomOut => {
                 self.state.zoom = self.renderer.zoom_decrease();

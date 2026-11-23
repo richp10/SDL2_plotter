@@ -352,7 +352,7 @@ impl Plotter<'_> {
 
     fn handle_mouse_wheel(&mut self, delta: i32) {
         if delta > 0 {
-            self.state.zoom = self.renderer.zoom_increase(&self.state.map);
+            self.state.zoom = self.renderer.zoom_increase();
         } else if delta < 0 {
             self.state.zoom = self.renderer.zoom_decrease();
         }

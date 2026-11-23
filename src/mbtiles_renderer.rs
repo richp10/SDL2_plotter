@@ -238,21 +238,17 @@ impl MBTilesRenderer {
         course_to_screen(course, self.rotation)
     }
         
-    pub fn zoom_increase(&mut self, map : &str) -> i32
+    /// Moves to the next available zoom level. At the chart's maximum zoom
+    /// nothing changes: the tile cache and view are kept as they are.
+    pub fn zoom_increase(&mut self) -> i32
         {
-        if let Some(i) = self.available_zooms.iter().position(|&z| z == self.zoom) 
+        if let Some(i) = self.available_zooms.iter().position(|&z| z == self.zoom)
             {
-            if let Some(&next) = self.available_zooms.get(i + 1) 
+            if let Some(&next) = self.available_zooms.get(i + 1)
                 {
                 self.set_zoom(next);
                 }
-            else
-                {
-                println!("zoom max");
-                let _ = self.change_map(map);
-                }
             }
-        println!("zoom : {}",self.zoom);
         self.zoom
         }
     
@@ -717,6 +713,64 @@ mod tests {
     #[test]
     fn source_zoom_avoids_extreme_downscaling_for_sparse_charts() {
         assert_eq!(source_zoom_for(12.0, &[4, 18], 12), 4);
+    }
+
+    /// Writes a small raster MBTiles file holding every tile of the given
+    /// zoom levels, each a solid-colour 256x256 PNG.
+    fn fixture_chart(zooms: &[i32]) -> std::path::PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "plotter-fixture-{}-{unique}.mbtiles",
+            std::process::id()
+        ));
+        let mut png = Vec::new();
+        RgbaImage::from_pixel(TILE_SIZE, TILE_SIZE, Rgba([0, 120, 200, 255]))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageOutputFormat::Png)
+            .unwrap();
+
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE metadata (name TEXT, value TEXT);
+             CREATE TABLE tiles (zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_data BLOB);",
+        )
+        .unwrap();
+        for &z in zooms {
+            let n = 1i64 << z;
+            for x in 0..n {
+                for y in 0..n {
+                    conn.execute(
+                        "INSERT INTO tiles VALUES (?1, ?2, ?3, ?4)",
+                        (z, x, y, &png),
+                    )
+                    .unwrap();
+                }
+            }
+        }
+        path
+    }
+
+    #[test]
+    fn zooming_in_at_the_maximum_zoom_keeps_the_tile_cache() {
+        let path = fixture_chart(&[2, 3]);
+        let path_str = path.to_str().unwrap();
+        let mut renderer =
+            MBTilesRenderer::new(path_str, 3, 512, 256, &RenderingConfig::default(), path_str)
+                .unwrap();
+        assert_eq!(renderer.zoom, 3);
+        renderer.last_center = renderer.project(0.0, 0.0);
+        while renderer.prefetch_step(64) {}
+        let cached_before = renderer.cache.len();
+        assert!(cached_before > 0);
+
+        assert_eq!(renderer.zoom_increase(), 3);
+
+        assert_eq!(renderer.cache.len(), cached_before);
+        assert!(renderer.zoom_animation.is_none());
+        drop(renderer);
+        std::fs::remove_file(path).unwrap();
     }
 }
 

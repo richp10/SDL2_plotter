@@ -13,28 +13,24 @@ use tokio::sync::watch;
 
 mod actions;
 mod confirm_dialog;
+mod gesture;
 mod input;
 mod render;
 mod session;
+mod tools;
 
 pub(crate) use crate::action::AppAction;
 
 use confirm_dialog::{ConfirmAction, Confirmation};
+use gesture::GestureRecognizer;
 use session::{valid_boat_position, Session};
+use tools::Target;
 
 const STATE_FILE: &str = "default/state.json";
 const DEFAULT_TRACK_PATH: &str = "default/track.json";
 const LONG_CLICK: Duration = Duration::from_millis(500);
 const MOVE_TOLERANCE: i32 = 5;
 const DIAGNOSTICS_INTERVAL: Duration = Duration::from_secs(10);
-
-struct Press {
-    start: Instant,
-    x: i32,
-    y: i32,
-    moved: bool,
-    long_fired: bool,
-}
 
 struct PendingWaypoint {
     position: (f64, f64),
@@ -53,18 +49,15 @@ pub(crate) struct Plotter<'ttf> {
     /// Everything the actions act on; SDL-free and tested on its own.
     session: Session,
     dirty: bool,
-    is_draging: bool,
-    xdrag: i32,
-    ydrag: i32,
-    drag_start: (i32, i32),
+    /// Press/motion/release become Click, LongPress and Drag gestures here.
+    gestures: GestureRecognizer,
+    /// What a drag in progress grabbed, decided once at its start.
+    grab: Option<Target>,
     topbar: topbar::Topbar<'ttf>,
     buttombar: buttombar::Buttombar<'ttf>,
     confirm_dialog: confirm_dialog::ConfirmDialog<'ttf>,
     pending_waypoint: Option<PendingWaypoint>,
     text_input: sdl2::keyboard::TextInputUtil,
-    press: Option<Press>,
-    selected: Option<usize>,
-    dragging_measure_start: bool,
     mouse: Mouse,
     state_rx: watch::Receiver<BoatState>,
     track_rx: tokio::sync::mpsc::UnboundedReceiver<(f64, f64)>,
@@ -163,18 +156,13 @@ impl<'ttf> Plotter<'ttf> {
         Ok(Self {
             session,
             dirty: true,
-            is_draging: false,
-            xdrag: 0,
-            ydrag: 0,
-            drag_start: (0, 0),
+            gestures: GestureRecognizer::new(LONG_CLICK, MOVE_TOLERANCE),
+            grab: None,
             topbar,
             buttombar,
             confirm_dialog,
             pending_waypoint: None,
             text_input,
-            press: None,
-            selected: None,
-            dragging_measure_start: false,
             mouse: Mouse::Hand,
             state_rx,
             track_rx,
@@ -295,7 +283,7 @@ impl<'ttf> Plotter<'ttf> {
                 self.dirty = true;
             }
 
-            self.long_click();
+            self.fire_long_press();
 
             //////////////// Ais Update //////////////////////////
             if self.session.state.display_ais {
@@ -320,7 +308,7 @@ impl<'ttf> Plotter<'ttf> {
                 self.dirty = true;
             }
             //////////////////////   Display /////////////////////////
-            if self.dirty && !self.is_draging {
+            if self.dirty && !self.dragging_chart() {
                 let display_started = Instant::now();
                 self.display(screen, texture).map_err(anyhow::Error::msg)?;
                 rendered_frames += 1;

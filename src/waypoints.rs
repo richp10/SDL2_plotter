@@ -114,6 +114,11 @@ impl Waypoints {
         )
     }
 
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.waypoints.len()
+    }
+
     pub fn remove(&mut self, i: usize) {
         self.waypoints.remove(i);
     }

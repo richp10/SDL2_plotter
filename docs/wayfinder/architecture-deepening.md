@@ -35,6 +35,7 @@ release run), and CLAUDE.md describing the result.
 - [T4 — Menu entries carry their action](#t4--menu-entries-carry-their-action) — `MenuBar::event -> Option<AppAction>`; `AppAction` moved to `action.rs`; the 26 string constants and the `input.rs` match are gone.
 - [T5 — One gpx module](#t5--one-gpx-module) — `src/gpx.rs`: three writers returning a `String`, one strict reader; creator "SDL2 Plotter"; `route/gpx.rs` deleted.
 - [T2 — ChartView as the screen-to-chart seam](#t2--chartview-as-the-screen-to-chart-seam) — copyable snapshot from `renderer.view()`; absolute pixels in, validated wrapped positions out; one `nearest` hit test; six "centre minus click" copies and four hit-test copies gone.
+- [T3 — Gesture recogniser separate from per-mode tools](#t3--gesture-recogniser-separate-from-per-mode-tools) — `app/gesture.rs` (pure, time-injected) emits Click/LongPress/Drag; `app/tools.rs` puts `target_at`, `click`, `long_press`, `drag_to`, `drag_end`, `name_waypoint` on `Session`; `input.rs` 705 -> 394 lines; the three defects fixed with tests.
 
 ## Not yet specified
 
@@ -70,7 +71,8 @@ release run), and CLAUDE.md describing the result.
   stop reading `Screen`'s public size and repeating "centre minus click"?
 
 ### T3 — Gesture recogniser separate from per-mode tools
-- type: grilling + task · status: open · blocked by: T2
+- type: grilling + task · status: closed · blocked by: T2
+- Resolution: `GestureRecognizer::new(long_press, tolerance)` with `press(at, now)`, `motion(at)`, `release(at)`, `tick(now)`, `is_dragging()`, emitting `Gesture::{Click, LongPress, DragStart{origin,at}, DragMove, DragEnd}`; a long press suppresses the click and any later drag, a drag suppresses the long press, and every drag (chart, point, mark) starts only past the tolerance. The mode's tool on `Session` interprets gestures in absolute pixels: `target_at(pixel) -> Target::{RoutePoint, RouteHandle, Waypoint, MeasureMark, Chart}` decides once at `DragStart` what is grabbed and the grab is locked for the drag (fixes dragging A across B grabbing B); `click` returns `Option<ClickRequest::NameWaypoint(pos)>` because typing the name needs SDL text input; `long_press` removes and saves; `drag_to`/`drag_end` move and then persist. Wheel zoom is `AppAction::ZoomIn/ZoomOut` like the keys and no longer resets the pan offset. `Plotter` lost seven gesture fields (`press`, `is_draging`, `xdrag`, `ydrag`, `drag_start`, `selected`, `dragging_measure_start`) for `gestures` and `grab`; the chart drag still presents the texture from `input.rs` because it needs the texture. Tests: five on the recogniser (click within tolerance, drag from the press origin, long press once after 500 ms with no click after, drag suppresses long press, no press ignored) and seven on the tools (target per mode, click adds and saves, handle inserts, long press removes and saves, grab stays locked across another point, two clicks measure 600 nm, waypoint click asks for a name and blank names are refused).
 - Question: what events does a pure, time-injected gesture recogniser emit,
   and which per-mode editing logic moves from `input.rs` onto `Session`, so
   that the three defects (drag re-grab, skipped tolerance, wheel zoom

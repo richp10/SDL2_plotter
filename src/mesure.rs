@@ -42,6 +42,13 @@ impl Mesure {
         }
     }
 
+    /// Distance (nautical miles) and bearing (degrees) once both marks are
+    /// placed.
+    #[cfg(test)]
+    pub fn result(&self) -> Option<(f64, f64)> {
+        self.mark2.map(|_| (self.distance, self.bearing))
+    }
+
     pub fn clear(&mut self) {
         self.mark1 = None;
         self.mark2 = None;

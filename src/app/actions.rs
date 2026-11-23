@@ -189,85 +189,8 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
-    use super::super::confirm_dialog::Confirmation;
+    use super::super::session::test_support::session;
     use super::*;
-    use crate::boat::BoatState;
-    use crate::config::RenderingConfig;
-    use crate::mbtiles_renderer::test_support::fixture_chart;
-    use crate::mbtiles_renderer::MBTilesRenderer;
-    use crate::{mesure::Mesure, route::Route, state::State, track::Track, waypoints::Waypoints};
-    use std::path::PathBuf;
-
-    /// A Session over a fixture chart, with every file under a temp dir.
-    /// The route has three points along the meridian; the Charts menu has
-    /// the fixture chart first and a missing file second.
-    struct Fixture {
-        dir: PathBuf,
-        chart: PathBuf,
-        session: Session,
-    }
-
-    fn session(zooms: &[i32]) -> Fixture {
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let dir =
-            std::env::temp_dir().join(format!("plotter-session-{}-{unique}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let chart = fixture_chart(zooms);
-        let chart_str = chart.to_str().unwrap().to_string();
-        let state = State::new(dir.join("state.json"), chart_str.clone()).unwrap();
-        let renderer = MBTilesRenderer::new(
-            &chart_str,
-            state.zoom,
-            512,
-            256,
-            &RenderingConfig::default(),
-            &chart_str,
-        )
-        .unwrap();
-        let mut session = Session {
-            renderer,
-            state,
-            mode: Mode::default(),
-            running: true,
-            boat: BoatState::default(),
-            route: Route::from_points_at(
-                vec![(0.0, 0.0), (0.0, 1.0), (0.0, 2.0)],
-                &dir.join("route.json"),
-            ),
-            mesure: Mesure::new().unwrap(),
-            track: Track::new(&dir.join("track.json")),
-            waypoints: Waypoints::empty_at(&dir.join("waypoints.json")),
-            charts_path: vec![
-                chart_str,
-                dir.join("missing.mbtiles").to_string_lossy().into_owned(),
-            ],
-            confirmation: Confirmation::default(),
-            export_dir: dir.join("export"),
-        };
-        session.sync_view();
-        Fixture {
-            dir,
-            chart,
-            session,
-        }
-    }
-
-    impl Fixture {
-        /// Drops the session (which holds the chart open) before deleting.
-        fn finish(self) {
-            let Fixture {
-                dir,
-                chart,
-                session,
-            } = self;
-            drop(session);
-            std::fs::remove_file(chart).unwrap();
-            std::fs::remove_dir_all(dir).unwrap();
-        }
-    }
 
     #[test]
     fn show_and_hide_actions_flip_the_overlay_flags() {

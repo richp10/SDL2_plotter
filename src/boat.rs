@@ -4,7 +4,6 @@ use crate::screen::Map;
 const MINIMUM_SPEED :f64 = 1.0;
 
 #[derive(Clone, Copy, Debug)]
-#[allow(dead_code)]
 pub struct BoatState 
     {
     pub longitude           : f64,

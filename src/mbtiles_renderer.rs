@@ -10,7 +10,6 @@ use sdl2::rect::{Point, Rect};
 use std::time::{Duration, Instant};
 use crate::config::RenderingConfig;
 
-const RAYON_TERRE	:f64   = 6378137.0;
 const TILE_SIZE     :u32   = 256;
 const ZOOM_ANIMATION_DURATION: Duration = Duration::from_millis(240);
 const ROTATION_MARGIN: u32 = 4;
@@ -129,8 +128,6 @@ fn decode_tile(bytes: Option<Vec<u8>>) -> CachedTile {
 }
 
 pub struct MBTilesRenderer {
-    #[allow(dead_code)]
-    path: String,
     tile_size: u32,
     width: u32,
     height: u32,
@@ -143,14 +140,12 @@ pub struct MBTilesRenderer {
     min_zoom: i32,
     max_zoom: i32,
     metadata: HashMap<String, String>,
-    #[allow(dead_code)]
     tile_format: String,
     conn: Connection,
     cache: LruCache<TileKey, CachedTile>,
     loader: TileLoader,
     rendering_config: RenderingConfig,
     default_map: String,
-    pub resolution : f64,
     /// Centre (en coordonnées "pixel monde") utilisé lors du dernier rendu.
     /// Sert de référence pour convertir d'autres coordonnées GPS (waypoints,
     /// etc.) en coordonnées écran correspondant à la vue actuellement affichée.
@@ -176,7 +171,6 @@ impl MBTilesRenderer {
         )?;
 
         let mut renderer = Self {
-            path: mbtiles_path.to_string(),
             tile_size : TILE_SIZE,
             width,
             height,
@@ -195,7 +189,6 @@ impl MBTilesRenderer {
             loader: TileLoader::start(mbtiles_path)?,
             rendering_config: config.clone(),
             default_map: default_map.to_string(),
-            resolution: 1.0,
             last_center: (0.0, 0.0),
             available_zooms: Vec::new(),
         };
@@ -551,14 +544,8 @@ impl MBTilesRenderer {
         )
     }
 
-    fn lonlat_to_pixel(&mut self, lon: f64, lat: f64) -> (f64, f64) {
+    fn lonlat_to_pixel(&self, lon: f64, lat: f64) -> (f64, f64) {
         let (x, y) = self.project(lon, lat);
-
-        let n = 2.0_f64.powf(self.display_zoom);
-        let tile_size = self.tile_size as f64;
-        let lat_rad = lat.to_radians();
-        self.resolution = (lat_rad.cos() * 2.0 * std::f64::consts::PI * RAYON_TERRE)
-                            / (tile_size * n);
 
         (x, y)
     }

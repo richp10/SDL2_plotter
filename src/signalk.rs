@@ -363,23 +363,19 @@ pub async fn signalk_task(
     state_tx: watch::Sender<BoatState>,
     track_tx: tokio::sync::mpsc::UnboundedSender<(f64, f64)>,
     ais_tx: watch::Sender<Vec<AisTarget>>,
-    status_tx: watch::Sender<String>,
     config: SignalKConfig,
 ) {
     crate::diagnostics::record("INFO", format!("Tâche SignalK démarrée, serveur={}", config.url));
-    let _ = status_tx.send(format!("Connecting to Signalk {}...", config.url));
     let mut signalk = SignalKClient::connect(config).await;
     if !signalk.check_connect().await {
         crate::diagnostics::record("WARN", "La vérification initiale SignalK n'a pas abouti");
     }
 
     loop {
-        let _ = status_tx.send("Signalk Subscribe...".to_string());
         if let Err(error) = signalk.subscribe().await {
             crate::diagnostics::record("ERROR", format!("Échec de souscription SignalK: {error}"));
         }
 
-        let _ = status_tx.send("Load Map...".to_string());
         // boucle normale de reception des deltas signalk
         let mut last_eviction = Instant::now();
         while let Some(summary) = signalk.next_update().await {
@@ -409,7 +405,6 @@ pub async fn signalk_task(
             }
         }
 
-        let _ = status_tx.send("Try to reconnect...".to_string());
         crate::diagnostics::record("WARN", "Connexion SignalK interrompue, reconnexion");
         signalk.reconnect().await;
     }

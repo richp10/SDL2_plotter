@@ -34,7 +34,6 @@ pub struct Map<'ttf> {
     pub cursor_hand     : Cursor,
     pub cursor_cross    : Cursor,
     pub cursor_arrow    : Cursor,
-    pub cursor_wait     : Cursor,
     pub cursor_size     : Cursor,
     appearance          : AppearanceConfig,
     }
@@ -77,7 +76,6 @@ impl<'ttf> Map<'ttf> {
         let cursor_hand   = Cursor::from_system(SystemCursor::Hand)?;
         let cursor_cross  = Cursor::from_system(SystemCursor::Crosshair)?;
         let cursor_arrow  = Cursor::from_system(SystemCursor::Arrow)?;
-        let cursor_wait   = Cursor::from_system(SystemCursor::Wait)?;
         let cursor_size   = Cursor::from_system(SystemCursor::SizeAll)?;
         cursor_hand.set();
         Ok(Map {
@@ -88,7 +86,6 @@ impl<'ttf> Map<'ttf> {
             cursor_hand,
             cursor_cross,
             cursor_arrow,
-            cursor_wait,
             cursor_size,
             appearance: appearance.clone(),
         })
@@ -315,33 +312,6 @@ impl<'ttf> Map<'ttf> {
 
         let ecran_total = Rect::new(0, 0, self.screen_width, self.screen_height);
         self.canvas.fill_rect(ecran_total).unwrap();
-        Ok(())
-        }
-    
-    #[allow(dead_code)]
-    pub fn info(&mut self, texte: &str) -> Result<(), String> {
-         println!("{}",&texte);
-        self.canvas.set_draw_color(Color::RGB(0,0,0));
-        self.canvas.clear();
-        let texture_creator = self.canvas.texture_creator();
-        let font = &self.font;
-
-        let surface = font
-                        .render(texte)
-                        .blended_wrapped(sdl2::pixels::Color::WHITE, 700)
-                        .map_err(|e| e.to_string())?;    
-        let texture = texture_creator
-            .create_texture_from_surface(&surface)
-            .map_err(|e| e.to_string())?;
-
-        let TextureQuery { width, height, .. } = texture.query();
-        
-        let  x:i32 =((self.screen_width as i32)-(width as i32))/2;
-        let  y:i32 =((self.screen_height as i32)-(height as i32))/2;
-        let cible = Rect::new(x, y, width, height);
-        self.canvas.copy(&texture, None, Some(cible))?;
-        unsafe {texture.destroy();}
-        self.canvas.present();
         Ok(())
         }
     

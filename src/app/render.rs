@@ -103,7 +103,6 @@ impl Plotter<'_> {
             super::Mouse::Cross => map.cursor_cross.set(),
             super::Mouse::Hand => map.cursor_hand.set(),
             super::Mouse::Move => map.cursor_size.set(),
-            super::Mouse::Wait => map.cursor_wait.set(),
         }
     }
 

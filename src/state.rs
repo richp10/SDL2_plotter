@@ -184,11 +184,3 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
-
- #[allow(dead_code)]
- fn display_name(path: &str) -> &str {
-        Path::new(path)
-            .file_stem()          // "fidji" (sans dossier ni extension)
-            .and_then(|s| s.to_str())
-            .unwrap_or(path)
-    }  

@@ -115,8 +115,6 @@ enum Mouse {
     Cross,
     Arrow,
     Move,
-    #[allow(dead_code)]
-    Wait,
 }
 
 pub(crate) struct Plotter<'ttf> {
@@ -148,8 +146,6 @@ pub(crate) struct Plotter<'ttf> {
     state_rx: watch::Receiver<BoatState>,
     track_rx: tokio::sync::mpsc::UnboundedReceiver<(f64, f64)>,
     ais_rx: watch::Receiver<Vec<ais::AisTarget>>,
-    #[allow(dead_code)]
-    status_rx: watch::Receiver<String>,
     ais_targets: Vec<ais::AisTarget>,
     last_ais_cleanup: Instant,
     streamer: Option<crate::stream::Streamer>,
@@ -172,12 +168,10 @@ impl<'ttf> Plotter<'ttf> {
         let (state_tx, state_rx) = watch::channel(boat);
         let (track_tx, track_rx) = tokio::sync::mpsc::unbounded_channel();
         let (ais_tx, ais_rx) = watch::channel(Vec::new());
-        let (status_tx, status_rx) = watch::channel(String::new());
         tokio::spawn(signalk::signalk_task(
             state_tx,
             track_tx,
             ais_tx,
-            status_tx,
             config.signalk.clone(),
         ));
 
@@ -255,7 +249,6 @@ impl<'ttf> Plotter<'ttf> {
             state_rx,
             track_rx,
             ais_rx,
-            status_rx,
             ais_targets: Vec::new(),
             last_ais_cleanup: Instant::now(),
             streamer,

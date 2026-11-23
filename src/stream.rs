@@ -4,15 +4,26 @@ use sdl2::pixels::PixelFormatEnum;
 use sdl2::render::WindowCanvas;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
+
+/// One captured frame, as read back from the canvas, waiting to be encoded.
+struct RawFrame {
+    pixels: Vec<u8>,
+    width: u32,
+    height: u32,
+}
 
 #[derive(Clone)]
 pub struct Streamer {
     frame: Arc<RwLock<Option<Vec<u8>>>>,
     frame_interval: Duration,
-    jpeg_quality: u8,
     last_capture: Arc<std::sync::Mutex<Instant>>,
+    /// Hands raw frames to the encoder thread. Capacity one: if the encoder
+    /// is still busy with the previous frame, the new one is dropped rather
+    /// than queued, so the stream lags by at most one frame.
+    encoder: SyncSender<RawFrame>,
 }
 
 impl Streamer {
@@ -31,16 +42,43 @@ impl Streamer {
             serve(listener, server_frame);
         });
 
+        let (encoder, raw_frames) = sync_channel::<RawFrame>(1);
+        let encoder_frame = Arc::clone(&frame);
+        let quality = config.jpeg_quality;
+        std::thread::spawn(move || {
+            for raw in raw_frames {
+                let mut jpeg = Vec::new();
+                match JpegEncoder::new_with_quality(&mut jpeg, quality).encode(
+                    &raw.pixels,
+                    raw.width,
+                    raw.height,
+                    image::ColorType::Rgb8,
+                ) {
+                    Ok(()) => {
+                        if let Ok(mut frame) = encoder_frame.write() {
+                            *frame = Some(jpeg);
+                        }
+                    }
+                    Err(error) => {
+                        crate::diagnostics::record("WARN", format!("Encodage JPEG échoué: {error}"))
+                    }
+                }
+            }
+        });
+
         Ok(Self {
             frame,
             frame_interval: Duration::from_secs_f64(1.0 / config.fps as f64),
-            jpeg_quality: config.jpeg_quality,
             last_capture: Arc::new(std::sync::Mutex::new(
                 Instant::now().checked_sub(Duration::from_secs(1)).unwrap(),
             )),
+            encoder,
         })
     }
 
+    /// Reads the rendered frame back from the canvas, at most `fps` times a
+    /// second, and hands it to the encoder thread. The readback has to happen
+    /// on the render thread; the JPEG encoding does not.
     pub fn capture(&self, canvas: &WindowCanvas) -> Result<(), String> {
         let mut last = self.last_capture.lock().map_err(|_| "stream lock".to_string())?;
         if last.elapsed() < self.frame_interval {
@@ -48,19 +86,23 @@ impl Streamer {
         }
         *last = Instant::now();
 
-        let (output_width, output_height) = canvas.output_size()?;
-        let width = output_width;
-        let height = output_height;
+        let (width, height) = canvas.output_size()?;
         let pixels = canvas.read_pixels(None, PixelFormatEnum::RGB24)?;
-        let mut jpeg = Vec::new();
-        JpegEncoder::new_with_quality(&mut jpeg, self.jpeg_quality)
-            .encode(&pixels, width, height, image::ColorType::Rgb8)
-            .map_err(|error| error.to_string())?;
-
-        if let Ok(mut frame) = self.frame.write() {
-            *frame = Some(jpeg);
-        }
+        self.submit(pixels, width, height);
         Ok(())
+    }
+
+    /// Queues RGB24 pixels for encoding. Returns false when the frame was
+    /// dropped because the encoder had not finished the previous one.
+    pub(crate) fn submit(&self, pixels: Vec<u8>, width: u32, height: u32) -> bool {
+        match self.encoder.try_send(RawFrame {
+            pixels,
+            width,
+            height,
+        }) {
+            Ok(()) => true,
+            Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => false,
+        }
     }
 }
 
@@ -233,6 +275,80 @@ mod tests {
             .collect();
         samples.sort();
         println!("bench jpeg encode 1600x800 q70: {:?}", samples[samples.len() / 2]);
+    }
+
+    fn test_streamer() -> Streamer {
+        Streamer::start(&StreamingConfig {
+            enabled: true,
+            bind_address: "127.0.0.1".into(),
+            port: 0,
+            fps: 5,
+            jpeg_quality: 70,
+        })
+        .unwrap()
+    }
+
+    fn gradient(width: u32, height: u32) -> Vec<u8> {
+        (0..width * height)
+            .flat_map(|i| {
+                let (x, y) = (i % width, i / width);
+                [(x % 256) as u8, (y % 256) as u8, ((x + y) % 256) as u8]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn submitted_pixels_are_encoded_off_the_calling_thread() {
+        let streamer = test_streamer();
+        let pixels = gradient(1600, 800);
+        let started = Instant::now();
+        assert!(streamer.submit(pixels, 1600, 800));
+        let submit_took = started.elapsed();
+
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let jpeg = loop {
+            if let Some(jpeg) = streamer.frame.read().unwrap().clone() {
+                break jpeg;
+            }
+            assert!(Instant::now() < deadline, "no frame was encoded");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(&jpeg[..2], &[0xff, 0xd8], "frame should be a JPEG");
+        // Encoding a full frame takes tens of milliseconds even in release;
+        // the submitting thread must not pay for it.
+        assert!(submit_took < Duration::from_millis(5), "submit took {submit_took:?}");
+    }
+
+    #[test]
+    fn a_frame_submitted_while_the_encoder_is_busy_is_dropped_not_queued() {
+        let streamer = test_streamer();
+        let pixels = gradient(1600, 800);
+        let mut accepted = 0;
+        for _ in 0..5 {
+            if streamer.submit(pixels.clone(), 1600, 800) {
+                accepted += 1;
+            }
+        }
+        assert!(accepted >= 1 && accepted <= 2, "accepted {accepted} of 5 back-to-back frames");
+    }
+
+    /// cargo test --release bench_ -- --ignored --nocapture --test-threads=1
+    #[test]
+    #[ignore]
+    fn bench_submit_frame_cost_on_the_render_thread() {
+        let streamer = test_streamer();
+        let pixels = gradient(1600, 800);
+        let mut samples: Vec<Duration> = (0..10)
+            .map(|_| {
+                std::thread::sleep(Duration::from_millis(150));
+                let frame = pixels.clone();
+                let start = Instant::now();
+                streamer.submit(frame, 1600, 800);
+                start.elapsed()
+            })
+            .collect();
+        samples.sort();
+        println!("bench submit frame (render thread cost): {:?}", samples[samples.len() / 2]);
     }
 
     #[test]

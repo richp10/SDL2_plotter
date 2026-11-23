@@ -90,8 +90,9 @@ impl Waypoints {
     pub fn show(&self, map: &mut Map<'_>, renderer: &MBTilesRenderer) -> Result<(), String> {
         for (i, wp) in self.waypoints.iter().enumerate() {
             let point = renderer.gps_to_point((wp.lon, wp.lat));
-            let x = point.x as i16;
-            let y = point.y as i16;
+            let Some((x, y)) = map.point_i16(point) else {
+                continue; // off screen: the i16 primitives would wrap the coordinates
+            };
             let color = sdl2::pixels::Color::RGB(220, 30, 30);
             map.canvas.filled_trigon(x - 5, y - 9, x + 5, y - 9, x, y, color)?;
             map.canvas.filled_circle(x, y - 11, 6, color)?;

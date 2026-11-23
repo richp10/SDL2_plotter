@@ -80,12 +80,12 @@ impl Mesure
 	    // les points
 	    for (x, y) in [s1, s2].into_iter().flatten() 
 			{
-			let _ = map.show_mark(x as i16, y as i16);
+			let _ = map.show_mark(x, y);
 			}
 	    // le trait, seulement si les deux existent
-	    if let (Some((x1, y1)), Some((x2, y2))) = (s1, s2) 
+	    if let (Some((x1, y1)), Some((x2, y2))) = (s1, s2)
 			{
-			let _ = map.show_line(x1 as i16, y1 as i16, x2 as i16, y2 as i16);
+			let _ = map.show_line(x1, y1, x2, y2);
 			}
 		let text = if self.distance >=1.0 { format!("{:.1} Mn {:.0}°", self.distance, self.bearing) }
 					else 				  { format!("{:.0} m {:.0}°", self.distance*1852.0, self.bearing) };

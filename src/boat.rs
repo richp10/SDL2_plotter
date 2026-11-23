@@ -53,7 +53,7 @@ impl BoatState
                 ),
             );
         }
-        map.show_boat(pt.x as i16, pt.y as i16)?;
+        map.show_boat(pt.x, pt.y)?;
         if self.speed_over_ground > MINIMUM_SPEED
             {
             map.show_cog(renderer.course_to_screen(self.course_over_ground), pt)?;

@@ -188,6 +188,8 @@ If the address cannot be bound (for example the boat's address on a development 
 
 ## Runtime files
 
+Only `default/plotter.toml` is part of the repository. Everything else below is written by the application, belongs to the installation it runs on, and is ignored by git, so a fresh clone starts with an empty route, track and waypoint list and the position saved in the chart's own centre.
+
 - `default/plotter.toml`: configuration editable without recompiling
 - `default/state.json`: position, zoom and dynamic preferences
 - `default/route.json`: current route

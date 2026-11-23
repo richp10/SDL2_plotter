@@ -293,6 +293,31 @@ impl MBTilesRenderer {
         Ok(())
     }
     
+    /// Position to show when no position has been saved yet. Prefers the
+    /// centre of the tiles actually present, then the chart metadata, and
+    /// finally (0, 0) so that a sparse or empty chart never stops startup.
+    pub fn initial_center(&self) -> (f64, f64) {
+        if let Some(center) = self.tiles_center() {
+            return center;
+        }
+        match center_from_metadata(&self.metadata) {
+            Some(center) => {
+                crate::diagnostics::record(
+                    "WARN",
+                    "Aucune tuile au zoom minimal; centre pris dans les métadonnées de la carte",
+                );
+                center
+            }
+            None => {
+                crate::diagnostics::record(
+                    "WARN",
+                    "Aucune tuile ni métadonnée de centre; carte centrée sur (0, 0)",
+                );
+                (0.0, 0.0)
+            }
+        }
+    }
+
 /// Centre calculé à partir des tuiles réellement présentes au zoom min.
 /// Gère les cartes qui chevauchent l'antiméridien (Pacifique).
     pub fn tiles_center(&self) -> Option<(f64, f64)> {
@@ -596,6 +621,38 @@ impl MBTilesRenderer {
         }
 }
 
+/// Reads a chart centre from MBTiles metadata: the `center` key
+/// ("lon,lat[,zoom]") first, then the middle of `bounds` ("w,s,e,n").
+fn center_from_metadata(meta: &HashMap<String, String>) -> Option<(f64, f64)> {
+    fn numbers(value: &str) -> Vec<f64> {
+        value
+            .split(',')
+            .filter_map(|part| part.trim().parse::<f64>().ok())
+            .collect()
+    }
+    fn valid(lon: f64, lat: f64) -> Option<(f64, f64)> {
+        (lon.is_finite()
+            && lat.is_finite()
+            && (-180.0..=180.0).contains(&lon)
+            && (-90.0..=90.0).contains(&lat))
+        .then_some((lon, lat))
+    }
+
+    if let Some(parts) = meta.get("center").map(|v| numbers(v)) {
+        if parts.len() >= 2 {
+            if let Some(center) = valid(parts[0], parts[1]) {
+                return Some(center);
+            }
+        }
+    }
+    if let Some(parts) = meta.get("bounds").map(|v| numbers(v)) {
+        if parts.len() == 4 {
+            return valid((parts[0] + parts[2]) / 2.0, (parts[1] + parts[3]) / 2.0);
+        }
+    }
+    None
+}
+
 fn rotated_bounds(width: u32, height: u32, angle: f64) -> (u32, u32) {
     let (sin, cos) = angle.sin_cos();
     let ceil_bound = |value: f64| (value - 1e-9).ceil().max(1.0) as u32;
@@ -750,6 +807,42 @@ mod tests {
             }
         }
         path
+    }
+
+    #[test]
+    fn metadata_center_is_read_from_center_then_bounds() {
+        let mut meta = HashMap::new();
+        meta.insert("bounds".to_string(), "10.0, 40.0, 30.0, 50.0".to_string());
+        assert_eq!(center_from_metadata(&meta), Some((20.0, 45.0)));
+
+        meta.insert("center".to_string(), "26.98,36.95,12".to_string());
+        assert_eq!(center_from_metadata(&meta), Some((26.98, 36.95)));
+
+        meta.insert("center".to_string(), "garbage".to_string());
+        assert_eq!(center_from_metadata(&meta), Some((20.0, 45.0)));
+
+        assert_eq!(center_from_metadata(&HashMap::new()), None);
+    }
+
+    #[test]
+    fn initial_center_falls_back_when_the_chart_has_no_tiles() {
+        let path = fixture_chart(&[]);
+        let path_str = path.to_str().unwrap();
+        let conn = Connection::open(&path).unwrap();
+        conn.execute(
+            "INSERT INTO metadata VALUES ('bounds', '-10,50,0,60')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let renderer =
+            MBTilesRenderer::new(path_str, 8, 512, 256, &RenderingConfig::default(), path_str)
+                .unwrap();
+        assert_eq!(renderer.tiles_center(), None);
+        assert_eq!(renderer.initial_center(), (-5.0, 55.0));
+        drop(renderer);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

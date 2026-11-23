@@ -20,12 +20,8 @@ impl Plotter<'_> {
         };
         self.renderer.set_rotation(rotation);
 
-        if self.state.position == None {
-            self.state.position = Some(
-                self.renderer
-                    .tiles_center()
-                    .ok_or(anyhow::anyhow!("no tiles center!!!"))?,
-            );
+        if self.state.position.is_none() {
+            self.state.position = Some(self.renderer.initial_center());
         }
 
         let (lon, lat) = match self.state.follow {

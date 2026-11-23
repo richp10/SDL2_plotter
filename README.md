@@ -195,7 +195,7 @@ If the address cannot be bound (for example the boat's address on a development 
 - `default/track.json`: current track
 - `default/route.gpx` and `default/track.gpx`: legacy files retained after migration
 - `export/`: timestamped GPX route, track and waypoint exports
-- `plotter.log`: log and diagnostics
+- `plotter.log`: log and diagnostics. INFO and above are written by default; set the environment variable `PLOTTER_LOG=debug` to include every input event, or `warn` to keep only problems. The file is capped at 5 MB and rotated once to `plotter.log.1`, so the log never takes more than 10 MB of the SD card.
 
 ## Architecture
 

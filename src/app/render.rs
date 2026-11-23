@@ -93,6 +93,9 @@ impl Plotter<'_> {
                 .map_err(anyhow::Error::msg)?;
         }
         self.topbar.show(&mut map.canvas);
+        self.confirm_dialog
+            .show(&mut map.canvas)
+            .map_err(anyhow::Error::msg)?;
         map.canvas.present();
 
         Ok(())
@@ -136,6 +139,11 @@ impl Plotter<'_> {
         };
 
         message_right += if self.state.follow { " / Follow" } else { "" };
+        message_right += if self.state.course_up {
+            " / Course Up"
+        } else {
+            " / North Up"
+        };
         self.buttombar
             .show(&mut map.canvas, &message_left, &message_right);
     }

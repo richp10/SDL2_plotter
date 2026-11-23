@@ -526,6 +526,28 @@ mod tests {
 	}
 
 	#[test]
+	fn clearing_track_removes_the_native_file_immediately() {
+		let unique_id = SystemTime::now()
+			.duration_since(UNIX_EPOCH)
+			.unwrap()
+			.as_nanos();
+		let path = std::env::temp_dir().join(format!(
+			"desktop_plotter_track_clear_{}_{}.json",
+			std::process::id(),
+			unique_id
+		));
+		let mut track =
+			Track::with_checkpoint_interval(&path, Duration::from_secs(60)).unwrap();
+		track.add((-122.3, 47.5));
+		track.save(&path).unwrap();
+
+		track.reset();
+		track.save_default_track(&path);
+
+		assert!(!path.exists());
+	}
+
+	#[test]
 	fn exports_track_as_gpx_separately_from_native_json() {
 		let unique_id = SystemTime::now()
 			.duration_since(UNIX_EPOCH)

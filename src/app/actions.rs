@@ -2,7 +2,8 @@ use std::path::Path;
 
 use chrono::Local;
 
-use super::{AppAction, Plotter};
+use super::confirm_dialog::ConfirmAction;
+use super::{AppAction, Plotter, DEFAULT_TRACK_PATH};
 use crate::Mode;
 
 impl Plotter<'_> {
@@ -35,11 +36,7 @@ impl Plotter<'_> {
                 self.state.nav_id = 0;
             }
             AppAction::ClearRoute => {
-                self.state.goto = false;
-                if let Err(error) = self.route.clear() {
-                    crate::diagnostics::record("ERROR", format!("Erreur sauvegarde route: {error}"));
-                    eprintln!("Erreur sauvegarde route : {error}");
-                }
+                self.confirm_dialog.request(ConfirmAction::ClearRoute);
             }
             AppAction::PreviousWaypoint => {
                 self.state.nav_id = self.state.nav_id.saturating_sub(1);
@@ -50,7 +47,7 @@ impl Plotter<'_> {
             }
             AppAction::Quit => self.running = false,
             AppAction::ClearTrack => {
-                self.track.reset();
+                self.confirm_dialog.request(ConfirmAction::ClearTrack);
             }
             AppAction::ExportRouteGpx => {
                 let now = Local::now();
@@ -76,7 +73,10 @@ impl Plotter<'_> {
                     }
                 }
             }
-            AppAction::ClearWaypoints => self.waypoints.reset(),
+            AppAction::ClearWaypoints => {
+                self.confirm_dialog
+                    .request(ConfirmAction::ClearWaypoints);
+            }
             AppAction::ExportWaypointsGpx => {
                 let now = Local::now();
                 let path = Path::new("export")
@@ -129,6 +129,37 @@ impl Plotter<'_> {
             AppAction::SetCourseUp(enabled) => self.state.course_up = enabled,
         }
 
+        self.dirty = true;
+    }
+
+    pub(super) fn apply_confirmation(&mut self, action: ConfirmAction) {
+        match action {
+            ConfirmAction::ClearRoute => {
+                self.state.goto = false;
+                if let Err(error) = self.route.clear() {
+                    crate::diagnostics::record(
+                        "ERROR",
+                        format!("Erreur sauvegarde route: {error}"),
+                    );
+                    eprintln!("Erreur sauvegarde route : {error}");
+                }
+            }
+            ConfirmAction::ClearTrack => {
+                self.track.reset();
+                self.track
+                    .save_default_track(Path::new(DEFAULT_TRACK_PATH));
+            }
+            ConfirmAction::ClearWaypoints => {
+                self.waypoints.reset();
+                if let Err(error) = self.waypoints.save() {
+                    crate::diagnostics::record(
+                        "ERROR",
+                        format!("Erreur sauvegarde des waypoints: {error}"),
+                    );
+                    eprintln!("Erreur sauvegarde des waypoints : {error}");
+                }
+            }
+        }
         self.dirty = true;
     }
 

@@ -155,6 +155,46 @@ impl Plotter<'_> {
         map: &mut screen::Map<'_>,
         texture: &sdl2::render::Texture,
     ) -> Result<(), String> {
+        if self.confirm_dialog.is_open() {
+            match event {
+                Event::KeyDown {
+                    keycode: Some(sdl2::keyboard::Keycode::Escape),
+                    repeat: false,
+                    ..
+                } => {
+                    self.confirm_dialog.resolve(false);
+                    self.dirty = true;
+                }
+                Event::KeyDown {
+                    keycode: Some(
+                        sdl2::keyboard::Keycode::Return | sdl2::keyboard::Keycode::KpEnter,
+                    ),
+                    repeat: false,
+                    ..
+                } => {
+                    if let Some(action) = self.confirm_dialog.resolve(true) {
+                        self.apply_confirmation(action);
+                    }
+                }
+                Event::MouseButtonUp {
+                    mouse_btn: sdl2::mouse::MouseButton::Left,
+                    x,
+                    y,
+                    ..
+                } => {
+                    if let Some(confirm) = self.confirm_dialog.handle_click(x, y) {
+                        if let Some(action) = self.confirm_dialog.resolve(confirm) {
+                            self.apply_confirmation(action);
+                        } else {
+                            self.dirty = true;
+                        }
+                    }
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+
         match &event {
             Event::KeyDown {
                 keycode, repeat, ..

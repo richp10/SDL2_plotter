@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::watch;
 
 mod actions;
+mod confirm_dialog;
 mod input;
 mod render;
 
@@ -131,6 +132,7 @@ pub(crate) struct Plotter<'ttf> {
     boat: BoatState,
     topbar: topbar::Topbar<'ttf>,
     buttombar: buttombar::Buttombar<'ttf>,
+    confirm_dialog: confirm_dialog::ConfirmDialog<'ttf>,
     route: route::Route,
     mesure: mesure::Mesure,
     track: track::Track,
@@ -205,6 +207,9 @@ impl<'ttf> Plotter<'ttf> {
             .map_err(anyhow::Error::msg)?;
         let buttombar = buttombar::Buttombar::new(ttf_context, width, height, &config.fonts)
             .expect("failed to build buttombar bar");
+        let confirm_dialog =
+            confirm_dialog::ConfirmDialog::new(ttf_context, width, height, &config.fonts)
+                .map_err(anyhow::Error::msg)?;
         let route = route::Route::new().map_err(anyhow::Error::msg)?;
         let mesure = mesure::Mesure::new().map_err(anyhow::Error::msg)?;
         let track = track::Track::with_checkpoint_interval(
@@ -234,6 +239,7 @@ impl<'ttf> Plotter<'ttf> {
             boat,
             topbar,
             buttombar,
+            confirm_dialog,
             route,
             mesure,
             track,

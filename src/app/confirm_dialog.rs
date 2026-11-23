@@ -4,6 +4,7 @@ use sdl2::render::{BlendMode, WindowCanvas};
 use sdl2::ttf::{Font, Sdl2TtfContext};
 
 use crate::config::FontConfig;
+use crate::screen::{draw_text, TextAlign};
 
 const PANEL_WIDTH: u32 = 440;
 const PANEL_HEIGHT: u32 = 190;
@@ -11,7 +12,10 @@ const BUTTON_WIDTH: u32 = 112;
 const BUTTON_HEIGHT: u32 = 38;
 const BUTTON_GAP: i32 = 20;
 
-#[derive(Clone, Copy)]
+/// The prefix is the verb the dialog confirms; other verbs (Quit, Reset)
+/// are expected to join, so the names stay explicit.
+#[allow(clippy::enum_variant_names)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ConfirmAction {
     ClearRoute,
     ClearTrack,
@@ -34,11 +38,38 @@ impl ConfirmAction {
     }
 }
 
+/// The destructive action waiting for the navigator's yes, if any. Holds
+/// no SDL handle, so the action layer that owns it can be tested;
+/// `ConfirmDialog` only draws and hit-tests it.
+#[derive(Default)]
+pub(super) struct Confirmation {
+    pending: Option<ConfirmAction>,
+}
+
+impl Confirmation {
+    pub fn request(&mut self, action: ConfirmAction) {
+        self.pending = Some(action);
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    pub fn pending(&self) -> Option<ConfirmAction> {
+        self.pending
+    }
+
+    /// Closes the dialog; returns the action only when it was confirmed.
+    pub fn resolve(&mut self, confirm: bool) -> Option<ConfirmAction> {
+        let pending = self.pending.take()?;
+        confirm.then_some(pending)
+    }
+}
+
 pub(super) struct ConfirmDialog<'ttf> {
     font: Font<'ttf, 'static>,
     screen_width: u32,
     screen_height: u32,
-    pending: Option<ConfirmAction>,
 }
 
 impl<'ttf> ConfirmDialog<'ttf> {
@@ -52,25 +83,12 @@ impl<'ttf> ConfirmDialog<'ttf> {
             font: ttf_context.load_font(&font_config.file, font_config.ui_size)?,
             screen_width,
             screen_height,
-            pending: None,
         })
     }
 
-    pub fn request(&mut self, action: ConfirmAction) {
-        self.pending = Some(action);
-    }
-
-    pub fn is_open(&self) -> bool {
-        self.pending.is_some()
-    }
-
-    pub fn resolve(&mut self, confirm: bool) -> Option<ConfirmAction> {
-        let pending = self.pending.take()?;
-        confirm.then_some(pending)
-    }
-
+    /// Which button a click lands on while a confirmation is open:
+    /// `Some(true)` confirm, `Some(false)` cancel, `None` neither.
     pub fn handle_click(&self, x: i32, y: i32) -> Option<bool> {
-        self.pending?;
         let point = Point::new(x, y);
         if self.cancel_button().contains_point(point) {
             Some(false)
@@ -81,11 +99,7 @@ impl<'ttf> ConfirmDialog<'ttf> {
         }
     }
 
-    pub fn show(&self, canvas: &mut WindowCanvas) -> Result<(), String> {
-        let Some(action) = self.pending else {
-            return Ok(());
-        };
-
+    pub fn show(&self, canvas: &mut WindowCanvas, action: ConfirmAction) -> Result<(), String> {
         canvas.set_blend_mode(BlendMode::Blend);
         canvas.set_draw_color(Color::RGBA(0, 0, 0, 170));
         canvas.fill_rect(Rect::new(0, 0, self.screen_width, self.screen_height))?;
@@ -96,48 +110,49 @@ impl<'ttf> ConfirmDialog<'ttf> {
         canvas.set_draw_color(Color::RGB(210, 215, 225));
         canvas.draw_rect(panel)?;
 
-        self.draw_centered_text(
+        draw_text(
             canvas,
+            &self.font,
             "Confirm action",
-            panel.x,
-            panel.y + 20,
-            panel.width(),
-            28,
+            Rect::new(panel.x, panel.y + 20, panel.width(), 28),
+            TextAlign::Centered,
             Color::RGB(255, 255, 255),
         )?;
-        self.draw_centered_text(
+        draw_text(
             canvas,
+            &self.font,
             action.message(),
-            panel.x + 16,
-            panel.y + 64,
-            panel.width().saturating_sub(32),
-            30,
+            Rect::new(
+                panel.x + 16,
+                panel.y + 64,
+                panel.width().saturating_sub(32),
+                30,
+            ),
+            TextAlign::Centered,
             Color::RGB(235, 235, 235),
         )?;
 
         let cancel = self.cancel_button();
         canvas.set_draw_color(Color::RGB(90, 98, 110));
         canvas.fill_rect(cancel)?;
-        self.draw_centered_text(
+        draw_text(
             canvas,
+            &self.font,
             "Cancel",
-            cancel.x,
-            cancel.y,
-            cancel.width(),
-            cancel.height(),
+            cancel,
+            TextAlign::Centered,
             Color::WHITE,
         )?;
 
         let confirm = self.confirm_button();
         canvas.set_draw_color(Color::RGB(155, 55, 55));
         canvas.fill_rect(confirm)?;
-        self.draw_centered_text(
+        draw_text(
             canvas,
+            &self.font,
             action.confirm_label(),
-            confirm.x,
-            confirm.y,
-            confirm.width(),
-            confirm.height(),
+            confirm,
+            TextAlign::Centered,
             Color::WHITE,
         )?;
 
@@ -176,39 +191,6 @@ impl<'ttf> ConfirmDialog<'ttf> {
             panel.y + panel.height() as i32 - BUTTON_HEIGHT as i32 - 18,
             BUTTON_WIDTH,
             BUTTON_HEIGHT,
-        )
-    }
-
-    fn draw_centered_text(
-        &self,
-        canvas: &mut WindowCanvas,
-        text: &str,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-        color: Color,
-    ) -> Result<(), String> {
-        let texture_creator = canvas.texture_creator();
-        let surface = self
-            .font
-            .render(text)
-            .blended(color)
-            .map_err(|error| error.to_string())?;
-        let texture = texture_creator
-            .create_texture_from_surface(&surface)
-            .map_err(|error| error.to_string())?;
-        let text_x = x + (width as i32 - surface.width() as i32) / 2;
-        let text_y = y + (height as i32 - surface.height() as i32) / 2;
-        canvas.copy(
-            &texture,
-            None,
-            Some(Rect::new(
-                text_x,
-                text_y,
-                surface.width(),
-                surface.height(),
-            )),
         )
     }
 }

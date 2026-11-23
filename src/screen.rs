@@ -1,20 +1,73 @@
-
-use sdl2::{Sdl, ttf::{Sdl2TtfContext, Font}};
-use sdl2::render::{Texture,TextureQuery,WindowCanvas};
-use sdl2::render::BlendMode;
-use sdl2::gfx::primitives::DrawRenderer; 
-use sdl2::EventPump;
-use sdl2::pixels::Color;
-use sdl2::rect::{Rect};
-use sdl2::rect::Point;
-use sdl2::mouse::{Cursor, SystemCursor};
 use crate::config::{AppearanceConfig, FontConfig, WindowConfig};
+use crate::overlay::Draw;
+use sdl2::gfx::primitives::DrawRenderer;
+use sdl2::mouse::{Cursor, SystemCursor};
+use sdl2::pixels::Color;
+use sdl2::rect::Point;
+use sdl2::rect::Rect;
+use sdl2::render::BlendMode;
+use sdl2::render::{Texture, TextureQuery, WindowCanvas};
+use sdl2::EventPump;
+use sdl2::{
+    ttf::{Font, Sdl2TtfContext},
+    Sdl,
+};
+
+/// Which part of the chart texture is shown, how large, and how rotated.
+/// Built by `MBTilesRenderer::placement` once per frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ChartPlacement {
+    pub source: Rect,
+    pub display_width: u32,
+    pub display_height: u32,
+    pub rotation_degrees: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextAlign {
+    /// Centred in `area` on both axes.
+    Centered,
+    /// Flush with the left edge of `area`, centred vertically.
+    Left,
+}
+
+/// Renders `text` with `font` inside `area` and frees the texture again.
+/// Shared by the menu bar and the confirmation dialog.
+pub fn draw_text(
+    canvas: &mut WindowCanvas,
+    font: &Font,
+    text: &str,
+    area: Rect,
+    align: TextAlign,
+    color: Color,
+) -> Result<(), String> {
+    let texture_creator = canvas.texture_creator();
+    let surface = font
+        .render(text)
+        .blended(color)
+        .map_err(|e| e.to_string())?;
+    let texture = texture_creator
+        .create_texture_from_surface(&surface)
+        .map_err(|e| e.to_string())?;
+    let (width, height) = (surface.width(), surface.height());
+    let x = match align {
+        TextAlign::Centered => area.x + (area.width() as i32 - width as i32) / 2,
+        TextAlign::Left => area.x,
+    };
+    let y = area.y + (area.height() as i32 - height as i32) / 2;
+    let result = canvas.copy(&texture, None, Some(Rect::new(x, y, width, height)));
+    // `unsafe_textures` is enabled, so textures are not freed on drop.
+    unsafe {
+        texture.destroy();
+    }
+    result
+}
 
 pub struct MoteurSdl {
-    pub context     : Sdl,
-    pub event_pump  : EventPump,
-    pub ttf_context : Sdl2TtfContext,
-    }
+    pub context: Sdl,
+    pub event_pump: EventPump,
+    pub ttf_context: Sdl2TtfContext,
+}
 
 impl MoteurSdl {
     pub fn init() -> Result<Self, String> {
@@ -22,24 +75,30 @@ impl MoteurSdl {
         let event_pump = context.event_pump()?;
         let ttf_context = sdl2::ttf::init().map_err(|e| e.to_string())?;
 
-        Ok(MoteurSdl { context, event_pump, ttf_context:ttf_context })
-        }
+        Ok(MoteurSdl {
+            context,
+            event_pump,
+            ttf_context,
+        })
     }
+}
 
-pub struct Map<'ttf> {
-    font                : Font<'ttf, 'static>,
-    pub canvas          : WindowCanvas,
-    pub screen_width    : u32,
-    pub screen_height   : u32,
-    pub cursor_hand     : Cursor,
-    pub cursor_cross    : Cursor,
-    pub cursor_arrow    : Cursor,
-    pub cursor_wait     : Cursor,
-    pub cursor_size     : Cursor,
-    appearance          : AppearanceConfig,
-    }
+/// The SDL window and the only way the data layer draws on it. Owns the
+/// canvas, the cursors and every drawing primitive; menus and dialogs get the
+/// canvas directly because they are chrome, not chart content.
+pub struct Screen<'ttf> {
+    font: Font<'ttf, 'static>,
+    pub canvas: WindowCanvas,
+    pub screen_width: u32,
+    pub screen_height: u32,
+    pub cursor_hand: Cursor,
+    pub cursor_cross: Cursor,
+    pub cursor_arrow: Cursor,
+    pub cursor_size: Cursor,
+    appearance: AppearanceConfig,
+}
 
-impl<'ttf> Map<'ttf> {
+impl<'ttf> Screen<'ttf> {
     pub fn new(
         ttf_context: &'ttf Sdl2TtfContext,
         context: &Sdl,
@@ -47,40 +106,56 @@ impl<'ttf> Map<'ttf> {
         font_config: &FontConfig,
         appearance: &AppearanceConfig,
     ) -> Result<Self, String> {
-
         let font = ttf_context.load_font(&font_config.file, font_config.window_size)?;
-        
-        let video_subsystem = context.video().unwrap();
-        let window = match window_config.fullscreen
-            {
+
+        let video_subsystem = context
+            .video()
+            .map_err(|e| format!("Sous-système vidéo SDL indisponible : {e}"))?;
+        let window = match window_config.fullscreen {
             false => video_subsystem
-                .window(&window_config.title, window_config.width, window_config.height)
+                .window(
+                    &window_config.title,
+                    window_config.width,
+                    window_config.height,
+                )
                 .position_centered()
-                .build()
-                .unwrap(),
+                .build(),
             true => video_subsystem
-                .window(&window_config.title, window_config.width, window_config.height)
+                .window(
+                    &window_config.title,
+                    window_config.width,
+                    window_config.height,
+                )
                 .position_centered()
                 .fullscreen_desktop()
-                .build()
-                .unwrap(),
-            };
-        
-        let display_mode     = video_subsystem.current_display_mode(0).unwrap();
-        let (screen_width,screen_height) = match window_config.fullscreen
-            {
-            false => { (window_config.width,window_config.height) }
-            true  => { (display_mode.w as u32,display_mode.h as u32) }
-            };
-            
-        let canvas        = window.into_canvas().accelerated().build().unwrap();
-        let cursor_hand   = Cursor::from_system(SystemCursor::Hand)?;
-        let cursor_cross  = Cursor::from_system(SystemCursor::Crosshair)?;
-        let cursor_arrow  = Cursor::from_system(SystemCursor::Arrow)?;
-        let cursor_wait   = Cursor::from_system(SystemCursor::Wait)?;
-        let cursor_size   = Cursor::from_system(SystemCursor::SizeAll)?;
+                .build(),
+        }
+        .map_err(|e| {
+            format!(
+                "Impossible de créer la fenêtre {}x{} (plein écran : {}) : {e}",
+                window_config.width, window_config.height, window_config.fullscreen
+            )
+        })?;
+
+        let display_mode = video_subsystem
+            .current_display_mode(0)
+            .map_err(|e| format!("Mode d'affichage de l'écran 0 indisponible : {e}"))?;
+        let (screen_width, screen_height) = match window_config.fullscreen {
+            false => (window_config.width, window_config.height),
+            true => (display_mode.w as u32, display_mode.h as u32),
+        };
+
+        let canvas = window
+            .into_canvas()
+            .accelerated()
+            .build()
+            .map_err(|e| format!("Impossible de créer le canvas accéléré : {e}"))?;
+        let cursor_hand = Cursor::from_system(SystemCursor::Hand)?;
+        let cursor_cross = Cursor::from_system(SystemCursor::Crosshair)?;
+        let cursor_arrow = Cursor::from_system(SystemCursor::Arrow)?;
+        let cursor_size = Cursor::from_system(SystemCursor::SizeAll)?;
         cursor_hand.set();
-        Ok(Map {
+        Ok(Screen {
             font,
             canvas,
             screen_width,
@@ -88,262 +163,392 @@ impl<'ttf> Map<'ttf> {
             cursor_hand,
             cursor_cross,
             cursor_arrow,
-            cursor_wait,
             cursor_size,
             appearance: appearance.clone(),
         })
-        }
+    }
 
-    pub fn draw_mid_handles(&mut self, pts: &[Point])  {
-        self.canvas.set_draw_color(configured_color(self.appearance.route_color));
-        for p in pts 
-            {
-            let r = sdl2::rect::Rect::new(p.x - 4, p.y - 4, 12, 12);
-            self.canvas.draw_rect(r).unwrap();   // contour seulement, pour les distinguer des vrais points
+    /// Executes a plan from `overlay::plan`. Decorations (track, handles,
+    /// route lines) swallow their own errors so one failed primitive never
+    /// aborts the frame; markers and text propagate.
+    pub fn paint(&mut self, draws: &[Draw]) -> Result<(), String> {
+        for draw in draws {
+            match draw {
+                Draw::Route(points) => self.show_route(points),
+                Draw::Handles(points) => {
+                    let _ = self.draw_mid_handles(points);
+                }
+                Draw::Track(points) => {
+                    let _ = self.show_track(points);
+                }
+                Draw::Boat { at, course } => {
+                    self.show_boat(at.x, at.y)?;
+                    if let Some(course) = course {
+                        self.show_cog(*course, *at)?;
+                    }
+                }
+                Draw::Ais { at, course } => self.show_ais_target(at.x, at.y, *course)?,
+                Draw::Waypoint(at) => self.show_waypoint(*at)?,
+                Draw::Mark(at) => self.show_mark(at.x, at.y)?,
+                Draw::Line(a, b) => self.show_line(*a, *b)?,
+                Draw::Text { at, text } => self.show_text(text, at.x, at.y)?,
             }
         }
+        Ok(())
+    }
 
-    pub fn show_cog(&mut self, mut radians :f64, pos : Point) -> Result<(), String> {
+    fn draw_mid_handles(&mut self, pts: &[Point]) -> Result<(), String> {
+        self.canvas
+            .set_draw_color(configured_color(self.appearance.route_color));
+        for p in pts {
+            let r = sdl2::rect::Rect::new(p.x - 4, p.y - 4, 12, 12);
+            self.canvas.draw_rect(r)?; // contour seulement, pour les distinguer des vrais points
+        }
+        Ok(())
+    }
 
+    fn clip(&self) -> ClipRect {
+        ClipRect::for_screen(self.screen_width, self.screen_height)
+    }
+
+    fn show_cog(&mut self, mut radians: f64, pos: Point) -> Result<(), String> {
         radians -= std::f64::consts::PI / 2.0;
         let x1 = pos.x as f64 + (radians.cos() * self.appearance.cog_length);
         let y1 = pos.y as f64 + (radians.sin() * self.appearance.cog_length);
+        let end = Point::new(x1.round() as i32, y1.round() as i32);
+        let Some(((ax, ay), (bx, by))) = self.clip().segment_i16(pos, end) else {
+            return Ok(());
+        };
 
         self.canvas.thick_line(
-                    pos.x as i16, 
-                    pos.y as i16, 
-                    x1 as i16, 
-                    y1 as i16, 
-                    self.appearance.cog_width,
-                    configured_color(self.appearance.cog_color),
-                    )?;
+            ax,
+            ay,
+            bx,
+            by,
+            self.appearance.cog_width,
+            configured_color(self.appearance.cog_color),
+        )?;
         Ok(())
-        }
-    
-    pub fn show_route(&mut self, pts: &[Point])  {
-        for seg in pts.windows(2) 
-            {
-            let (a, b) = (&seg[0], &seg[1]);
+    }
+
+    fn show_route(&mut self, pts: &[Point]) {
+        let clip = self.clip();
+        for seg in pts.windows(2) {
+            let Some(((ax, ay), (bx, by))) = clip.segment_i16(seg[0], seg[1]) else {
+                continue;
+            };
             let _ = self.canvas.thick_line(
-                a.x as i16, a.y as i16,
-                b.x as i16, b.y as i16,
+                ax,
+                ay,
+                bx,
+                by,
                 self.appearance.route_width,
                 configured_color(self.appearance.route_color),
             );
-            }
-        self.canvas.set_draw_color(configured_color(self.appearance.route_color));
-        for pt in pts
-            {
+        }
+        self.canvas
+            .set_draw_color(configured_color(self.appearance.route_color));
+        for pt in pts {
+            let Some((x, y)) = clip.point_i16(*pt) else {
+                continue;
+            };
             let _ = self.canvas.filled_circle(
-                pt.x as i16,
-                pt.y as i16,
+                x,
+                y,
                 self.appearance.route_point_size,
                 configured_color(self.appearance.route_color),
             );
-            }
         }
+    }
 
-    pub fn show_map(
-        &mut self,
-        texture: &Texture,
-        source_rect: Rect,
-        display_width: u32,
-        display_height: u32,
-        rotation_degrees: f64,
-    ) -> Result<(), String> {
-        let dst = Rect::new(
-            (self.screen_width as i32 - display_width as i32) / 2,
-            (self.screen_height as i32 - display_height as i32) / 2,
-            display_width,
-            display_height,
-        );
-        self.canvas
-            .copy_ex(
-                texture,
-                Some(source_rect),
-                Some(dst),
-                rotation_degrees,
-                None,
-                false,
-                false,
-            )?;
-        Ok(())
-        }
-        
+    /// Draws the chart texture centred on the screen.
+    pub fn show_map(&mut self, texture: &Texture, placement: ChartPlacement) -> Result<(), String> {
+        self.blit_chart(texture, (0, 0), placement)
+    }
+
+    /// Redraws the chart shifted by `offset` while the user drags it, and
+    /// presents the frame straight away so the drag feels immediate.
     pub fn drag_map(
         &mut self,
         texture: &Texture,
-        x: i32,
-        y: i32,
-        source_rect: Rect,
-        display_width: u32,
-        display_height: u32,
-        rotation_degrees: f64,
+        offset: (i32, i32),
+        placement: ChartPlacement,
     ) -> Result<(), String> {
-        let dst_rect = Rect::new(
-            (self.screen_width as i32 - display_width as i32) / 2 + x,
-            (self.screen_height as i32 - display_height as i32) / 2 + y,
-            display_width,
-            display_height,
-        );
         self.canvas
             .set_draw_color(configured_color(self.appearance.map_background_color));
         self.canvas.clear();
+        self.blit_chart(texture, offset, placement)?;
+        self.canvas.present();
+        Ok(())
+    }
+
+    fn blit_chart(
+        &mut self,
+        texture: &Texture,
+        offset: (i32, i32),
+        placement: ChartPlacement,
+    ) -> Result<(), String> {
+        let dst = Rect::new(
+            (self.screen_width as i32 - placement.display_width as i32) / 2 + offset.0,
+            (self.screen_height as i32 - placement.display_height as i32) / 2 + offset.1,
+            placement.display_width,
+            placement.display_height,
+        );
         self.canvas.copy_ex(
             texture,
-            Some(source_rect),
-            Some(dst_rect),
-            rotation_degrees,
+            Some(placement.source),
+            Some(dst),
+            placement.rotation_degrees,
             None,
             false,
             false,
-        )?;
-        self.canvas.present();
-        Ok(())
+        )
+    }
+
+    fn show_boat(&mut self, x: i32, y: i32) -> Result<(), String> {
+        if !self.clip().contains(f64::from(x), f64::from(y)) {
+            return Ok(());
         }
-               
-    pub fn show_boat(&mut self,x:i16,y:i16) -> Result<(), String> {
         let boat_color = configured_color(self.appearance.boat_color);
         self.canvas.set_blend_mode(BlendMode::Blend);
         self.canvas.set_draw_color(boat_color);
         draw_filled_circle(
             &mut self.canvas,
-            i32::from(x),
-            i32::from(y),
+            x,
+            y,
             i32::from(self.appearance.boat_size),
             boat_color,
         )?;
         draw_circle(
             &mut self.canvas,
-            i32::from(x),
-            i32::from(y),
+            x,
+            y,
             i32::from(self.appearance.boat_circle_radius),
             boat_color,
         )?;
         Ok(())
-        }
+    }
 
-    pub fn show_ais_target(
+    fn show_ais_target(
         &mut self,
         x: i32,
         y: i32,
         course_over_ground: Option<f64>,
     ) -> Result<(), String> {
+        let clip = self.clip();
+        let Some((x16, y16)) = clip.point_i16(Point::new(x, y)) else {
+            return Ok(());
+        };
         if let Some(course) = course_over_ground.filter(|course| course.is_finite()) {
-            let end_x = x + (course.sin() * f64::from(self.appearance.ais_course_length)).round() as i32;
-            let end_y = y - (course.cos() * f64::from(self.appearance.ais_course_length)).round() as i32;
-            let _ = self.canvas.thick_line(
-                x as i16,
-                y as i16,
-                end_x as i16,
-                end_y as i16,
-                self.appearance.ais_course_width,
-                configured_color(self.appearance.ais_color),
-            );
+            let end_x =
+                x + (course.sin() * f64::from(self.appearance.ais_course_length)).round() as i32;
+            let end_y =
+                y - (course.cos() * f64::from(self.appearance.ais_course_length)).round() as i32;
+            if let Some(((ax, ay), (bx, by))) =
+                clip.segment_i16(Point::new(x, y), Point::new(end_x, end_y))
+            {
+                let _ = self.canvas.thick_line(
+                    ax,
+                    ay,
+                    bx,
+                    by,
+                    self.appearance.ais_course_width,
+                    configured_color(self.appearance.ais_color),
+                );
+            }
         }
         self.canvas.filled_circle(
-            x as i16,
-            y as i16,
+            x16,
+            y16,
             self.appearance.ais_size,
             configured_color(self.appearance.ais_color),
         )?;
         self.canvas.circle(
-            x as i16,
-            y as i16,
+            x16,
+            y16,
             self.appearance.ais_outline_size,
             configured_color(self.appearance.ais_outline_color),
         )?;
         Ok(())
     }
 
-    pub fn show_mark(&mut self,x:i16,y:i16) -> Result<(), String> {
+    /// Waypoint pin: a triangle under a ringed dot, tip at `point`.
+    /// Off-screen points are culled before the i16 conversion.
+    fn show_waypoint(&mut self, point: Point) -> Result<(), String> {
+        let Some((x, y)) = self.clip().point_i16(point) else {
+            return Ok(());
+        };
+        let color = configured_color(self.appearance.waypoint_color);
+        self.canvas
+            .filled_trigon(x - 5, y - 9, x + 5, y - 9, x, y, color)?;
+        self.canvas.filled_circle(x, y - 11, 6, color)?;
+        self.canvas.filled_circle(x, y - 11, 2, Color::WHITE)
+    }
+
+    /// The boat's track as a polyline through `pts` (screen pixels).
+    fn show_track(&mut self, pts: &[Point]) -> Result<(), String> {
+        if pts.len() < 2 {
+            return Ok(());
+        }
+        self.canvas
+            .set_draw_color(configured_color(self.appearance.track_color));
+        self.canvas.draw_lines(pts)
+    }
+
+    fn show_mark(&mut self, x: i32, y: i32) -> Result<(), String> {
+        if !self.clip().contains(f64::from(x), f64::from(y)) {
+            return Ok(());
+        }
         draw_filled_circle(
             &mut self.canvas,
-            i32::from(x),
-            i32::from(y),
+            x,
+            y,
             i32::from(self.appearance.mark_size),
             configured_color(self.appearance.measure_color),
         )?;
         Ok(())
-        }
-    
-    pub fn show_line(&mut self, x1: i16, y1: i16, x2: i16, y2: i16) -> Result<(), String>{
+    }
+
+    fn show_line(&mut self, a: Point, b: Point) -> Result<(), String> {
+        let Some(((ax, ay), (bx, by))) = self.clip().segment_i16(a, b) else {
+            return Ok(());
+        };
         self.canvas
             .set_draw_color(configured_color(self.appearance.line_color));
-        self.canvas.draw_line(Point::new(x1 as i32, y1 as i32), Point::new(x2 as i32, y2 as i32))
-        }
-        
-    pub fn night_layer( &mut self, opacity : u8 ) -> Result<(), String> {
+        self.canvas.draw_line(
+            Point::new(i32::from(ax), i32::from(ay)),
+            Point::new(i32::from(bx), i32::from(by)),
+        )
+    }
+
+    pub fn night_layer(&mut self, opacity: u8) -> Result<(), String> {
         self.canvas.set_blend_mode(BlendMode::Blend);
         let [red, green, blue, _] = self.appearance.night_overlay_color;
         self.canvas
             .set_draw_color(Color::RGBA(red, green, blue, opacity));
 
         let ecran_total = Rect::new(0, 0, self.screen_width, self.screen_height);
-        self.canvas.fill_rect(ecran_total).unwrap();
+        self.canvas.fill_rect(ecran_total)?;
         Ok(())
-        }
-    
-    #[allow(dead_code)]
-    pub fn info(&mut self, texte: &str) -> Result<(), String> {
-         println!("{}",&texte);
-        self.canvas.set_draw_color(Color::RGB(0,0,0));
-        self.canvas.clear();
+    }
+
+    fn show_text(&mut self, texte: &str, x: i32, y: i32) -> Result<(), String> {
         let texture_creator = self.canvas.texture_creator();
         let font = &self.font;
 
         let surface = font
-                        .render(texte)
-                        .blended_wrapped(sdl2::pixels::Color::WHITE, 700)
-                        .map_err(|e| e.to_string())?;    
-        let texture = texture_creator
-            .create_texture_from_surface(&surface)
+            .render(texte)
+            .blended(sdl2::pixels::Color::BLACK)
             .map_err(|e| e.to_string())?;
-
-        let TextureQuery { width, height, .. } = texture.query();
-        
-        let  x:i32 =((self.screen_width as i32)-(width as i32))/2;
-        let  y:i32 =((self.screen_height as i32)-(height as i32))/2;
-        let cible = Rect::new(x, y, width, height);
-        self.canvas.copy(&texture, None, Some(cible))?;
-        unsafe {texture.destroy();}
-        self.canvas.present();
-        Ok(())
-        }
-    
-    pub fn show_text( &mut self, texte: &str,x :i32, y:i32 ) -> Result<(), String> {
-
-        let texture_creator = self.canvas.texture_creator();
-        let font = &self.font;
-
-        let surface = font
-                        .render(texte)
-                        .blended(sdl2::pixels::Color::BLACK)
-                        .map_err(|e| e.to_string())?;    
         let texture = texture_creator
             .create_texture_from_surface(&surface)
             .map_err(|e| e.to_string())?;
 
         let TextureQuery { width, height, .. } = texture.query();
 
-        //let  y:i32 = (self.screen_height - 100).try_into().unwrap();
-        //let  x:i32 = ((self.screen_width/2) - 200).try_into().unwrap();
         let cible = Rect::new(x, y, width, height);
-        
+
         self.canvas.set_blend_mode(BlendMode::Blend);
         self.canvas.set_draw_color(Color::RGBA(255, 255, 255, 128));
-        self.canvas.fill_rect(cible).unwrap();
-        
+        self.canvas.fill_rect(cible)?;
+
         self.canvas.copy(&texture, None, Some(cible))?;
-        unsafe {texture.destroy();}
-        Ok(())
+        unsafe {
+            texture.destroy();
         }
-    
+        Ok(())
     }
-    
-    
+}
+
 fn configured_color([red, green, blue, alpha]: [u8; 4]) -> Color {
     Color::RGBA(red, green, blue, alpha)
+}
+
+/// Extra pixels around the window inside which drawing is still allowed, so
+/// that thick lines and symbols near the edge are not cut off abruptly.
+const CLIP_MARGIN: f64 = 64.0;
+
+/// Rectangle every coordinate must lie in before it is handed to the
+/// SDL2_gfx primitives, which take `i16`. A point far off screen (a route
+/// point on the other side of the world at a high zoom) would otherwise wrap
+/// when cast and draw phantom lines across the chart.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ClipRect {
+    min_x: f64,
+    min_y: f64,
+    max_x: f64,
+    max_y: f64,
+}
+
+impl ClipRect {
+    fn for_screen(width: u32, height: u32) -> Self {
+        Self {
+            min_x: -CLIP_MARGIN,
+            min_y: -CLIP_MARGIN,
+            max_x: f64::from(width) + CLIP_MARGIN,
+            max_y: f64::from(height) + CLIP_MARGIN,
+        }
+    }
+
+    fn contains(&self, x: f64, y: f64) -> bool {
+        x >= self.min_x && x <= self.max_x && y >= self.min_y && y <= self.max_y
+    }
+
+    /// The point as `i16` coordinates if it lies inside, otherwise `None`.
+    fn point_i16(&self, point: Point) -> Option<(i16, i16)> {
+        let (x, y) = (f64::from(point.x), f64::from(point.y));
+        self.contains(x, y).then_some((x as i16, y as i16))
+    }
+
+    /// The part of the segment inside the rectangle, as `i16` coordinates.
+    fn segment_i16(&self, a: Point, b: Point) -> Option<((i16, i16), (i16, i16))> {
+        let ((ax, ay), (bx, by)) = clip_segment(
+            (f64::from(a.x), f64::from(a.y)),
+            (f64::from(b.x), f64::from(b.y)),
+            self,
+        )?;
+        Some((
+            (ax.round() as i16, ay.round() as i16),
+            (bx.round() as i16, by.round() as i16),
+        ))
+    }
+}
+
+/// Liang-Barsky clipping of the segment `a`-`b` against `rect`.
+/// Returns the visible part, or `None` when the segment misses the rectangle.
+fn clip_segment(a: (f64, f64), b: (f64, f64), rect: &ClipRect) -> Option<((f64, f64), (f64, f64))> {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let (mut t_enter, mut t_exit) = (0.0_f64, 1.0_f64);
+    let edges = [
+        (-dx, a.0 - rect.min_x),
+        (dx, rect.max_x - a.0),
+        (-dy, a.1 - rect.min_y),
+        (dy, rect.max_y - a.1),
+    ];
+    for (p, q) in edges {
+        if p == 0.0 {
+            if q < 0.0 {
+                return None; // parallel to this edge and outside it
+            }
+            continue;
+        }
+        let t = q / p;
+        if p < 0.0 {
+            if t > t_exit {
+                return None;
+            }
+            t_enter = t_enter.max(t);
+        } else {
+            if t < t_enter {
+                return None;
+            }
+            t_exit = t_exit.min(t);
+        }
+    }
+    Some((
+        (a.0 + t_enter * dx, a.1 + t_enter * dy),
+        (a.0 + t_exit * dx, a.1 + t_exit * dy),
+    ))
 }
 
 fn draw_filled_circle(
@@ -399,4 +604,54 @@ fn draw_circle(
     }
     canvas.draw_points(points.as_slice())
 }
-    
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const RECT: ClipRect = ClipRect {
+        min_x: -64.0,
+        min_y: -64.0,
+        max_x: 1664.0,
+        max_y: 864.0,
+    };
+
+    #[test]
+    fn segment_inside_the_clip_rectangle_is_unchanged() {
+        let clipped = clip_segment((100.0, 100.0), (800.0, 400.0), &RECT).unwrap();
+        assert_eq!(clipped, ((100.0, 100.0), (800.0, 400.0)));
+    }
+
+    #[test]
+    fn segment_entirely_outside_is_dropped() {
+        assert_eq!(clip_segment((2000.0, 100.0), (3000.0, 200.0), &RECT), None);
+        assert_eq!(clip_segment((100.0, -500.0), (800.0, -300.0), &RECT), None);
+    }
+
+    #[test]
+    fn segment_crossing_the_edge_is_cut_at_the_boundary() {
+        let ((ax, ay), (bx, by)) = clip_segment((800.0, 400.0), (800.0, 5000.0), &RECT).unwrap();
+        assert_eq!((ax, ay), (800.0, 400.0));
+        assert_eq!(bx, 800.0);
+        assert!((by - 864.0).abs() < 1e-9, "{by}");
+    }
+
+    #[test]
+    fn far_away_endpoints_are_brought_into_i16_range() {
+        // A route point on the other side of the world at a high zoom is
+        // millions of pixels away; the raw value wraps when cast to i16.
+        let far = (-3_000_000.0, 2_500_000.0);
+        let ((_, _), (bx, by)) = clip_segment((800.0, 400.0), far, &RECT).unwrap();
+        assert!(i16::try_from(bx.round() as i64).is_ok(), "{bx}");
+        assert!(i16::try_from(by.round() as i64).is_ok(), "{by}");
+        assert!(bx >= RECT.min_x && by >= RECT.min_y);
+    }
+
+    #[test]
+    fn points_outside_the_clip_rectangle_are_not_drawn() {
+        assert_eq!(RECT.point_i16(Point::new(800, 400)), Some((800, 400)));
+        assert_eq!(RECT.point_i16(Point::new(-100, 400)), None);
+        assert_eq!(RECT.point_i16(Point::new(800, 40_000)), None);
+        assert_eq!(RECT.point_i16(Point::new(i32::MIN, i32::MAX)), None);
+    }
+}

@@ -1,46 +1,18 @@
 use sdl2::render::Texture;
 
 use super::Plotter;
-use crate::screen;
+use crate::screen::Screen;
 use crate::Mode;
 
 impl Plotter<'_> {
     pub(super) fn display(
         &mut self,
-        map: &mut screen::Map<'_>,
+        screen: &mut Screen<'_>,
         texture: &mut Texture,
     ) -> anyhow::Result<()> {
-        let rotation = if self.state.course_up
-            && self.boat.position_valid
-            && self.boat.course_over_ground.is_finite()
-        {
-            self.boat.course_over_ground
-        } else {
-            0.0
-        };
-        self.renderer.set_rotation(rotation);
-
-        if self.state.position == None {
-            self.state.position = Some(
-                self.renderer
-                    .tiles_center()
-                    .ok_or(anyhow::anyhow!("no tiles center!!!"))?,
-            );
-        }
-
-        let (lon, lat) = match self.state.follow {
-            true if super::valid_boat_position(&self.boat) => {
-                (self.boat.longitude, self.boat.latitude)
-            }
-            _ => self
-                .state
-                .position
-                .ok_or(anyhow::anyhow!("position de la carte inconnue"))?,
-        };
-
-        let (pixels, texture_rect) = self
-            .renderer
-            .get_raw_rgba(lon, lat, self.state.map_offset);
+        // State may have moved since the loop synced (boat and track updates).
+        self.session.sync_view();
+        let (pixels, texture_rect) = self.session.renderer.render_frame();
         texture
             .update(
                 Some(texture_rect),
@@ -48,118 +20,105 @@ impl Plotter<'_> {
                 (texture_rect.width() * 4) as usize,
             )
             .map_err(|error| anyhow::anyhow!(error))?;
-        map.show_map(
-            texture,
-            texture_rect,
-            self.renderer.display_dimensions().0,
-            self.renderer.display_dimensions().1,
-            self.renderer.rotation_degrees(),
-        )
+        screen
+            .show_map(texture, self.session.renderer.placement())
             .map_err(anyhow::Error::msg)?;
 
-        if self.mode == Mode::Measurement {
-            self.mesure.show(&self.renderer, map);
+        // Overlays: each module says what it wants drawn, in chart
+        // coordinates; the plan projects, culls and styles it; the screen paints.
+        let mut shapes = Vec::new();
+        if self.session.mode == Mode::Measurement {
+            shapes.extend(self.session.mesure.shapes());
         }
-
-        if self.state.display_route {
-            self.display_route(map);
+        if self.session.state.display_route {
+            let navigation = self
+                .session
+                .state
+                .goto
+                .then(|| (self.session.state.nav_id, self.session.boat.position()));
+            shapes.extend(self.session.route.shapes(self.session.mode, navigation));
         }
-
-        self.boat
-            .show(&self.renderer, map)
-            .map_err(anyhow::Error::msg)?;
-
-        if self.state.display_ais {
-            crate::ais::show_targets(&self.ais_targets, &self.renderer, map)
-                .map_err(anyhow::Error::msg)?;
+        shapes.extend(self.session.boat.shape());
+        if self.session.state.display_ais {
+            shapes.extend(crate::ais::shapes(&self.session.ais_targets));
         }
-
-        if self.state.display_track {
-            self.track
-                .show(&mut map.canvas, &self.renderer, Some(self.boat.position()));
+        if self.session.state.display_track {
+            shapes.extend(self.session.track.shape(Some(self.session.boat.position())));
         }
-
-        if self.state.display_waypoint {
-            self.waypoints
-                .show(map, &self.renderer)
-                .map_err(anyhow::Error::msg)?;
+        if self.session.state.display_waypoint {
+            shapes.extend(self.session.waypoints.shapes());
         }
+        let draws = crate::overlay::plan(&self.session.renderer.view(), &shapes);
+        screen.paint(&draws).map_err(anyhow::Error::msg)?;
 
-        map.night_layer(0).map_err(anyhow::Error::msg)?;
-        self.display_buttombar(map);
+        screen.night_layer(0).map_err(anyhow::Error::msg)?;
+        self.display_buttombar(screen);
         if let Some(streamer) = &self.streamer {
             streamer
-                .capture(&map.canvas)
+                .capture(&screen.canvas)
                 .map_err(anyhow::Error::msg)?;
         }
-        self.topbar.show(&mut map.canvas);
-        self.confirm_dialog
-            .show(&mut map.canvas)
-            .map_err(anyhow::Error::msg)?;
-        map.canvas.present();
+        self.topbar.show(&mut screen.canvas);
+        if let Some(action) = self.session.confirmation.pending() {
+            self.confirm_dialog
+                .show(&mut screen.canvas, action)
+                .map_err(anyhow::Error::msg)?;
+        }
+        screen.canvas.present();
 
         Ok(())
     }
 
-    pub(super) fn mouse(&mut self, map: &mut screen::Map) {
+    pub(super) fn mouse(&mut self, screen: &mut Screen<'_>) {
         match self.mouse {
-            super::Mouse::Arrow => map.cursor_arrow.set(),
-            super::Mouse::Cross => map.cursor_cross.set(),
-            super::Mouse::Hand => map.cursor_hand.set(),
-            super::Mouse::Move => map.cursor_size.set(),
-            super::Mouse::Wait => map.cursor_wait.set(),
+            super::Mouse::Arrow => screen.cursor_arrow.set(),
+            super::Mouse::Cross => screen.cursor_cross.set(),
+            super::Mouse::Hand => screen.cursor_hand.set(),
+            super::Mouse::Move => screen.cursor_size.set(),
         }
     }
 
-    pub(super) fn display_buttombar(&mut self, map: &mut screen::Map<'_>) {
+    pub(super) fn display_buttombar(&mut self, screen: &mut Screen<'_>) {
         if let Some(pending) = &self.pending_waypoint {
             let message_left = format!("Nom du waypoint : {}", pending.name);
             let message_right = "Entrée : valider | Échap : annuler";
             self.buttombar
-                .show(&mut map.canvas, &message_left, message_right);
+                .show(&mut screen.canvas, &message_left, message_right);
             return;
         }
 
-        let message_left = if self.state.goto {
-            let (dist_wp, bearing_wp, dist_total) = self
+        let navigation = if self.session.state.goto {
+            self.session
                 .route
-                .calc_route_mn_from_boat(self.state.nav_id, self.boat.position());
-            format!(
+                .calc_route_mn_from_boat(self.session.state.nav_id, self.session.boat.position())
+        } else {
+            None
+        };
+        let message_left = match navigation {
+            Some((dist_wp, bearing_wp, dist_total)) => format!(
                 "From Boat to Next Waypoint :  {:.1} Mn   {:.0}° / DTD : {:.1} Mn",
                 dist_wp, bearing_wp, dist_total
-            )
-        } else {
-            self.route.show_route_len()
+            ),
+            None => self.session.route.show_route_len(),
         };
 
-        let mut message_right = match self.mode {
+        let mut message_right = match self.session.mode {
             Mode::EditRoute => "Mode Edit Route".to_string(),
             Mode::EditWaypoint => "Mode Edit Waypoint".to_string(),
             Mode::Measurement => "Mode Measurement".to_string(),
         };
 
-        message_right += if self.state.follow { " / Follow" } else { "" };
-        message_right += if self.state.course_up {
+        message_right += if self.session.state.follow {
+            " / Follow"
+        } else {
+            ""
+        };
+        message_right += if self.session.state.course_up {
             " / Course Up"
         } else {
             " / North Up"
         };
         self.buttombar
-            .show(&mut map.canvas, &message_left, &message_right);
-    }
-
-    pub(super) fn display_route(&mut self, map: &mut screen::Map<'_>) {
-        if self.state.goto {
-            self.route.show_route_from_boat(
-                &self.renderer,
-                map,
-                self.mode,
-                self.state.nav_id,
-                self.boat.position(),
-            );
-        } else {
-            self.route
-                .show_route_since_id(&self.renderer, map, self.mode, 0);
-        }
+            .show(&mut screen.canvas, &message_left, &message_right);
     }
 }

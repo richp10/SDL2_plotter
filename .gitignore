@@ -1,7 +1,15 @@
 /target/
+
+# Charts are large and licensed separately; see WINDOWS_BUILD.md for test charts.
 /map/
 *.mbtiles
+
+# Runtime data the application writes. Personal to each installation.
+/default/*.json
+/default/*.gpx
+/export/
 plotter.log
-route.gpx
-state.json
-waypoints
+plotter.log.1
+
+# Editor and tool droppings
+*.autosave

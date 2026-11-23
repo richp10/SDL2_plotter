@@ -4,6 +4,7 @@ use std::{fs, path::Path};
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct AppConfig {
     pub signalk: SignalKConfig,
     pub charts: ChartsConfig,
@@ -75,6 +76,8 @@ pub struct AppearanceConfig {
     pub boat_color: [u8; 4],
     pub measure_color: [u8; 4],
     pub route_color: [u8; 4],
+    pub track_color: [u8; 4],
+    pub waypoint_color: [u8; 4],
     pub cog_color: [u8; 4],
     pub ais_color: [u8; 4],
     pub ais_outline_color: [u8; 4],
@@ -174,7 +177,10 @@ impl AppConfig {
             || self.appearance.cog_length <= 0.0
             || self.appearance.cog_length > i16::MAX as f64
         {
-            bail!("Les tailles de appearance doivent être positives et cog_length ne pas dépasser {}", i16::MAX);
+            bail!(
+                "Les tailles de appearance doivent être positives et cog_length ne pas dépasser {}",
+                i16::MAX
+            );
         }
         if self.rendering.tile_cache_size == 0
             || !(0..=16).contains(&self.rendering.prefetch_margin)
@@ -193,21 +199,6 @@ impl AppConfig {
             bail!("streaming.port, streaming.bind_address, streaming.fps et streaming.jpeg_quality doivent être valides");
         }
         Ok(())
-    }
-}
-
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            signalk: SignalKConfig::default(),
-            charts: ChartsConfig::default(),
-            window: WindowConfig::default(),
-            fonts: FontConfig::default(),
-            appearance: AppearanceConfig::default(),
-            rendering: RenderingConfig::default(),
-            streaming: StreamingConfig::default(),
-            track: TrackConfig::default(),
-        }
     }
 }
 
@@ -281,6 +272,8 @@ impl Default for AppearanceConfig {
             boat_color: [0, 0, 255, 255],
             measure_color: [0, 0, 255, 255],
             route_color: [255, 0, 0, 255],
+            track_color: [255, 0, 0, 255],
+            waypoint_color: [220, 30, 30, 255],
             cog_color: [0, 0, 255, 255],
             ais_color: [255, 140, 0, 255],
             ais_outline_color: [0, 0, 0, 255],

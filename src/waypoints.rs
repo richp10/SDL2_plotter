@@ -1,18 +1,31 @@
-use sdl2::gfx::primitives::DrawRenderer;
 use serde::{Deserialize, Serialize};
-use std::{
-    fs::{self, File},
-    io::{self, BufWriter, Write},
-    path::Path,
-};
+use std::{io, path::Path};
 
-use crate::mbtiles_renderer::MBTilesRenderer;
-use crate::screen::Map;
+use crate::geo_data::{GeoFile, GeoRecord};
+use crate::mbtiles_renderer::ChartView;
+use crate::overlay::Shape;
+use sdl2::rect::Point;
 
 const WAYPOINTS_FILE: &str = "default/waypoints.json";
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 struct Waypoint {
+    longitude: f64,
+    latitude: f64,
+    #[serde(default)]
+    name: String,
+}
+
+impl GeoRecord for Waypoint {
+    fn position(&self) -> (f64, f64) {
+        (self.longitude, self.latitude)
+    }
+}
+
+/// The shape waypoints.json had before it joined the versioned format: a
+/// bare array of `{lon, lat, name?}`.
+#[derive(Deserialize)]
+struct LegacyWaypoint {
     lon: f64,
     lat: f64,
     #[serde(default)]
@@ -21,90 +34,109 @@ struct Waypoint {
 
 pub struct Waypoints {
     waypoints: Vec<Waypoint>,
+    /// The file this list is saved to.
+    file: GeoFile<Waypoint>,
 }
 
 impl Waypoints {
-    pub fn new() -> io::Result<Self> {
-        let mut waypoints = Self {
+    pub fn new() -> Self {
+        Self::load(Path::new(WAYPOINTS_FILE))
+    }
+
+    /// Loads the list saved at `path`. A missing file is an empty list, a
+    /// damaged one is set aside, and the old bare-array shape is migrated
+    /// once (see `geo_data::GeoFile`). `save` writes back to the same path.
+    pub fn load(path: &Path) -> Self {
+        let file = Self::file_at(path);
+        let waypoints = file.load();
+        crate::diagnostics::record(
+            "INFO",
+            format!("Waypoints chargés: {} points", waypoints.len()),
+        );
+        Self { waypoints, file }
+    }
+
+    /// An empty list that `save` will write to `path`.
+    #[cfg(test)]
+    pub(crate) fn empty_at(path: &Path) -> Self {
+        Self {
             waypoints: Vec::new(),
-        };
-        match waypoints.load() {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
+            file: Self::file_at(path),
         }
-        Ok(waypoints)
+    }
+
+    fn file_at(path: &Path) -> GeoFile<Waypoint> {
+        GeoFile::new(path).with_legacy_shape(|contents| {
+            serde_json::from_str::<Vec<LegacyWaypoint>>(contents)
+                .ok()
+                .map(|old| {
+                    old.into_iter()
+                        .map(|w| Waypoint {
+                            longitude: w.lon,
+                            latitude: w.lat,
+                            name: w.name,
+                        })
+                        .collect()
+                })
+        })
     }
 
     pub fn add(&mut self, pos: (f64, f64), name: String) {
-        
         let (longitude, latitude) = pos;
         if !longitude.is_finite()
-			|| !latitude.is_finite()
-			|| !(-180.0..=180.0).contains(&longitude)
-			|| !(-90.0..=90.0).contains(&latitude)
-			{
-			return;
-			}
+            || !latitude.is_finite()
+            || !(-180.0..=180.0).contains(&longitude)
+            || !(-90.0..=90.0).contains(&latitude)
+        {
+            return;
+        }
         self.waypoints.push(Waypoint {
-            lon: longitude,
-            lat: latitude,
+            longitude,
+            latitude,
             name,
         });
     }
 
-    #[allow(dead_code)]
-    pub fn modify(&mut self, i:usize, pos: (f64, f64)) {
+    pub fn modify(&mut self, i: usize, pos: (f64, f64)) {
         let (longitude, latitude) = pos;
         if let Some(waypoint) = self.waypoints.get_mut(i) {
-            waypoint.lon = longitude;
-            waypoint.lat = latitude;
+            waypoint.longitude = longitude;
+            waypoint.latitude = latitude;
         }
     }
 
-	pub fn find_point_at(
-		&self,
-		renderer: &MBTilesRenderer,
-		mouse: (i32, i32),
-		radius: i32,
-		) -> Option<usize> {
-			let r2 = (radius as i64) * (radius as i64);
-			self.waypoints
-				.iter()
-				.enumerate()
-				.map(|(i, waypoint)| {
-					let pt = renderer.gps_to_point((waypoint.lon, waypoint.lat));
-					let dx = pt.x as i64 - mouse.0 as i64;
-					let dy = pt.y as i64 - mouse.1 as i64;
-					(i, dx * dx + dy * dy)
-				})
-				.filter(|&(_, d2)| d2 <= r2)
-				.min_by_key(|&(_, d2)| d2)
-				.map(|(i, _)| i)
-				}
+    /// The waypoint drawn within `radius` pixels of `pixel`, if any.
+    pub fn find_point_at(&self, view: &ChartView, pixel: Point, radius: i32) -> Option<usize> {
+        view.nearest(
+            self.waypoints.iter().map(|w| (w.longitude, w.latitude)),
+            pixel,
+            radius,
+        )
+    }
+
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.waypoints.len()
+    }
 
     pub fn remove(&mut self, i: usize) {
         self.waypoints.remove(i);
     }
 
-    pub fn show(&self, map: &mut Map<'_>, renderer: &MBTilesRenderer) -> Result<(), String> {
-        for (i, wp) in self.waypoints.iter().enumerate() {
-            let point = renderer.gps_to_point((wp.lon, wp.lat));
-            let x = point.x as i16;
-            let y = point.y as i16;
-            let color = sdl2::pixels::Color::RGB(220, 30, 30);
-            map.canvas.filled_trigon(x - 5, y - 9, x + 5, y - 9, x, y, color)?;
-            map.canvas.filled_circle(x, y - 11, 6, color)?;
-            map.canvas
-                .filled_circle(x, y - 11, 2, sdl2::pixels::Color::WHITE)?;
-            let label = if wp.name.is_empty() {
-                format!("Waypoint {}", i + 1)
-            } else {
-                wp.name.clone()
-            };
-            map.show_text(&label, point.x + 10, point.y - 12)?;
-        }
-        Ok(())
+    /// One pin per waypoint, labelled with its name or its number.
+    pub fn shapes(&self) -> Vec<Shape> {
+        self.waypoints
+            .iter()
+            .enumerate()
+            .map(|(i, wp)| Shape::Waypoint {
+                at: (wp.longitude, wp.latitude),
+                label: if wp.name.is_empty() {
+                    format!("Waypoint {}", i + 1)
+                } else {
+                    wp.name.clone()
+                },
+            })
+            .collect()
     }
 
     pub fn reset(&mut self) {
@@ -112,146 +144,107 @@ impl Waypoints {
         self.waypoints.shrink_to_fit();
     }
 
-    pub fn load(&mut self) -> io::Result<()> {
-        self.load_from(Path::new(WAYPOINTS_FILE))
-    }
-
-    fn load_from(&mut self, path: &Path) -> io::Result<()> {
-        let json = fs::read_to_string(path)?;
-        let waypoints = serde_json::from_str(&json)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        self.waypoints = waypoints;
-        Ok(())
-    }
-
     pub fn save(&self) -> io::Result<()> {
-        self.save_to(Path::new(WAYPOINTS_FILE))
+        self.file.save(&self.waypoints)
     }
 
     pub fn export_gpx(&self, path: &Path) -> io::Result<()> {
-        if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
-            fs::create_dir_all(parent)?;
-        }
-        let file_name = path
-            .file_name()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "nom de fichier GPX manquant"))?;
-        let temp_path = path.with_file_name(format!(
-            ".{}.{}.tmp",
-            file_name.to_string_lossy(),
-            std::process::id()
-        ));
-        let result = (|| {
-            let mut writer = BufWriter::new(File::create(&temp_path)?);
-            writeln!(writer, r#"<?xml version="1.0" encoding="UTF-8"?>"#)?;
-            writeln!(
-                writer,
-                r#"<gpx version="1.1" creator="SDL2 Plotter" xmlns="http://www.topografix.com/GPX/1/1">"#
-            )?;
-            for waypoint in &self.waypoints {
-                writeln!(
-                    writer,
-                    r#"  <wpt lat="{:.6}" lon="{:.6}"><name>{}</name></wpt>"#,
-                    waypoint.lat,
-                    waypoint.lon,
-                    escape_xml(&waypoint.name)
-                )?;
-            }
-            writeln!(writer, "</gpx>")?;
-            writer.flush()?;
-            writer.get_ref().sync_all()?;
-            drop(writer);
-            fs::rename(&temp_path, path)
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(temp_path);
-        }
-        result
+        let document = crate::gpx::write_waypoints(
+            self.waypoints
+                .iter()
+                .map(|w| (w.name.as_str(), (w.longitude, w.latitude))),
+        );
+        crate::geo_data::atomic_write(path, document.as_bytes())
     }
-
-    fn save_to(&self, path: &Path) -> io::Result<()> {
-        let json = serde_json::to_string_pretty(&self.waypoints)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        fs::write(path, json)?;
-        Ok(())
-    }
-
-}
-
-fn escape_xml(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn temp_path(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "plotter-waypoints-{tag}-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
 
     #[test]
     fn save_and_load_waypoints() {
-        let path =
-            std::env::temp_dir().join(format!("plotter-waypoints-{}.json", std::process::id()));
-        let mut original = Waypoints {
-            waypoints: Vec::new(),
-        };
+        let path = temp_path("roundtrip");
+        let mut original = Waypoints::empty_at(&path);
         original.add((178.1, -17.7), "Mouillage".to_string());
+        original.save().unwrap();
 
-        original.save_to(&path).unwrap();
-        let mut loaded = Waypoints {
-            waypoints: Vec::new(),
-        };
-        loaded.load_from(&path).unwrap();
+        let loaded = Waypoints::load(&path);
 
         assert_eq!(loaded.waypoints.len(), 1);
-        assert_eq!(loaded.waypoints[0].lon, 178.1);
-        assert_eq!(loaded.waypoints[0].lat, -17.7);
+        assert_eq!(loaded.waypoints[0].longitude, 178.1);
+        assert_eq!(loaded.waypoints[0].latitude, -17.7);
         assert_eq!(loaded.waypoints[0].name, "Mouillage");
-
         fs::remove_file(path).unwrap();
     }
 
     #[test]
-    fn loads_waypoints_without_names() {
-        let path =
-            std::env::temp_dir().join(format!("plotter-waypoints-legacy-{}.json", std::process::id()));
-        fs::write(&path, r#"[{"lon":178.1,"lat":-17.7}]"#).unwrap();
-        let mut loaded = Waypoints {
-            waypoints: Vec::new(),
-        };
+    fn save_creates_missing_parent_directories_and_leaves_no_temp_file() {
+        let dir = temp_path("dir").with_extension("");
+        let path = dir.join("default").join("waypoints.json");
+        let mut waypoints = Waypoints::empty_at(&path);
+        waypoints.add((178.1, -17.7), "Mouillage".to_string());
 
-        loaded.load_from(&path).unwrap();
+        waypoints.save().unwrap();
+
+        assert_eq!(Waypoints::load(&path).waypoints.len(), 1);
+        let leftovers: Vec<_> = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(leftovers, vec!["waypoints.json".to_string()]);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_old_bare_array_format_is_migrated_and_names_default_to_empty() {
+        let path = temp_path("legacy");
+        fs::write(&path, r#"[{"lon":178.1,"lat":-17.7}]"#).unwrap();
+
+        let loaded = Waypoints::load(&path);
 
         assert_eq!(loaded.waypoints.len(), 1);
         assert_eq!(loaded.waypoints[0].name, "");
+        assert!(
+            fs::read_to_string(&path).unwrap().contains("\"version\""),
+            "rewritten in the versioned format"
+        );
         fs::remove_file(path).unwrap();
     }
 
     #[test]
     fn missing_file_is_a_valid_empty_startup() {
-        let path = std::env::temp_dir().join(format!(
-            "plotter-waypoints-missing-{}.json",
-            std::process::id()
-        ));
-        let mut waypoints = Waypoints {
-            waypoints: Vec::new(),
-        };
+        let path = temp_path("missing");
+        assert!(Waypoints::load(&path).waypoints.is_empty());
+        assert!(!path.exists());
+    }
 
-        assert_eq!(
-            waypoints.load_from(&path).unwrap_err().kind(),
-            io::ErrorKind::NotFound
-        );
+    #[test]
+    fn a_corrupt_waypoint_file_is_set_aside_and_loads_empty() {
+        let path = temp_path("corrupt");
+        fs::write(&path, "{ nope").unwrap();
+        assert!(Waypoints::load(&path).waypoints.is_empty());
+        assert!(path.with_extension("json.corrupt").exists());
+        fs::remove_file(path.with_extension("json.corrupt")).unwrap();
     }
 
     #[test]
     fn exports_named_waypoints_as_gpx_and_escapes_xml() {
-        let path = std::env::temp_dir().join(format!(
-            "plotter-waypoints-export-{}.gpx",
-            std::process::id()
-        ));
-        let mut waypoints = Waypoints {
-            waypoints: Vec::new(),
-        };
+        let path = temp_path("export").with_extension("gpx");
+        let mut waypoints = Waypoints::empty_at(Path::new("unused.json"));
         waypoints.add((-122.3, 47.5), "A & B <C>".to_string());
 
         waypoints.export_gpx(&path).unwrap();

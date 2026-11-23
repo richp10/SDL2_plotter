@@ -1,108 +1,35 @@
 use crate::boat::BoatState;
 use crate::{
-    ais, buttombar, mbtiles_renderer, mesure, route, screen, signalk, state, topbar, track,
-    waypoints, config::AppConfig,
+    ais, buttombar, config::AppConfig, mbtiles_renderer, route, screen, signalk, state, topbar,
+    track, waypoints,
 };
-use crate::Mode;
 use mbtiles_renderer::MBTilesRenderer;
 use sdl2::event::Event;
 use sdl2::ttf::Sdl2TtfContext;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
 
 mod actions;
 mod confirm_dialog;
+mod gesture;
 mod input;
 mod render;
+mod session;
+mod tools;
+
+pub(crate) use crate::action::AppAction;
+
+use confirm_dialog::ConfirmAction;
+use gesture::GestureRecognizer;
+use session::Session;
+use tools::Target;
 
 const STATE_FILE: &str = "default/state.json";
 const DEFAULT_TRACK_PATH: &str = "default/track.json";
 const LONG_CLICK: Duration = Duration::from_millis(500);
 const MOVE_TOLERANCE: i32 = 5;
 const DIAGNOSTICS_INTERVAL: Duration = Duration::from_secs(10);
-
-fn valid_boat_position(boat: &BoatState) -> bool {
-    boat.position_valid
-        && boat.longitude.is_finite()
-        && boat.latitude.is_finite()
-        && (-180.0..=180.0).contains(&boat.longitude)
-        && (-90.0..=90.0).contains(&boat.latitude)
-}
-
-enum AppAction {
-    SetMode(Mode),
-    CycleMode,
-    ToggleFollow,
-	FollowOn,
-	FollowOff,
-    ToggleGoto,
-    ClearRoute,
-    PreviousWaypoint,
-    NextWaypoint,
-    Quit,
-    ClearTrack,
-    ExportRouteGpx,
-    ExportTrackGpx,
-    ClearWaypoints,
-    ExportWaypointsGpx,
-    ChangeChart(usize),
-    Pan(i32, i32),
-    ZoomIn,
-    ZoomOut,
-    ShowWaypoints,
-    HideWaypoints,
-    ShowRoute,
-    HideRoute,
-    ShowTrack,
-    HideTrack,
-    ShowAis,
-    HideAis,
-    SetCourseUp(bool),
-}
-
-impl AppAction {
-    fn name(&self) -> &'static str {
-        match self {
-            Self::SetMode(_) => "SetMode",
-            Self::CycleMode => "CycleMode",
-            Self::ToggleFollow => "ToggleFollow",
-			Self::FollowOn => "On",
-			Self::FollowOff => "Off",
-            Self::ToggleGoto => "ToggleGoto",
-            Self::ClearRoute => "ClearRoute",
-            Self::PreviousWaypoint => "PreviousWaypoint",
-            Self::NextWaypoint => "NextWaypoint",
-            Self::Quit => "Quit",
-            Self::ClearTrack => "ClearTrack",
-            Self::ExportRouteGpx => "ExportRouteGpx",
-            Self::ExportTrackGpx => "ExportTrackGpx",
-            Self::ClearWaypoints => "ClearWaypoints",
-            Self::ExportWaypointsGpx => "ExportWaypointsGpx",
-            Self::ChangeChart(_) => "ChangeChart",
-            Self::Pan(_, _) => "Pan",
-            Self::ZoomIn => "ZoomIn",
-            Self::ZoomOut => "ZoomOut",
-            Self::ShowWaypoints => "ShowWaypoints",
-            Self::HideWaypoints => "HideWaypoints",
-            Self::ShowRoute => "ShowRoute",
-            Self::HideRoute => "HideRoute",
-            Self::ShowTrack => "ShowTrack",
-            Self::HideTrack => "HideTrack",
-            Self::ShowAis => "ShowAis",
-            Self::HideAis => "HideAis",
-            Self::SetCourseUp(_) => "SetCourseUp",
-        }
-    }
-}
-
-struct Press {
-    start: Instant,
-    x: i32,
-    y: i32,
-    moved: bool,
-    long_fired: bool,
-}
 
 struct PendingWaypoint {
     position: (f64, f64),
@@ -115,43 +42,25 @@ enum Mouse {
     Cross,
     Arrow,
     Move,
-    #[allow(dead_code)]
-    Wait,
 }
 
 pub(crate) struct Plotter<'ttf> {
-    renderer: MBTilesRenderer,
-    state: state::State,
-    mode: Mode,
-    running: bool,
+    /// Everything the actions act on; SDL-free and tested on its own.
+    session: Session,
     dirty: bool,
-    is_draging: bool,
-    xdrag: i32,
-    ydrag: i32,
-    drag_start: (i32, i32),
-    boat: BoatState,
+    /// Press/motion/release become Click, LongPress and Drag gestures here.
+    gestures: GestureRecognizer,
+    /// What a drag in progress grabbed, decided once at its start.
+    grab: Option<Target>,
     topbar: topbar::Topbar<'ttf>,
     buttombar: buttombar::Buttombar<'ttf>,
     confirm_dialog: confirm_dialog::ConfirmDialog<'ttf>,
-    route: route::Route,
-    mesure: mesure::Mesure,
-    track: track::Track,
-    waypoints: waypoints::Waypoints,
     pending_waypoint: Option<PendingWaypoint>,
     text_input: sdl2::keyboard::TextInputUtil,
-    charts_path: Vec<String>,
-    charts_name: Vec<String>,
-    press: Option<Press>,
-    selected: Option<usize>,
-    dragging_measure_start: bool,
     mouse: Mouse,
     state_rx: watch::Receiver<BoatState>,
     track_rx: tokio::sync::mpsc::UnboundedReceiver<(f64, f64)>,
     ais_rx: watch::Receiver<Vec<ais::AisTarget>>,
-    #[allow(dead_code)]
-    status_rx: watch::Receiver<String>,
-    ais_targets: Vec<ais::AisTarget>,
-    last_ais_cleanup: Instant,
     streamer: Option<crate::stream::Streamer>,
 }
 
@@ -172,12 +81,10 @@ impl<'ttf> Plotter<'ttf> {
         let (state_tx, state_rx) = watch::channel(boat);
         let (track_tx, track_rx) = tokio::sync::mpsc::unbounded_channel();
         let (ais_tx, ais_rx) = watch::channel(Vec::new());
-        let (status_tx, status_rx) = watch::channel(String::new());
         tokio::spawn(signalk::signalk_task(
             state_tx,
             track_tx,
             ais_tx,
-            status_tx,
             config.signalk.clone(),
         ));
 
@@ -210,12 +117,11 @@ impl<'ttf> Plotter<'ttf> {
         let confirm_dialog =
             confirm_dialog::ConfirmDialog::new(ttf_context, width, height, &config.fonts)
                 .map_err(anyhow::Error::msg)?;
-        let route = route::Route::new().map_err(anyhow::Error::msg)?;
-        let mesure = mesure::Mesure::new().map_err(anyhow::Error::msg)?;
+        let route = route::Route::new();
         let track = track::Track::with_checkpoint_interval(
             Path::new(DEFAULT_TRACK_PATH),
             Duration::from_secs(config.track.checkpoint_interval_seconds),
-        )?;
+        );
         crate::diagnostics::record(
             "INFO",
             format!(
@@ -224,48 +130,53 @@ impl<'ttf> Plotter<'ttf> {
                 DEFAULT_TRACK_PATH
             ),
         );
-        let waypoints = waypoints::Waypoints::new()?;
+        let waypoints = waypoints::Waypoints::new();
 
-        Ok(Self {
+        let session = Session::new(
             renderer,
             state,
-            mode: Mode::default(),
-            running: true,
-            dirty: true,
-            is_draging: false,
-            xdrag: 0,
-            ydrag: 0,
-            drag_start: (0, 0),
             boat,
+            route,
+            track,
+            waypoints,
+            charts_path,
+            PathBuf::from("export"),
+        );
+
+        Ok(Self {
+            session,
+            dirty: true,
+            gestures: GestureRecognizer::new(LONG_CLICK, MOVE_TOLERANCE),
+            grab: None,
             topbar,
             buttombar,
             confirm_dialog,
-            route,
-            mesure,
-            track,
-            waypoints,
             pending_waypoint: None,
             text_input,
-            charts_path,
-            charts_name,
-            press: None,
-            selected: None,
-            dragging_measure_start: false,
             mouse: Mouse::Hand,
             state_rx,
             track_rx,
             ais_rx,
-            status_rx,
-            ais_targets: Vec::new(),
-            last_ais_cleanup: Instant::now(),
             streamer,
         })
+    }
+
+    /// Runs an action on the session and schedules a redraw.
+    fn execute_action(&mut self, action: AppAction) {
+        self.session.execute_action(action);
+        self.dirty = true;
+    }
+
+    /// Applies a confirmed destructive action and schedules a redraw.
+    fn apply_confirmation(&mut self, action: ConfirmAction) {
+        self.session.apply_confirmation(action);
+        self.dirty = true;
     }
 
     pub(crate) fn main_loop(
         &mut self,
         event_pump: &mut sdl2::EventPump,
-        map: &mut screen::Map<'_>,
+        screen: &mut screen::Screen<'_>,
         texture: &mut sdl2::render::Texture,
     ) -> anyhow::Result<()> {
         let mut last_diagnostics = Instant::now();
@@ -275,15 +186,15 @@ impl<'ttf> Plotter<'ttf> {
         let mut rendered_frames: u64 = 0;
         let mut last_input = Instant::now();
         crate::diagnostics::record("INFO", "Boucle SDL démarrée");
-        while self.running {
+        while self.session.running {
             let loop_started = Instant::now();
             if last_diagnostics.elapsed() >= DIAGNOSTICS_INTERVAL {
                 crate::diagnostics::record(
 					"INFO",
 					format!(
 						"État boucle: iterations={loop_count}, événements={event_count}, points ajoutés={track_updates}, images rendues={rendered_frames}, points trace={}, sauvegarde en attente={}, dernier événement utilisateur il y a {:?}",
-						self.track.point_count(),
-						self.track.save_pending(),
+						self.session.track.point_count(),
+						self.session.track.save_pending(),
 						last_input.elapsed()
 					),
 				);
@@ -291,6 +202,9 @@ impl<'ttf> Plotter<'ttf> {
             }
 
             /////////////////////   Event /////////////////////////
+            // Input converts clicks with the geometry the renderer holds;
+            // make sure it reflects the current state, not the last frame.
+            self.session.sync_view();
             for event in event_pump.poll_iter() {
                 event_count += 1;
                 if matches!(
@@ -305,7 +219,7 @@ impl<'ttf> Plotter<'ttf> {
                     last_input = Instant::now();
                 }
                 let event_started = Instant::now();
-                self.match_event(event, map, texture).map_err(|error| {
+                self.match_event(event, screen, texture).map_err(|error| {
                     crate::diagnostics::record(
                         "ERROR",
                         format!("Erreur de traitement SDL: {error}"),
@@ -321,73 +235,42 @@ impl<'ttf> Plotter<'ttf> {
                 }
             }
 
-            ////////////////////// Track update ///////////////////////
+            // Live data in: drain each channel, hand it to the session, and
+            // redraw when it says so. The rules live on Track and Session.
+            let now = Instant::now();
             while let Ok(position) = self.track_rx.try_recv() {
-                if self.track.add(position) {
+                if self.session.track.record(position, now) {
                     track_updates += 1;
                     self.dirty = true;
-                    if self.track.point_count() == 1 {
-                        self.track
-                            .save_default_track(Path::new(DEFAULT_TRACK_PATH));
-                    }
                 }
             }
+            self.session.track.tick(now);
 
-            if self.track.checkpoint_due() {
-                self.track
-                    .save_default_track(Path::new(DEFAULT_TRACK_PATH));
-            }
-
-            //////////////////////   Position update  /////////////////////////
             if self.state_rx.has_changed()? {
                 let boat = *self.state_rx.borrow_and_update();
-                if self.boat.position_valid != boat.position_valid {
-                    crate::diagnostics::record(
-                        "INFO",
-                        if boat.position_valid {
-                            "Position du bateau reçue; marqueur activé"
-                        } else {
-                            "Position du bateau invalide; marqueur masqué"
-                        },
-                    );
-                }
-                self.boat = boat;
-
-                if self.state.follow && valid_boat_position(&boat) {
-                    self.state.position = Some((boat.longitude, boat.latitude));
-                }
+                self.session.on_boat(boat);
                 self.dirty = true;
             }
 
-            self.long_click();
+            self.fire_long_press();
 
-            //////////////// Ais Update //////////////////////////
-            if self.state.display_ais {
+            if self.session.state.display_ais {
                 if self.ais_rx.has_changed().unwrap_or(false) {
-                    self.ais_targets = self.ais_rx.borrow_and_update().clone();
+                    self.session
+                        .set_ais(self.ais_rx.borrow_and_update().clone());
                     self.dirty = true;
                 }
-
-                if !self.ais_targets.is_empty()
-                    && self.last_ais_cleanup.elapsed() >= Duration::from_secs(1)
-                {
-                    let previous_count = self.ais_targets.len();
-                    let now = Instant::now();
-                    self.ais_targets.retain(|target| target.is_fresh(now));
-                    if self.ais_targets.len() != previous_count {
-                        self.dirty = true;
-                    }
-                    self.last_ais_cleanup = now;
+                if self.session.expire_ais(now) {
+                    self.dirty = true;
                 }
             }
-            if self.renderer.advance_zoom_animation() {
+            if self.session.renderer.advance_zoom_animation() {
                 self.dirty = true;
             }
             //////////////////////   Display /////////////////////////
-            if self.dirty && !self.is_draging {
+            if self.dirty && !self.dragging_chart() {
                 let display_started = Instant::now();
-                self.display(map, texture)
-                    .map_err(anyhow::Error::msg)?;
+                self.display(screen, texture).map_err(anyhow::Error::msg)?;
                 rendered_frames += 1;
                 let elapsed = display_started.elapsed();
                 if elapsed >= Duration::from_millis(500) {
@@ -397,11 +280,11 @@ impl<'ttf> Plotter<'ttf> {
             }
 
             /////////////////  Mouse //////////////////////////////////
-            self.mouse(map);
+            self.mouse(screen);
 
             /////////////// preload tiles on the edge ///////////////////////////
             let prefetch_started = Instant::now();
-            self.renderer.prefetch_step(8);
+            self.session.renderer.prefetch_step(8);
             let elapsed = prefetch_started.elapsed();
             if elapsed >= Duration::from_millis(500) {
                 crate::diagnostics::record(
@@ -420,23 +303,21 @@ impl<'ttf> Plotter<'ttf> {
                     format!("Itération principale lente: {elapsed:?}"),
                 );
             }
-        } // end while self.running
+        } // end while self.session.running
 
         crate::diagnostics::record("INFO", "Arrêt demandé, sauvegarde finale de la trace");
-        self.track
-            .save_default_track(Path::new(DEFAULT_TRACK_PATH));
-        if let Err(error) = self.state.save(STATE_FILE) {
+        self.session.track.close();
+        if let Err(error) = self.session.state.save(STATE_FILE) {
             crate::diagnostics::record("ERROR", format!("Erreur sauvegarde état: {error}"));
         }
         crate::diagnostics::record("INFO", "Boucle SDL terminée");
         Ok(())
     }
-
 }
 
 #[cfg(test)]
 mod tests {
-    use super::valid_boat_position;
+    use super::session::valid_boat_position;
     use crate::boat::BoatState;
 
     #[test]

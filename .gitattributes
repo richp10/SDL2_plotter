@@ -1,0 +1,4 @@
+* text=auto eol=lf
+*.ttf binary
+*.mbtiles binary
+*.dia binary

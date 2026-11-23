@@ -1,12 +1,11 @@
-use std::path::Path;
-
 use chrono::Local;
 
 use super::confirm_dialog::ConfirmAction;
-use super::{AppAction, Plotter, DEFAULT_TRACK_PATH};
+use super::session::Session;
+use super::AppAction;
 use crate::Mode;
 
-impl Plotter<'_> {
+impl Session {
     pub(super) fn execute_action(&mut self, action: AppAction) {
         crate::diagnostics::record("DEBUG", format!("Action: {}", action.name()));
 
@@ -36,7 +35,7 @@ impl Plotter<'_> {
                 self.state.nav_id = 0;
             }
             AppAction::ClearRoute => {
-                self.confirm_dialog.request(ConfirmAction::ClearRoute);
+                self.confirmation.request(ConfirmAction::ClearRoute);
             }
             AppAction::PreviousWaypoint => {
                 self.state.nav_id = self.state.nav_id.saturating_sub(1);
@@ -47,48 +46,62 @@ impl Plotter<'_> {
             }
             AppAction::Quit => self.running = false,
             AppAction::ClearTrack => {
-                self.confirm_dialog.request(ConfirmAction::ClearTrack);
+                self.confirmation.request(ConfirmAction::ClearTrack);
             }
             AppAction::ExportRouteGpx => {
                 let now = Local::now();
-                let path = Path::new("export")
+                let path = self
+                    .export_dir
                     .join(format!("Route-{}.gpx", now.format("%Y-%m-%d_%H-%M-%S")));
                 match self.route.export_gpx(&path) {
-                    Ok(()) => println!("Route exportée : {}", path.display()),
+                    Ok(()) => crate::diagnostics::record(
+                        "INFO",
+                        format!("Route exportée: {}", path.display()),
+                    ),
                     Err(error) => {
-                        crate::diagnostics::record("ERROR", format!("Erreur export route GPX: {error}"));
-                        eprintln!("Erreur export route GPX : {error}");
+                        crate::diagnostics::record(
+                            "ERROR",
+                            format!("Erreur export route GPX: {error}"),
+                        );
                     }
                 }
             }
             AppAction::ExportTrackGpx => {
                 let now = Local::now();
-                let path = Path::new("export")
+                let path = self
+                    .export_dir
                     .join(format!("Track-{}.gpx", now.format("%Y-%m-%d_%H-%M-%S")));
                 match self.track.export_gpx(&path) {
-                    Ok(()) => println!("Trace exportée : {}", path.display()),
+                    Ok(()) => crate::diagnostics::record(
+                        "INFO",
+                        format!("Trace exportée: {}", path.display()),
+                    ),
                     Err(error) => {
-                        crate::diagnostics::record("ERROR", format!("Erreur export trace GPX: {error}"));
-                        eprintln!("Erreur export trace GPX : {error}");
+                        crate::diagnostics::record(
+                            "ERROR",
+                            format!("Erreur export trace GPX: {error}"),
+                        );
                     }
                 }
             }
             AppAction::ClearWaypoints => {
-                self.confirm_dialog
-                    .request(ConfirmAction::ClearWaypoints);
+                self.confirmation.request(ConfirmAction::ClearWaypoints);
             }
             AppAction::ExportWaypointsGpx => {
                 let now = Local::now();
-                let path = Path::new("export")
+                let path = self
+                    .export_dir
                     .join(format!("Waypoints-{}.gpx", now.format("%Y-%m-%d_%H-%M-%S")));
                 match self.waypoints.export_gpx(&path) {
-                    Ok(()) => println!("Waypoints exportés : {}", path.display()),
+                    Ok(()) => crate::diagnostics::record(
+                        "INFO",
+                        format!("Waypoints exportés: {}", path.display()),
+                    ),
                     Err(error) => {
                         crate::diagnostics::record(
                             "ERROR",
                             format!("Erreur export waypoints GPX: {error}"),
                         );
-                        eprintln!("Erreur export waypoints GPX : {error}");
                     }
                 }
             }
@@ -99,7 +112,10 @@ impl Plotter<'_> {
                         self.state.map_offset = (0, 0);
                     }
                     Err(error) => {
-                        eprintln!("Impossible d'ouvrir {} : {error}", &self.charts_path[index])
+                        crate::diagnostics::record(
+                            "ERROR",
+                            format!("Impossible d'ouvrir {}: {error}", self.charts_path[index]),
+                        );
                     }
                 }
             }
@@ -107,13 +123,13 @@ impl Plotter<'_> {
                 if self.state.follow {
                     self.state.map_offset.0 += dx;
                     self.state.map_offset.1 += dy;
-                } else {
-                    self.state.position = Some(self.renderer.screen_to_gps(dx, dy));
+                } else if let Some(center) = self.renderer.view().panned_center(dx, dy) {
+                    self.state.position = Some(center);
                     self.state.map_offset = (0, 0);
                 }
             }
             AppAction::ZoomIn => {
-                self.state.zoom = self.renderer.zoom_increase(&self.state.map);
+                self.state.zoom = self.renderer.zoom_increase();
             }
             AppAction::ZoomOut => {
                 self.state.zoom = self.renderer.zoom_decrease();
@@ -129,7 +145,7 @@ impl Plotter<'_> {
             AppAction::SetCourseUp(enabled) => self.state.course_up = enabled,
         }
 
-        self.dirty = true;
+        self.sync_view();
     }
 
     pub(super) fn apply_confirmation(&mut self, action: ConfirmAction) {
@@ -141,13 +157,10 @@ impl Plotter<'_> {
                         "ERROR",
                         format!("Erreur sauvegarde route: {error}"),
                     );
-                    eprintln!("Erreur sauvegarde route : {error}");
                 }
             }
             ConfirmAction::ClearTrack => {
-                self.track.reset();
-                self.track
-                    .save_default_track(Path::new(DEFAULT_TRACK_PATH));
+                self.track.clear(std::time::Instant::now());
             }
             ConfirmAction::ClearWaypoints => {
                 self.waypoints.reset();
@@ -156,11 +169,10 @@ impl Plotter<'_> {
                         "ERROR",
                         format!("Erreur sauvegarde des waypoints: {error}"),
                     );
-                    eprintln!("Erreur sauvegarde des waypoints : {error}");
                 }
             }
         }
-        self.dirty = true;
+        self.sync_view();
     }
 
     pub(super) fn center_map_on_visible_center(&mut self) {
@@ -171,5 +183,178 @@ impl Plotter<'_> {
             );
             self.state.map_offset = (0, 0);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::session::test_support::session;
+    use super::*;
+
+    #[test]
+    fn show_and_hide_actions_flip_the_overlay_flags() {
+        let mut fx = session(&[2]);
+        fx.session.execute_action(AppAction::HideRoute);
+        assert!(!fx.session.state.display_route);
+        fx.session.execute_action(AppAction::ShowRoute);
+        assert!(fx.session.state.display_route);
+        fx.session.execute_action(AppAction::HideAis);
+        assert!(!fx.session.state.display_ais);
+        fx.session.execute_action(AppAction::HideWaypoints);
+        assert!(!fx.session.state.display_waypoint);
+        fx.session.execute_action(AppAction::HideTrack);
+        assert!(!fx.session.state.display_track);
+        fx.session.execute_action(AppAction::SetCourseUp(true));
+        assert!(fx.session.state.course_up);
+        fx.finish();
+    }
+
+    #[test]
+    fn next_waypoint_stops_at_the_last_point_and_previous_at_the_first() {
+        let mut fx = session(&[2]);
+        for _ in 0..5 {
+            fx.session.execute_action(AppAction::NextWaypoint);
+        }
+        assert_eq!(fx.session.state.nav_id, 2, "three points: ids 0..=2");
+        for _ in 0..5 {
+            fx.session.execute_action(AppAction::PreviousWaypoint);
+        }
+        assert_eq!(fx.session.state.nav_id, 0);
+        fx.finish();
+    }
+
+    #[test]
+    fn toggling_goto_restarts_navigation_at_the_first_waypoint() {
+        let mut fx = session(&[2]);
+        fx.session.execute_action(AppAction::NextWaypoint);
+        fx.session.execute_action(AppAction::ToggleGoto);
+        assert!(fx.session.state.goto);
+        assert_eq!(fx.session.state.nav_id, 0);
+        fx.finish();
+    }
+
+    #[test]
+    fn panning_while_following_drags_the_chart_by_an_offset() {
+        let mut fx = session(&[2]);
+        fx.session.state.follow = true;
+        fx.session.execute_action(AppAction::Pan(30, -10));
+        fx.session.execute_action(AppAction::Pan(5, 5));
+        assert_eq!(fx.session.state.map_offset, (35, -5));
+        fx.finish();
+    }
+
+    #[test]
+    fn panning_while_not_following_moves_the_saved_position() {
+        let mut fx = session(&[2]);
+        fx.session.state.follow = false;
+        fx.session.state.position = Some((0.0, 0.0));
+        fx.session.sync_view();
+        // dx is centre minus pointer: +100 is a point 100 px left of centre.
+        fx.session.execute_action(AppAction::Pan(100, 0));
+        let (lon, lat) = fx.session.state.position.unwrap();
+        assert!(lon < 0.0, "lon {lon}");
+        assert!(lat.abs() < 1e-9, "lat {lat}");
+        assert_eq!(fx.session.state.map_offset, (0, 0));
+        fx.finish();
+    }
+
+    #[test]
+    fn turning_follow_off_folds_the_pan_offset_into_the_position() {
+        let mut fx = session(&[2]);
+        fx.session.state.follow = true;
+        fx.session.state.position = Some((0.0, 0.0));
+        fx.session.execute_action(AppAction::Pan(100, 0));
+        fx.session.execute_action(AppAction::FollowOff);
+        assert!(!fx.session.state.follow);
+        assert_eq!(fx.session.state.map_offset, (0, 0));
+        let (lon, _) = fx.session.state.position.unwrap();
+        assert!(
+            lon < 0.0,
+            "the dragged view is now the saved position, lon {lon}"
+        );
+        fx.finish();
+    }
+
+    #[test]
+    fn zoom_actions_record_the_chart_zoom_in_the_state() {
+        let mut fx = session(&[2, 3]);
+        fx.session.execute_action(AppAction::ZoomOut);
+        assert_eq!(fx.session.state.zoom, 2);
+        fx.session.execute_action(AppAction::ZoomIn);
+        assert_eq!(fx.session.state.zoom, 3);
+        fx.session.execute_action(AppAction::ZoomIn);
+        assert_eq!(fx.session.state.zoom, 3, "top of the chart: no change");
+        fx.finish();
+    }
+
+    #[test]
+    fn clearing_the_route_waits_for_confirmation_and_then_saves_an_empty_route() {
+        let mut fx = session(&[2]);
+        fx.session.execute_action(AppAction::ClearRoute);
+        assert!(fx.session.confirmation.is_open());
+        assert_eq!(fx.session.route.get_nb_wp(), 3, "nothing cleared yet");
+
+        assert_eq!(fx.session.confirmation.resolve(false), None);
+        assert_eq!(fx.session.route.get_nb_wp(), 3, "cancelled");
+
+        fx.session.state.goto = true;
+        fx.session.execute_action(AppAction::ClearRoute);
+        let action = fx.session.confirmation.resolve(true).unwrap();
+        assert_eq!(action, ConfirmAction::ClearRoute);
+        fx.session.apply_confirmation(action);
+        assert_eq!(fx.session.route.get_nb_wp(), 0);
+        assert!(!fx.session.state.goto, "cannot navigate an empty route");
+        let saved = crate::geo_data::read(&fx.dir.join("route.json")).unwrap();
+        assert!(saved.is_empty(), "the empty route reached disk");
+        fx.finish();
+    }
+
+    #[test]
+    fn changing_chart_records_it_and_an_unreadable_chart_leaves_the_state_alone() {
+        let mut fx = session(&[2]);
+        let chart = fx.session.charts_path[0].clone();
+        fx.session.state.map_offset = (5, 5);
+        fx.session.execute_action(AppAction::ChangeChart(0));
+        assert_eq!(fx.session.state.map, chart);
+        assert_eq!(fx.session.state.map_offset, (0, 0));
+
+        fx.session.state.map_offset = (7, 7);
+        fx.session.execute_action(AppAction::ChangeChart(1));
+        assert_eq!(
+            fx.session.state.map, chart,
+            "the missing chart is not recorded"
+        );
+        assert_eq!(fx.session.state.map_offset, (7, 7));
+        fx.finish();
+    }
+
+    #[test]
+    fn exporting_waypoints_writes_a_gpx_file_into_the_export_directory() {
+        let mut fx = session(&[2]);
+        fx.session.waypoints.add((1.0, 2.0), "Mooring".to_string());
+        fx.session.execute_action(AppAction::ExportWaypointsGpx);
+        let exports: Vec<_> = std::fs::read_dir(&fx.session.export_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(exports.len(), 1, "{exports:?}");
+        let contents = std::fs::read_to_string(&exports[0]).unwrap();
+        assert!(contents.contains("<wpt") && contents.contains("Mooring"));
+        fx.finish();
+    }
+
+    #[test]
+    fn quit_stops_the_session_and_cycle_mode_visits_every_mode() {
+        let mut fx = session(&[2]);
+        assert_eq!(fx.session.mode, Mode::Measurement);
+        fx.session.execute_action(AppAction::CycleMode);
+        assert_eq!(fx.session.mode, Mode::EditRoute);
+        fx.session.execute_action(AppAction::CycleMode);
+        assert_eq!(fx.session.mode, Mode::EditWaypoint);
+        fx.session.execute_action(AppAction::CycleMode);
+        assert_eq!(fx.session.mode, Mode::Measurement);
+        fx.session.execute_action(AppAction::Quit);
+        assert!(!fx.session.running);
+        fx.finish();
     }
 }

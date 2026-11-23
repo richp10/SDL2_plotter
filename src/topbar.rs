@@ -44,24 +44,23 @@ struct Menu {
     entries: Vec<String>,
 }
 
-pub struct Topbar<'ttf> {
-    font: Font<'ttf, 'static>,
-    width: u32,
+/// Menu state and hit testing. Knows nothing about SDL so it can be
+/// driven from tests; `Topbar` wraps it with the font and the drawing.
+pub struct MenuBar {
     menus: Vec<Menu>,
     open: Option<usize>,        // menu actuellement déroulé
     hover_title: Option<usize>, // titre survolé
     hover_entry: Option<usize>, // entrée survolée (dans le menu ouvert)
 }
 
-impl<'ttf> Topbar<'ttf> {
-    pub fn new(
-        ttf_context: &'ttf Sdl2TtfContext,
-        width: u32,
-        names: Vec<String>,
-        font_config: &FontConfig,
-    ) -> Result<Self, String> {
-        let font = ttf_context.load_font(&font_config.file, font_config.ui_size)?;
+pub struct Topbar<'ttf> {
+    font: Font<'ttf, 'static>,
+    width: u32,
+    bar: MenuBar,
+}
 
+impl MenuBar {
+    pub fn new(names: Vec<String>) -> Self {
         let menus = vec![
             Menu {
                 title: "App",
@@ -119,14 +118,127 @@ impl<'ttf> Topbar<'ttf> {
             },
         ];
 
-        Ok(Topbar {
-            font,
-            width,
+        MenuBar {
             menus,
             open: None,
             hover_title: None,
             hover_entry: None,
+        }
+    }
+
+    // ---------- Tests de position ----------
+
+    fn menu_at(&self, x: u32) -> Option<usize> {
+        let i = (x / ITEM_WIDTH) as usize;
+        (i < self.menus.len()).then_some(i)
+    }
+
+    fn entry_at(&self, x: u32, y: u32) -> Option<usize> {
+        let i = self.open?;
+        let x0 = i as u32 * ITEM_WIDTH;
+        if y < HEIGHT || x < x0 || x >= x0 + MENU_WIDTH {
+            return None;
+        }
+        let j = ((y - HEIGHT) / ENTRY_HEIGHT) as usize;
+        (j < self.menus[i].entries.len()).then_some(j)
+    }
+
+    // ---------- Événements ----------
+
+    /// À appeler sur un clic gauche.
+    /// Retourne Some((nom, état)) quand une entrée est choisie.
+    pub fn event(&mut self, x: u32, y: u32) -> Option<String> {
+        // Clic dans la barre : ouvre / ferme le menu
+        if y < HEIGHT {
+            self.open = match self.menu_at(x) {
+                Some(i) if self.open != Some(i) => Some(i),
+                _ => None,
+            };
+            self.hover_entry = None;
+            return None;
+        }
+
+        // Clic dans le menu déroulant
+        if let (Some(i), Some(j)) = (self.open, self.entry_at(x, y)) {
+            let e = &mut self.menus[i].entries[j];
+            self.open = None;
+            self.hover_entry = None;
+            return Some(e.to_string());
+        }
+
+        // Clic ailleurs : on ferme le menu
+        self.open = None;
+        self.hover_entry = None;
+        None
+    }
+
+    /// À appeler sur MouseMotion : gère le survol.
+    /// Returns true when the highlighted title, entry or open menu changed,
+    /// so the caller knows the bar needs redrawing.
+    pub fn motion(&mut self, x: u32, y: u32) -> bool {
+        let before = (self.open, self.hover_title, self.hover_entry);
+        self.hover_title = if y < HEIGHT { self.menu_at(x) } else { None };
+
+        // Quand un menu est ouvert, survoler un autre titre l'ouvre (comme un vrai menu)
+        if self.open.is_some() {
+            if let Some(i) = self.hover_title {
+                self.open = Some(i);
+            }
+        }
+        self.hover_entry = self.entry_at(x, y);
+        before != (self.open, self.hover_title, self.hover_entry)
+    }
+
+    /// true si la souris est sur la barre ou sur le menu déroulé
+    /// (pour ne pas transmettre l'événement à la carte).
+    pub fn mouse(&self, x: u32, y: u32) -> bool {
+        y <= HEIGHT || self.entry_at(x, y).is_some()
+    }
+
+    /// Ferme le menu (par ex. sur la touche Échap).
+    pub fn close(&mut self) {
+        self.open = None;
+        self.hover_entry = None;
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.open.is_some()
+    }
+}
+
+impl<'ttf> Topbar<'ttf> {
+    pub fn new(
+        ttf_context: &'ttf Sdl2TtfContext,
+        width: u32,
+        names: Vec<String>,
+        font_config: &FontConfig,
+    ) -> Result<Self, String> {
+        let font = ttf_context.load_font(&font_config.file, font_config.ui_size)?;
+        Ok(Topbar {
+            font,
+            width,
+            bar: MenuBar::new(names),
         })
+    }
+
+    pub fn event(&mut self, x: u32, y: u32) -> Option<String> {
+        self.bar.event(x, y)
+    }
+
+    pub fn motion(&mut self, x: u32, y: u32) -> bool {
+        self.bar.motion(x, y)
+    }
+
+    pub fn mouse(&self, x: u32, y: u32) -> bool {
+        self.bar.mouse(x, y)
+    }
+
+    pub fn close(&mut self) {
+        self.bar.close()
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.bar.is_open()
     }
 
     // ---------- Affichage ----------
@@ -137,9 +249,9 @@ impl<'ttf> Topbar<'ttf> {
         canvas.set_draw_color(COLOR);
         let _ = canvas.fill_rect(Rect::new(0, 0, self.width, HEIGHT));
 
-        for (i, menu) in self.menus.iter().enumerate() {
+        for (i, menu) in self.bar.menus.iter().enumerate() {
             let x0 = (i as u32 * ITEM_WIDTH) as i32;
-            if self.open == Some(i) || self.hover_title == Some(i) {
+            if self.bar.open == Some(i) || self.bar.hover_title == Some(i) {
                 canvas.set_draw_color(HOVER_COLOR);
                 let _ = canvas.fill_rect(Rect::new(x0, 0, ITEM_WIDTH, HEIGHT));
             }
@@ -147,8 +259,8 @@ impl<'ttf> Topbar<'ttf> {
         }
 
         // Menu déroulant (dessiné par-dessus la carte)
-        if let Some(i) = self.open {
-            let menu = &self.menus[i];
+        if let Some(i) = self.bar.open {
+            let menu = &self.bar.menus[i];
             let x0 = (i as u32 * ITEM_WIDTH) as i32;
             let h = menu.entries.len() as u32 * ENTRY_HEIGHT;
 
@@ -157,7 +269,7 @@ impl<'ttf> Topbar<'ttf> {
 
             for (j, e) in menu.entries.iter().enumerate() {
                 let y = (HEIGHT + j as u32 * ENTRY_HEIGHT) as i32;
-                if self.hover_entry == Some(j) {
+                if self.bar.hover_entry == Some(j) {
                     canvas.set_draw_color(HOVER_COLOR);
                     let _ = canvas.fill_rect(Rect::new(x0, y, MENU_WIDTH, ENTRY_HEIGHT));
                 }
@@ -208,79 +320,86 @@ impl<'ttf> Topbar<'ttf> {
         }
         Ok(())
     }
+}
 
-    // ---------- Tests de position ----------
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    fn menu_at(&self, x: u32) -> Option<usize> {
-        let i = (x / ITEM_WIDTH) as usize;
-        (i < self.menus.len()).then_some(i)
+    fn bar() -> MenuBar {
+        MenuBar::new(vec!["Atlantic".to_string(), "Channel".to_string()])
     }
 
-    fn entry_at(&self, x: u32, y: u32) -> Option<usize> {
-        let i = self.open?;
-        let x0 = i as u32 * ITEM_WIDTH;
-        if y < HEIGHT || x < x0 || x >= x0 + MENU_WIDTH {
-            return None;
-        }
-        let j = ((y - HEIGHT) / ENTRY_HEIGHT) as usize;
-        (j < self.menus[i].entries.len()).then_some(j)
+    // Titles sit at x = index * ITEM_WIDTH; "Route" is the third menu.
+    const ROUTE_X: u32 = 2 * ITEM_WIDTH + 10;
+
+    #[test]
+    fn clicking_a_title_opens_its_menu_and_clicking_again_closes_it() {
+        let mut bar = bar();
+        assert_eq!(bar.event(ROUTE_X, 10), None);
+        assert!(bar.is_open());
+        assert_eq!(bar.event(ROUTE_X, 10), None);
+        assert!(!bar.is_open());
     }
 
-    // ---------- Événements ----------
-
-    /// À appeler sur un clic gauche.
-    /// Retourne Some((nom, état)) quand une entrée est choisie.
-    pub fn event(&mut self, x: u32, y: u32) -> Option<String> {
-        // Clic dans la barre : ouvre / ferme le menu
-        if y < HEIGHT {
-            self.open = match self.menu_at(x) {
-                Some(i) if self.open != Some(i) => Some(i),
-                _ => None,
-            };
-            self.hover_entry = None;
-            return None;
-        }
-
-        // Clic dans le menu déroulant
-        if let (Some(i), Some(j)) = (self.open, self.entry_at(x, y)) {
-            let e = &mut self.menus[i].entries[j];
-            self.open = None;
-            self.hover_entry = None;
-            return Some(e.to_string());
-        }
-
-        // Clic ailleurs : on ferme le menu
-        self.open = None;
-        self.hover_entry = None;
-        None
+    #[test]
+    fn clicking_an_entry_of_the_open_menu_selects_it_and_closes_the_menu() {
+        let mut bar = bar();
+        bar.event(ROUTE_X, 10);
+        let second_entry_y = HEIGHT + ENTRY_HEIGHT + ENTRY_HEIGHT / 2;
+        assert_eq!(
+            bar.event(ROUTE_X, second_entry_y),
+            Some(EXPORT_ROUTE_GPX.to_string())
+        );
+        assert!(!bar.is_open());
     }
 
-    /// À appeler sur MouseMotion : gère le survol.
-    pub fn motion(&mut self, x: u32, y: u32) {
-        self.hover_title = if y < HEIGHT { self.menu_at(x) } else { None };
-
-        // Quand un menu est ouvert, survoler un autre titre l'ouvre (comme un vrai menu)
-        if self.open.is_some() {
-            if let Some(i) = self.hover_title {
-                self.open = Some(i);
-            }
-        }
-        self.hover_entry = self.entry_at(x, y);
+    #[test]
+    fn chart_names_fill_the_charts_menu() {
+        let mut bar = bar();
+        bar.event(ITEM_WIDTH + 10, 10);
+        assert_eq!(
+            bar.event(ITEM_WIDTH + 10, HEIGHT + ENTRY_HEIGHT + 5),
+            Some("Channel".to_string())
+        );
     }
 
-    /// true si la souris est sur la barre ou sur le menu déroulé
-    /// (pour ne pas transmettre l'événement à la carte).
-    pub fn mouse(&self, x: u32, y: u32) -> bool {
-        y <= HEIGHT || self.entry_at(x, y).is_some()
+    #[test]
+    fn hovering_reports_a_change_only_when_the_highlight_moves() {
+        let mut bar = bar();
+        assert!(bar.motion(ROUTE_X, 10), "entering a title highlights it");
+        assert!(!bar.motion(ROUTE_X + 5, 12), "still on the same title");
+        assert!(
+            bar.motion(ROUTE_X, HEIGHT + 100),
+            "leaving the bar clears it"
+        );
+        assert!(
+            !bar.motion(ROUTE_X, HEIGHT + 200),
+            "nothing highlighted either way"
+        );
     }
 
-    /// Ferme le menu (par ex. sur la touche Échap).
-    pub fn close(&mut self) {
-        self.open = None;
-        self.hover_entry = None;
+    #[test]
+    fn hovering_another_title_while_open_switches_menus() {
+        let mut bar = bar();
+        bar.event(ROUTE_X, 10);
+        assert!(bar.motion(3 * ITEM_WIDTH + 10, 10));
+        let first_entry_y = HEIGHT + ENTRY_HEIGHT / 2;
+        assert_eq!(
+            bar.event(3 * ITEM_WIDTH + 10, first_entry_y),
+            Some(CLEAR_TRACK.to_string())
+        );
     }
 
-    pub fn is_open(&self) -> bool {
-        self.open.is_some()
+    #[test]
+    fn the_bar_claims_clicks_on_titles_and_on_open_entries_only() {
+        let mut bar = bar();
+        assert!(bar.mouse(ROUTE_X, 10));
+        assert!(
+            !bar.mouse(ROUTE_X, HEIGHT + 10),
+            "closed: the chart gets it"
+        );
+        bar.event(ROUTE_X, 10);
+        assert!(bar.mouse(ROUTE_X, HEIGHT + 10), "open: the entry gets it");
     }
 }

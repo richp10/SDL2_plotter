@@ -265,9 +265,14 @@ impl Plotter<'_> {
     fn handle_mouse_down(&mut self, x: u32, y: u32) {
         if self.topbar.mouse(x, y) {
             self.handle_topbar_event(x, y);
+            // Opening, switching or closing a menu changes the frame even
+            // when no entry was chosen; without this the menu is only drawn
+            // when something else (a Signal K update) redraws.
+            self.dirty = true;
         } else if self.topbar.is_open() {
             self.topbar.close();
             self.press = None;
+            self.dirty = true;
         } else {
             self.drag_start = (x as i32, y as i32);
             self.dragging_measure_start = self.mode == Mode::Measurement
@@ -339,7 +344,9 @@ impl Plotter<'_> {
         map: &mut screen::Map<'_>,
         texture: &sdl2::render::Texture,
     ) -> Result<(), String> {
-        self.topbar.motion(x, y);
+        if self.topbar.motion(x, y) {
+            self.dirty = true;
+        }
         if self.topbar.mouse(x, y) {
             self.mouse = Mouse::Arrow;
         } else {

@@ -171,6 +171,7 @@ impl Plotter<'_> {
                 }
             }
         }
+        self.sync_view();
         self.dirty = true;
     }
 

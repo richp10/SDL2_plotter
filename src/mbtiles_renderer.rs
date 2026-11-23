@@ -37,11 +37,23 @@ pub struct MBTilesRenderer {
     rotation: f64,
     rendering_config: RenderingConfig,
     default_map: String,
-    /// Centre (en coordonnées "pixel monde") utilisé lors du dernier rendu.
-    /// Sert de référence pour convertir d'autres coordonnées GPS (waypoints,
-    /// etc.) en coordonnées écran correspondant à la vue actuellement affichée.
-    last_center: (f64, f64),
+    /// What the screen is looking at, as the application states it.
+    view: View,
+    /// `view` projected to world pixels at the current `display_zoom` and
+    /// `rotation`. Derived; recomputed by `reproject` whenever either input
+    /// changes, so input and rendering always agree on the geometry.
+    center_world: (f64, f64),
     store: TileStore,
+}
+
+/// The position shown at the centre of the screen, shifted by a pan offset
+/// in screen pixels (the chart is dragged by `offset`, so the position
+/// appears `offset` away from the centre).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct View {
+    lon: f64,
+    lat: f64,
+    offset: (i32, i32),
 }
 
 impl MBTilesRenderer {
@@ -71,9 +83,35 @@ impl MBTilesRenderer {
             rotation: 0.0,
             rendering_config: config.clone(),
             default_map: default_map.to_string(),
-            last_center: (0.0, 0.0),
+            view: View {
+                lon: 0.0,
+                lat: 0.0,
+                offset: (0, 0),
+            },
+            center_world: lonlat_to_world(0.0, 0.0, zoom as f64),
             store,
         })
+    }
+
+    /// Points the view at `(lon, lat)`, dragged by `offset` screen pixels.
+    /// Call it whenever the application's idea of the view changes; input
+    /// and rendering both read the result, so there is no stale geometry
+    /// between a state change and the next frame.
+    pub fn look_at(&mut self, lon: f64, lat: f64, offset: (i32, i32)) {
+        self.view = View { lon, lat, offset };
+        self.reproject();
+    }
+
+    fn reproject(&mut self) {
+        let (mut x, mut y) = lonlat_to_world(self.view.lon, self.view.lat, self.display_zoom);
+        let (offset_x, offset_y) = screen_to_world_delta(
+            self.view.offset.0 as f64,
+            self.view.offset.1 as f64,
+            self.rotation,
+        );
+        x -= offset_x;
+        y -= offset_y;
+        self.center_world = (x, y);
     }
 
     pub fn texture_dimensions(width: u32, height: u32) -> (u32, u32) {
@@ -139,8 +177,8 @@ impl MBTilesRenderer {
         let n_tiles: i64 = 1i64 << source_zoom;
         let tile_size = TILE_SIZE as f64;
         let zoom_scale = 2.0_f64.powf(self.display_zoom - source_zoom as f64);
-        let source_center_x = self.last_center.0 / zoom_scale;
-        let source_center_y = self.last_center.1 / zoom_scale;
+        let source_center_x = self.center_world.0 / zoom_scale;
+        let source_center_y = self.center_world.1 / zoom_scale;
         let (view_width, view_height) = rotated_bounds(self.width, self.height, self.rotation);
         let origin_x = source_center_x - view_width as f64 / zoom_scale / 2.0;
         let origin_y = source_center_y - view_height as f64 / zoom_scale / 2.0;
@@ -198,15 +236,13 @@ impl MBTilesRenderer {
             (started_at.elapsed().as_secs_f64() / ZOOM_ANIMATION_DURATION.as_secs_f64()).min(1.0);
         let eased = smooth_zoom_progress(progress);
         let next_zoom = start_zoom + (self.zoom as f64 - start_zoom) * eased;
-        let scale = 2.0_f64.powf(next_zoom - self.display_zoom);
-        self.last_center.0 *= scale;
-        self.last_center.1 *= scale;
         self.display_zoom = next_zoom;
 
         if progress >= 1.0 {
             self.display_zoom = self.zoom as f64;
             self.zoom_animation = None;
         }
+        self.reproject();
         true
     }
 
@@ -216,6 +252,7 @@ impl MBTilesRenderer {
         } else {
             0.0
         };
+        self.reproject();
     }
 
     pub fn course_to_screen(&self, course: f64) -> f64 {
@@ -252,9 +289,6 @@ impl MBTilesRenderer {
     }
 
     pub fn change_map(&mut self, mbtiles_path: &str) -> rusqlite::Result<()> {
-        // Position GPS actuellement affichée au centre de l'écran
-        let (lon, lat) = self.pixel_to_lonlat(self.last_center.0, self.last_center.1);
-
         // On construit le nouveau renderer d'abord : si ça échoue, self n'est pas touché.
         // Le cache est neuf (donc vide), les métadonnées et les zooms sont rechargés,
         // et le zoom courant est ramené dans [min_zoom, max_zoom] de la nouvelle carte.
@@ -267,8 +301,9 @@ impl MBTilesRenderer {
             &self.default_map,
         )?;
 
-        // On garde un last_center cohérent avec le (possible) nouveau zoom
-        new_renderer.last_center = new_renderer.project(lon, lat);
+        // The view carries over; the new chart may have settled on another zoom.
+        new_renderer.set_rotation(self.rotation);
+        new_renderer.look_at(self.view.lon, self.view.lat, self.view.offset);
 
         *self = new_renderer;
         Ok(())
@@ -305,13 +340,10 @@ impl MBTilesRenderer {
         self.store.tiles_center()
     }
 
-    pub fn get_raw_rgba(&mut self, lon: f64, lat: f64, offset: (i32, i32)) -> (Vec<u8>, Rect) {
-        let (mut center_x, mut center_y) = self.project(lon, lat);
-        let (offset_x, offset_y) =
-            screen_to_world_delta(offset.0 as f64, offset.1 as f64, self.rotation);
-        center_x -= offset_x;
-        center_y -= offset_y;
-        self.last_center = (center_x, center_y); // mémorisé pour gps_to_screen()
+    /// Renders the current view (see `look_at`) into RGBA pixels and returns
+    /// them with the texture rectangle they fill.
+    pub fn render_frame(&mut self) -> (Vec<u8>, Rect) {
+        let (center_x, center_y) = self.center_world;
         let (image, rect) = self.render_view(center_x, center_y);
         (image.into_raw(), rect)
     }
@@ -329,9 +361,12 @@ impl MBTilesRenderer {
         Point::new(x as i32, y as i32)
     }
 
+    /// The position under a click. `dx`/`dy` are *centre minus click* in
+    /// screen pixels, the way `input.rs` computes them, so a click right of
+    /// centre has a negative `dx`.
     pub fn screen_to_gps(&self, dx: i32, dy: i32) -> (f64, f64) {
         let (offset_x, offset_y) = screen_to_world_delta(dx as f64, dy as f64, self.rotation);
-        let (x, y) = self.last_center;
+        let (x, y) = self.center_world;
         self.pixel_to_lonlat(x - offset_x, y - offset_y)
     }
 
@@ -341,9 +376,9 @@ impl MBTilesRenderer {
         Point::new(x as i32, y as i32)
     }
 
-    /// World pixels to screen pixels relative to the last rendered centre.
+    /// World pixels to screen pixels relative to the view centre.
     fn world_to_screen(&self, world_x: f64, world_y: f64) -> (i64, i64) {
-        let (center_x, center_y) = self.last_center;
+        let (center_x, center_y) = self.center_world;
         let (x, y) = world_to_screen_delta(world_x - center_x, world_y - center_y, self.rotation);
         (
             (x + self.width as f64 / 2.0).round() as i64,
@@ -439,7 +474,8 @@ mod tests {
         let mut renderer =
             MBTilesRenderer::new(path_str, 2, 512, 256, &RenderingConfig::default(), path_str)
                 .unwrap();
-        let (pixels, rect) = renderer.get_raw_rgba(0.0, 0.0, (0, 0));
+        renderer.look_at(0.0, 0.0, (0, 0));
+        let (pixels, rect) = renderer.render_frame();
         let (width, height) = (rect.width() as usize, rect.height() as usize);
         let index = ((height / 2) * width + width / 2) * 4;
         Rgba([
@@ -494,7 +530,7 @@ mod tests {
         let mut renderer =
             MBTilesRenderer::new(path_str, 3, 512, 256, &RenderingConfig::default(), path_str)
                 .unwrap();
-        renderer.last_center = renderer.project(0.0, 0.0);
+        renderer.look_at(0.0, 0.0, (0, 0));
         assert_eq!(renderer.store.cached_count(), 0);
 
         let started = Instant::now();
@@ -529,7 +565,7 @@ mod tests {
             MBTilesRenderer::new(path_str, 3, 512, 256, &RenderingConfig::default(), path_str)
                 .unwrap();
         assert_eq!(renderer.zoom, 3);
-        renderer.last_center = renderer.project(0.0, 0.0);
+        renderer.look_at(0.0, 0.0, (0, 0));
         while renderer.prefetch_step(64) {}
         let cached_before = renderer.store.cached_count();
         assert!(cached_before > 0);
@@ -538,6 +574,103 @@ mod tests {
 
         assert_eq!(renderer.store.cached_count(), cached_before);
         assert!(renderer.zoom_animation.is_none());
+        drop(renderer);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    fn renderer_for(path: &std::path::Path, zoom: i32) -> MBTilesRenderer {
+        let path_str = path.to_str().unwrap();
+        MBTilesRenderer::new(
+            path_str,
+            zoom,
+            512,
+            256,
+            &RenderingConfig::default(),
+            path_str,
+        )
+        .unwrap()
+    }
+
+    fn assert_close(actual: (f64, f64), expected: (f64, f64)) {
+        assert!(
+            (actual.0 - expected.0).abs() < 1e-6 && (actual.1 - expected.1).abs() < 1e-6,
+            "got {actual:?}, expected {expected:?}"
+        );
+    }
+
+    #[test]
+    fn the_screen_centre_maps_to_the_viewed_position_before_any_frame_is_rendered() {
+        let path = fixture_chart(&[2]);
+        let mut renderer = renderer_for(&path, 2);
+        let brest = (-4.4861, 48.3904);
+
+        renderer.look_at(brest.0, brest.1, (0, 0));
+
+        assert_close(renderer.screen_to_gps(0, 0), brest);
+        assert_eq!(renderer.gps_to_point(brest), Point::new(256, 128));
+        drop(renderer);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn a_pan_offset_moves_the_viewed_position_away_from_the_screen_centre() {
+        let path = fixture_chart(&[2]);
+        let mut renderer = renderer_for(&path, 2);
+
+        // Dragging the chart 100 px right shows the position 100 px right of centre.
+        renderer.look_at(0.0, 0.0, (100, 0));
+
+        assert_eq!(renderer.gps_to_point((0.0, 0.0)), Point::new(356, 128));
+        // screen_to_gps takes centre minus click: a click at x = 356 is dx = -100.
+        assert_close(renderer.screen_to_gps(-100, 0), (0.0, 0.0));
+        drop(renderer);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn the_viewed_position_stays_centred_through_a_zoom_animation() {
+        let path = fixture_chart(&[2, 3]);
+        let mut renderer = renderer_for(&path, 2);
+        let brest = (-4.4861, 48.3904);
+        renderer.look_at(brest.0, brest.1, (0, 0));
+
+        assert_eq!(renderer.zoom_increase(), 3);
+        std::thread::sleep(Duration::from_millis(120)); // mid-animation
+        assert!(renderer.advance_zoom_animation());
+        assert_close(renderer.screen_to_gps(0, 0), brest);
+
+        std::thread::sleep(ZOOM_ANIMATION_DURATION);
+        renderer.advance_zoom_animation();
+        assert_eq!(renderer.gps_to_point(brest), Point::new(256, 128));
+        drop(renderer);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn changing_chart_keeps_the_viewed_position() {
+        let first = fixture_chart(&[2]);
+        let second = fixture_chart(&[3]);
+        let mut renderer = renderer_for(&first, 2);
+        renderer.look_at(10.0, 20.0, (0, 0));
+
+        renderer.change_map(second.to_str().unwrap()).unwrap();
+
+        assert_close(renderer.screen_to_gps(0, 0), (10.0, 20.0));
+        drop(renderer);
+        std::fs::remove_file(first).unwrap();
+        std::fs::remove_file(second).unwrap();
+    }
+
+    #[test]
+    fn render_frame_draws_the_viewed_position_at_the_centre_of_the_texture() {
+        let path = fixture_chart_with(&[2], Rgba([10, 20, 30, 255]));
+        let mut renderer = renderer_for(&path, 2);
+        renderer.look_at(0.0, 0.0, (0, 0));
+
+        let (pixels, rect) = renderer.render_frame();
+        let (width, height) = (rect.width() as usize, rect.height() as usize);
+        let index = ((height / 2) * width + width / 2) * 4;
+        assert_eq!(&pixels[index..index + 4], &[10, 20, 30, 255]);
         drop(renderer);
         std::fs::remove_file(path).unwrap();
     }
@@ -580,15 +713,17 @@ mod tests {
                     .map(|_| {
                         let mut renderer =
                             MBTilesRenderer::new(path, zoom, 1600, 800, &config, path).unwrap();
-                        timed(|| renderer.get_raw_rgba(lon, lat, (0, 0))).1
+                        renderer.look_at(lon, lat, (0, 0));
+                        timed(|| renderer.render_frame()).1
                     })
                     .collect(),
             );
             let mut renderer = MBTilesRenderer::new(path, zoom, 1600, 800, &config, path).unwrap();
-            renderer.get_raw_rgba(lon, lat, (0, 0));
+            renderer.look_at(lon, lat, (0, 0));
+            renderer.render_frame();
             let warm = median(
                 (0..20)
-                    .map(|_| timed(|| renderer.get_raw_rgba(lon, lat, (0, 0))).1)
+                    .map(|_| timed(|| renderer.render_frame()).1)
                     .collect(),
             );
             println!(
@@ -609,7 +744,7 @@ mod tests {
                     let mut renderer =
                         MBTilesRenderer::new(path, zoom, 1600, 800, &config, path).unwrap();
                     let (lon, lat) = renderer.tiles_center().unwrap();
-                    renderer.last_center = renderer.project(lon, lat);
+                    renderer.look_at(lon, lat, (0, 0));
                     timed(|| renderer.prefetch_step(8)).1
                 })
                 .collect();

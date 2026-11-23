@@ -10,31 +10,9 @@ impl Plotter<'_> {
         screen: &mut Screen<'_>,
         texture: &mut Texture,
     ) -> anyhow::Result<()> {
-        let rotation = if self.state.course_up
-            && self.boat.position_valid
-            && self.boat.course_over_ground.is_finite()
-        {
-            self.boat.course_over_ground
-        } else {
-            0.0
-        };
-        self.renderer.set_rotation(rotation);
-
-        if self.state.position.is_none() {
-            self.state.position = Some(self.renderer.initial_center());
-        }
-
-        let (lon, lat) = match self.state.follow {
-            true if super::valid_boat_position(&self.boat) => {
-                (self.boat.longitude, self.boat.latitude)
-            }
-            _ => self
-                .state
-                .position
-                .ok_or(anyhow::anyhow!("position de la carte inconnue"))?,
-        };
-
-        let (pixels, texture_rect) = self.renderer.get_raw_rgba(lon, lat, self.state.map_offset);
+        // State may have moved since the loop synced (boat and track updates).
+        self.sync_view();
+        let (pixels, texture_rect) = self.renderer.render_frame();
         texture
             .update(
                 Some(texture_rect),

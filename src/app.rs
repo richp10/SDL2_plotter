@@ -220,7 +220,7 @@ impl<'ttf> Plotter<'ttf> {
         );
         let waypoints = waypoints::Waypoints::new()?;
 
-        Ok(Self {
+        let mut plotter = Self {
             renderer,
             state,
             mode: Mode::default(),
@@ -252,7 +252,37 @@ impl<'ttf> Plotter<'ttf> {
             ais_targets: Vec::new(),
             last_ais_cleanup: Instant::now(),
             streamer,
-        })
+        };
+        // The renderer knows where it is looking before the first event or frame.
+        plotter.sync_view();
+        Ok(plotter)
+    }
+
+    /// The position at the centre of the screen: the boat while following,
+    /// otherwise the saved position, falling back to the chart's own centre
+    /// the first time. Pushes it, the pan offset and the course-up rotation
+    /// into the renderer so `screen_to_gps`, `gps_to_point`, prefetching and
+    /// the next frame all use the same geometry.
+    pub(crate) fn sync_view(&mut self) {
+        let saved = *self
+            .state
+            .position
+            .get_or_insert_with(|| self.renderer.initial_center());
+        let (lon, lat) = if self.state.follow && valid_boat_position(&self.boat) {
+            (self.boat.longitude, self.boat.latitude)
+        } else {
+            saved
+        };
+        let rotation = if self.state.course_up
+            && self.boat.position_valid
+            && self.boat.course_over_ground.is_finite()
+        {
+            self.boat.course_over_ground
+        } else {
+            0.0
+        };
+        self.renderer.set_rotation(rotation);
+        self.renderer.look_at(lon, lat, self.state.map_offset);
     }
 
     pub(crate) fn main_loop(
@@ -284,6 +314,9 @@ impl<'ttf> Plotter<'ttf> {
             }
 
             /////////////////////   Event /////////////////////////
+            // Input converts clicks with the geometry the renderer holds;
+            // make sure it reflects the current state, not the last frame.
+            self.sync_view();
             for event in event_pump.poll_iter() {
                 event_count += 1;
                 if matches!(

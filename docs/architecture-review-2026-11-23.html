@@ -1,0 +1,452 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Architecture review — SDL2_plotter</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module">
+      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+      mermaid.initialize({ startOnLoad: true, theme: "neutral", securityLevel: "loose" });
+    </script>
+    <style>
+      .seam { stroke-dasharray: 4 4; }
+      .leak { stroke: #dc2626; }
+      .deep { background: linear-gradient(135deg, #0f172a, #1e293b); }
+      .mod { border: 1px solid #94a3b8; background: #fff; }
+      .mod-deep { border: 3px solid #0f172a; background: #0f172a; color: #f1f5f9; }
+      .lbl { font-size: 0.68rem; letter-spacing: 0.08em; text-transform: uppercase; }
+      .mass-if { background: #fde68a; border: 1px solid #d97706; }
+      .mass-impl { background: #cbd5e1; border: 1px solid #64748b; }
+      .faded { opacity: 0.45; }
+    </style>
+  </head>
+  <body class="bg-stone-50 text-slate-900 font-sans">
+    <main class="max-w-5xl mx-auto px-6 py-12 space-y-14">
+
+      <header class="space-y-3">
+        <h1 class="font-serif text-4xl">Architecture review — SDL2_plotter</h1>
+        <p class="text-sm text-slate-600">2026-11-23 · 20 source files, 8 394 lines, 106 tests · after the stability, performance, quality, architecture and hygiene passes</p>
+        <div class="flex flex-wrap gap-5 text-xs text-slate-700 pt-2">
+          <span class="flex items-center gap-2"><span class="inline-block w-5 h-3 mod"></span>module</span>
+          <span class="flex items-center gap-2"><svg width="28" height="8"><line x1="0" y1="4" x2="28" y2="4" stroke="#475569" stroke-width="2" class="seam"/></svg>seam</span>
+          <span class="flex items-center gap-2"><svg width="28" height="8"><line x1="0" y1="4" x2="28" y2="4" stroke="#dc2626" stroke-width="2"/></svg>leak across a seam</span>
+          <span class="flex items-center gap-2"><span class="inline-block w-5 h-3 mod-deep"></span>deep module</span>
+          <span class="flex items-center gap-2"><span class="inline-block w-5 h-3 mass-if"></span>interface</span>
+          <span class="flex items-center gap-2"><span class="inline-block w-5 h-3 mass-impl"></span>implementation</span>
+        </div>
+      </header>
+
+      <section id="candidates" class="space-y-14">
+
+        <!-- ================= 1 ================= -->
+        <article id="c1" class="space-y-5">
+          <h2 class="font-serif text-2xl">1. One persisted-collection module for route, track and waypoints</h2>
+          <div class="flex gap-2 text-xs">
+            <span class="px-2 py-0.5 rounded bg-emerald-600 text-white">Strong</span>
+            <span class="px-2 py-0.5 rounded bg-slate-200">in-process</span>
+            <span class="px-2 py-0.5 rounded bg-red-100 text-red-800">breaks a non-negotiable today</span>
+          </div>
+          <p class="font-mono text-sm text-slate-700">src/geo_data.rs · src/state.rs:26-56 · src/route.rs:19-60,103-117 · src/track.rs:34-70,108-140 · src/waypoints.rs:22-48,122-162 · src/app.rs:195-209</p>
+
+          <div class="grid md:grid-cols-2 gap-4">
+            <div class="rounded-lg border border-slate-200 bg-white p-4">
+              <div class="lbl text-slate-500 mb-2">Before — four policies, one of them right</div>
+              <pre class="mermaid">
+flowchart TB
+  S[state.rs] -->|set aside .corrupt| OK1((starts))
+  R[route.rs] -->|Err| Q1["? in Plotter::new"]
+  T[track.rs] -->|Err| Q1
+  W[waypoints.rs<br/>bare serde array<br/>no version, no validation] -->|Err| Q1
+  Q1 --> X((app exits))
+  classDef leak stroke:#dc2626,stroke-width:2px;
+  class R,T,W,Q1,X leak
+              </pre>
+            </div>
+            <div class="rounded-lg border border-slate-200 bg-white p-4">
+              <div class="lbl text-slate-500 mb-2">After — one seam, one policy</div>
+              <div class="relative h-[300px]">
+                <div class="absolute left-0 top-2 w-24 mod rounded p-2 lbl text-center">route</div>
+                <div class="absolute left-0 top-24 w-24 mod rounded p-2 lbl text-center">track</div>
+                <div class="absolute left-0 top-44 w-24 mod rounded p-2 lbl text-center">waypoints</div>
+                <div class="absolute left-0 top-64 w-24 mod rounded p-2 lbl text-center">state</div>
+                <svg class="absolute inset-0 w-full h-full" style="pointer-events:none">
+                  <line x1="100" y1="22" x2="170" y2="120" stroke="#475569" stroke-width="2" class="seam"/>
+                  <line x1="100" y1="110" x2="170" y2="130" stroke="#475569" stroke-width="2" class="seam"/>
+                  <line x1="100" y1="190" x2="170" y2="150" stroke="#475569" stroke-width="2" class="seam"/>
+                  <line x1="100" y1="270" x2="170" y2="170" stroke="#475569" stroke-width="2" class="seam"/>
+                </svg>
+                <div class="absolute left-[172px] top-10 w-[300px] mod-deep rounded p-3">
+                  <div class="lbl mb-2">GeoFile</div>
+                  <div class="text-xs font-mono">load_or_set_aside(path) → data, warning</div>
+                  <div class="text-xs font-mono">save(&amp;data)</div>
+                  <div class="mt-3 text-[11px] faded leading-5">version · validation · legacy GPX migration · .corrupt rename · atomic write · logging</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <p><span class="font-semibold">Problem.</span> Only `state.rs` sets a bad file aside; a corrupt or wrong-version route, track or waypoint file is an `Err` into `?` in `Plotter::new`, so the chart never appears. Waypoints bypass `geo_data` with their own unversioned, unvalidated format. Track's path is a parameter passed from two sources of truth.</p>
+          <p><span class="font-semibold">Solution.</span> A `GeoFile` module owning path, format version, validation, migration, set-aside and atomic write; each collection owns one and every save goes through it.</p>
+          <ul class="list-disc pl-5 text-sm space-y-1">
+            <li>locality: file policy in one module</li>
+            <li>non-negotiable restored for all four files</li>
+            <li>interface shrinks: load, save</li>
+            <li>tests: corrupt route/track/waypoints set aside</li>
+            <li>delete two save paths, one format</li>
+          </ul>
+        </article>
+
+        <!-- ================= 2 ================= -->
+        <article id="c2" class="space-y-5">
+          <h2 class="font-serif text-2xl">2. Move the screen-to-chart seam into a <code>ChartView</code> snapshot</h2>
+          <div class="flex gap-2 text-xs">
+            <span class="px-2 py-0.5 rounded bg-emerald-600 text-white">Strong</span>
+            <span class="px-2 py-0.5 rounded bg-slate-200">in-process</span>
+          </div>
+          <p class="font-mono text-sm text-slate-700">src/mbtiles_renderer.rs:340-390 · src/mbtiles_renderer/projection.rs:32-38 · src/app/input.rs:479,499,519,533,647,692 · src/mesure.rs:22,46-61 · src/route.rs:142-155,183-223 · src/waypoints.rs:75-94</p>
+
+          <div class="grid md:grid-cols-2 gap-4">
+            <div class="rounded-lg border border-slate-200 bg-white p-4">
+              <div class="lbl text-slate-500 mb-3">Before — the conversion leaks into six callers</div>
+              <div class="relative h-[290px]">
+                <div class="absolute left-0 top-0 w-[200px] mod rounded p-2">
+                  <div class="lbl">MBTilesRenderer</div>
+                  <div class="text-[11px] font-mono mt-1">screen_to_gps(dx, dy)</div>
+                  <div class="text-[10px] text-slate-500">dx = centre − click</div>
+                  <div class="text-[11px] font-mono mt-1">gps_to_point(lonlat)</div>
+                  <div class="text-[10px] text-red-700 mt-1">lon not wrapped, not validated</div>
+                </div>
+                <div class="absolute right-0 top-0 w-[180px] space-y-1">
+                  <div class="mod rounded p-1 text-[10px] font-mono">input.rs:479 w/2 − x</div>
+                  <div class="mod rounded p-1 text-[10px] font-mono">input.rs:499 w/2 − x</div>
+                  <div class="mod rounded p-1 text-[10px] font-mono">input.rs:519 w/2 − x</div>
+                  <div class="mod rounded p-1 text-[10px] font-mono">input.rs:533 w/2 − x</div>
+                  <div class="mod rounded p-1 text-[10px] font-mono">input.rs:647 w/2 − x</div>
+                  <div class="mod rounded p-1 text-[10px] font-mono">input.rs:692 w/2 − x</div>
+                </div>
+                <div class="absolute left-0 bottom-0 w-full grid grid-cols-4 gap-1">
+                  <div class="mod rounded p-1 text-[10px]">route<br/>find_point_at</div>
+                  <div class="mod rounded p-1 text-[10px]">route<br/>find_mid_at</div>
+                  <div class="mod rounded p-1 text-[10px]">waypoints<br/>find_point_at</div>
+                  <div class="mod rounded p-1 text-[10px]">mesure<br/>find_mark1_at</div>
+                </div>
+                <svg class="absolute inset-0 w-full h-full" style="pointer-events:none">
+                  <line x1="200" y1="40" x2="268" y2="40" stroke="#dc2626" stroke-width="2"/>
+                  <line x1="200" y1="60" x2="268" y2="110" stroke="#dc2626" stroke-width="2"/>
+                  <line x1="200" y1="80" x2="268" y2="180" stroke="#dc2626" stroke-width="2"/>
+                  <text x="205" y="150" class="text-[10px]" fill="#dc2626" font-size="10">reads Screen.screen_width</text>
+                </svg>
+              </div>
+            </div>
+            <div class="rounded-lg border border-slate-200 bg-white p-4">
+              <div class="lbl text-slate-500 mb-3">After — absolute pixels in, validated coordinates out</div>
+              <div class="relative h-[290px]">
+                <div class="absolute left-0 top-0 w-[150px] mod rounded p-2 lbl">MBTilesRenderer</div>
+                <div class="absolute left-[160px] top-[70px] text-[10px] text-slate-500">view() per sync_view</div>
+                <div class="absolute left-0 top-[100px] w-[260px] mod-deep rounded p-3">
+                  <div class="lbl mb-1">ChartView (Copy)</div>
+                  <div class="text-[11px] font-mono">to_pixel(lonlat) → Point</div>
+                  <div class="text-[11px] font-mono">to_lonlat(Point) → Option&lt;LonLat&gt;</div>
+                  <div class="text-[11px] font-mono">nearest(&amp;[lonlat], Point, r) → Option&lt;usize&gt;</div>
+                  <div class="mt-2 text-[10px] faded">centre · display zoom · rotation · size · wrap · validate</div>
+                </div>
+                <div class="absolute right-0 top-[20px] w-[150px] space-y-1">
+                  <div class="mod rounded p-1 text-[10px] lbl">input</div>
+                  <div class="mod rounded p-1 text-[10px] lbl">route</div>
+                  <div class="mod rounded p-1 text-[10px] lbl">waypoints</div>
+                  <div class="mod rounded p-1 text-[10px] lbl">mesure</div>
+                  <div class="mod rounded p-1 text-[10px] lbl">boat · ais · track</div>
+                </div>
+                <svg class="absolute inset-0 w-full h-full" style="pointer-events:none">
+                  <line x1="260" y1="150" x2="330" y2="80" stroke="#475569" stroke-width="2" class="seam"/>
+                  <line x1="75" y1="40" x2="75" y2="98" stroke="#475569" stroke-width="2"/>
+                </svg>
+              </div>
+            </div>
+          </div>
+
+          <p><span class="font-semibold">Problem.</span> `screen_to_gps` wants "centre minus click", so every caller computes it from `Screen`'s public width; the result is never wrapped or range-checked, so a click past the antimeridian stores a longitude above 180 that `geo_data::write` then rejects on every save. Hit testing is copied four times.</p>
+          <p><span class="font-semibold">Solution.</span> A copyable `ChartView` built once per `sync_view`: absolute pixels in, a validated `LonLat` (or `None`) out, plus one nearest-point test. The renderer keeps compositing; projection stops leaking through it.</p>
+          <ul class="list-disc pl-5 text-sm space-y-1">
+            <li>validation at the actual input seam</li>
+            <li>leverage: one hit test, four callers</li>
+            <li>delete six "w/2 − x" copies</li>
+            <li>tests need no SQLite fixture</li>
+            <li>renderer trims five internal-only pub fns</li>
+          </ul>
+        </article>
+
+        <!-- ================= 3 ================= -->
+        <article id="c3" class="space-y-5">
+          <h2 class="font-serif text-2xl">3. Separate gesture recognition from the per-mode tools</h2>
+          <div class="flex gap-2 text-xs">
+            <span class="px-2 py-0.5 rounded bg-emerald-600 text-white">Strong</span>
+            <span class="px-2 py-0.5 rounded bg-slate-200">in-process</span>
+            <span class="px-2 py-0.5 rounded bg-red-100 text-red-800">three bugs live here</span>
+          </div>
+          <p class="font-mono text-sm text-slate-700">src/app/input.rs (705 lines, 0 tests) · src/app.rs:120-132 (press, is_draging, xdrag, ydrag, drag_start, selected, dragging_measure_start)</p>
+
+          <div class="grid md:grid-cols-2 gap-4">
+            <div class="rounded-lg border border-slate-200 bg-white p-4">
+              <div class="lbl text-slate-500 mb-2">Before — one 705-line module, mode matched four times</div>
+              <pre class="mermaid">
+flowchart LR
+  E[SDL event] --> I[input.rs]
+  I -->|click| M1{mode?}
+  I -->|long press| M2{mode?}
+  I -->|motion| M3{mode?}
+  I -->|release| M4{mode?}
+  M1 & M2 & M3 & M4 --> R[route] & W[waypoints] & Me[mesure]
+  I -.->|wheel bypasses AppAction| Z[renderer.zoom]
+  classDef leak stroke:#dc2626,stroke-width:2px;
+  class Z leak
+              </pre>
+            </div>
+            <div class="rounded-lg border border-slate-200 bg-white p-4">
+              <div class="lbl text-slate-500 mb-2">After — a pure recogniser feeds tools on Session</div>
+              <pre class="mermaid">
+flowchart LR
+  E[SDL event] --> T[input.rs<br/>translate only]
+  T --> G[Gesture<br/>press · motion · release · tick]
+  G -->|Click · LongPress · Drag| S[Session tool for the mode<br/>route editor · waypoint editor · measurement]
+  S --> A[AppAction / save on commit]
+  classDef deep fill:#0f172a,color:#f1f5f9,stroke:#0f172a,stroke-width:3px;
+  class G,S deep
+              </pre>
+            </div>
+          </div>
+
+          <p><span class="font-semibold">Problem.</span> Gesture state is scattered over seven `Plotter` fields and the mode `match` is repeated four times, with no seam a test can reach. Three defects hide in the gaps: a point drag re-runs `find_point_at` on every motion so dragging A over B grabs B; point drags skip `MOVE_TOLERANCE`; wheel zoom bypasses `AppAction` and resets the pan offset while keyboard zoom does not.</p>
+          <p><span class="font-semibold">Solution.</span> A pure `Gesture` recogniser with injected time emitting `Click | LongPress | DragStart{grab} | DragMove | DragEnd`, consumed by per-mode tool methods on `Session` in chart pixels via `ChartView`. `input.rs` shrinks to event translation, as CLAUDE.md already asks.</p>
+          <ul class="list-disc pl-5 text-sm space-y-1">
+            <li>locality: gesture bugs in one module</li>
+            <li>tests: 500 ms long press, tolerance, grab lock</li>
+            <li>one zoom semantics via AppAction</li>
+            <li>seven Plotter fields become one</li>
+          </ul>
+        </article>
+
+        <!-- ================= 4 ================= -->
+        <article id="c4" class="space-y-5">
+          <h2 class="font-serif text-2xl">4. Menu entries carry their action, not a display string</h2>
+          <div class="flex gap-2 text-xs">
+            <span class="px-2 py-0.5 rounded bg-emerald-600 text-white">Strong</span>
+            <span class="px-2 py-0.5 rounded bg-slate-200">in-process</span>
+            <span class="px-2 py-0.5 rounded bg-amber-100 text-amber-800">small</span>
+          </div>
+          <p class="font-mono text-sm text-slate-700">src/topbar.rs:16-41,151 · src/app/input.rs:118-152 · src/app.rs:33-62</p>
+
+          <div class="grid md:grid-cols-2 gap-4">
+            <div class="rounded-lg border border-slate-200 bg-white p-4">
+              <div class="lbl text-slate-500 mb-3">Before — interface as wide as the implementation</div>
+              <div class="flex items-end gap-6 h-[260px] px-4">
+                <div class="flex flex-col items-center gap-1">
+                  <div class="mass-if w-20 h-[150px] rounded flex items-center justify-center text-[10px] text-center p-1">26 pub const<br/>strings +<br/>event → String</div>
+                  <div class="lbl">interface</div>
+                </div>
+                <div class="flex flex-col items-center gap-1">
+                  <div class="mass-impl w-20 h-[170px] rounded flex items-center justify-center text-[10px] text-center p-1">MenuBar<br/>+ 26-arm match<br/>in input.rs</div>
+                  <div class="lbl">implementation</div>
+                </div>
+                <div class="text-[11px] text-red-700 max-w-[160px] self-center">a chart file named <span class="font-mono">Exit</span>, <span class="font-mono">On</span> or <span class="font-mono">Next Wp</span> fires that action instead of switching charts</div>
+              </div>
+            </div>
+            <div class="rounded-lg border border-slate-200 bg-white p-4">
+              <div class="lbl text-slate-500 mb-3">After — short interface, implementation absorbs the table</div>
+              <div class="flex items-end gap-6 h-[260px] px-4">
+                <div class="flex flex-col items-center gap-1">
+                  <div class="mass-if w-20 h-[40px] rounded flex items-center justify-center text-[10px] text-center p-1">event →<br/>Option&lt;AppAction&gt;</div>
+                  <div class="lbl">interface</div>
+                </div>
+                <div class="flex flex-col items-center gap-1">
+                  <div class="mass-impl w-20 h-[200px] rounded flex items-center justify-center text-[10px] text-center p-1">menu definition<br/>with actions,<br/>ChangeChart(i)<br/>built per chart</div>
+                  <div class="lbl">implementation</div>
+                </div>
+                <div class="text-[11px] text-slate-600 max-w-[160px] self-center">adding an action touches one table; MenuBar is already SDL-free and tested</div>
+              </div>
+            </div>
+          </div>
+
+          <p><span class="font-semibold">Problem.</span> `MenuBar::event` returns a `String` that `input.rs` matches against 26 constants before falling back to chart names, so a chart whose stem equals any entry string triggers that action.</p>
+          <p><span class="font-semibold">Solution.</span> The menu definition carries the `AppAction`; `event` returns `Option<AppAction>`; the string table and the mapping in `input.rs` go.</p>
+          <ul class="list-disc pl-5 text-sm space-y-1">
+            <li>one place to add an action, not three</li>
+            <li>test: chart named Exit switches chart</li>
+            <li>interface shrinks to one method</li>
+          </ul>
+        </article>
+
+        <!-- ================= 5 ================= -->
+        <article id="c5" class="space-y-5">
+          <h2 class="font-serif text-2xl">5. One <code>gpx</code> module</h2>
+          <div class="flex gap-2 text-xs">
+            <span class="px-2 py-0.5 rounded bg-emerald-600 text-white">Strong</span>
+            <span class="px-2 py-0.5 rounded bg-slate-200">in-process</span>
+            <span class="px-2 py-0.5 rounded bg-amber-100 text-amber-800">small</span>
+          </div>
+          <p class="font-mono text-sm text-slate-700">src/route/gpx.rs · src/track.rs:150-185,226-250 · src/waypoints.rs:132-170</p>
+
+          <div class="grid md:grid-cols-2 gap-4">
+            <div class="rounded-lg border border-slate-200 bg-white p-4">
+              <div class="lbl text-slate-500 mb-3">Before — three writers, two readers, two escapers</div>
+              <div class="space-y-2">
+                <div class="h-12 border-l-4 border-red-600 bg-red-50 pl-3 flex items-center text-xs">route/gpx.rs writer · creator "ma_carte" · escaper A · reader accepts out-of-range</div>
+                <div class="h-12 border-l-4 border-red-600 bg-red-50 pl-3 flex items-center text-xs">track.rs writer · creator "boat-tracker" · reader validates</div>
+                <div class="h-12 border-l-4 border-red-600 bg-red-50 pl-3 flex items-center text-xs">waypoints.rs writer · creator "SDL2 Plotter" · escaper B misses "</div>
+              </div>
+            </div>
+            <div class="rounded-lg border border-slate-200 bg-white p-4">
+              <div class="lbl text-slate-500 mb-3">After — one band</div>
+              <div class="h-[160px] mod-deep rounded p-4">
+                <div class="lbl mb-2">gpx</div>
+                <div class="text-xs font-mono">write_route · write_track · write_waypoints → String</div>
+                <div class="text-xs font-mono">read_points(&amp;str) → io::Result&lt;Vec&lt;LonLat&gt;&gt;</div>
+                <div class="text-[10px] faded mt-3">one escaper · one creator · one validating reader · callers save through GeoFile</div>
+              </div>
+            </div>
+          </div>
+
+          <p><span class="font-semibold">Problem.</span> Three GPX writers with three creator strings and two XML escapers, one of which does not escape quotes; two readers of different rigour.</p>
+          <p><span class="font-semibold">Solution.</span> A single `gpx` module with three writers and one validating reader.</p>
+          <ul class="list-disc pl-5 text-sm space-y-1">
+            <li>leverage: one escaper, one reader</li>
+            <li>delete two copies</li>
+            <li>tests: round-trip all three kinds</li>
+          </ul>
+        </article>
+
+        <!-- ================= 6 ================= -->
+        <article id="c6" class="space-y-5">
+          <h2 class="font-serif text-2xl">6. Main-loop policy onto the modules that own it</h2>
+          <div class="flex gap-2 text-xs">
+            <span class="px-2 py-0.5 rounded bg-amber-500 text-white">Worth exploring</span>
+            <span class="px-2 py-0.5 rounded bg-slate-200">in-process</span>
+          </div>
+          <p class="font-mono text-sm text-slate-700">src/app.rs:330-389 · src/track.rs:108-140 · src/signalk.rs:411-413</p>
+
+          <div class="grid md:grid-cols-2 gap-4">
+            <div class="rounded-lg border border-slate-200 bg-white p-4">
+              <div class="lbl text-slate-500 mb-2">Before — Plotter orchestrates rules it does not own</div>
+              <pre class="mermaid">
+flowchart TB
+  L[main loop] -->|first point? checkpoint_due? exit?| T[track.save_default_track]
+  L -->|follow? valid?| P[state.position]
+  L -->|is_fresh every 1 s| A[ais_targets]
+  K[signalk task] -->|retain_fresh every 1 s| A2[targets]
+  classDef leak stroke:#dc2626,stroke-width:2px;
+  class A,A2 leak
+              </pre>
+            </div>
+            <div class="rounded-lg border border-slate-200 bg-white p-4">
+              <div class="lbl text-slate-500 mb-2">After — drain, call, dirty |=</div>
+              <pre class="mermaid">
+flowchart TB
+  L[main loop] --> T[Track::record · tick · close]
+  L --> S[Session::on_boat → bool]
+  L --> V[Session::visible_ais now → bool]
+  classDef deep fill:#0f172a,color:#f1f5f9,stroke:#0f172a,stroke-width:3px;
+  class T,S,V deep
+              </pre>
+            </div>
+          </div>
+
+          <p><span class="font-semibold">Problem.</span> Track checkpoint policy, boat intake while following, and AIS expiry are inline in the loop, untested, and AIS expiry is the same rule in two threads.</p>
+          <p><span class="font-semibold">Solution.</span> `Track` owns recording and checkpointing with injected time; `Session` owns boat intake and visible-AIS; each returns whether a redraw is needed.</p>
+          <ul class="list-disc pl-5 text-sm space-y-1">
+            <li>tests: checkpoint timing, follow records position</li>
+            <li>one AIS expiry rule</li>
+            <li>Session fields can go private</li>
+          </ul>
+        </article>
+
+        <!-- ================= 7 ================= -->
+        <article id="c7" class="space-y-5">
+          <h2 class="font-serif text-2xl">7. A draw list and one painter for the overlays</h2>
+          <div class="flex gap-2 text-xs">
+            <span class="px-2 py-0.5 rounded bg-amber-500 text-white">Worth exploring</span>
+            <span class="px-2 py-0.5 rounded bg-slate-200">in-process</span>
+            <span class="px-2 py-0.5 rounded bg-red-100 text-red-800">log churn today</span>
+          </div>
+          <p class="font-mono text-sm text-slate-700">src/boat.rs:26-46 · src/ais.rs:63-71 · src/screen.rs (show_track, show_line, draw_mid_handles, show_text skip ClipRect; show_waypoint, show_track hard-code colours) · src/app/render.rs</p>
+
+          <div class="grid md:grid-cols-2 gap-4">
+            <div class="rounded-lg border border-slate-200 bg-white p-4">
+              <div class="lbl text-slate-500 mb-2">Before — every data module needs renderer and screen; culling done three ways</div>
+              <pre class="mermaid">
+flowchart LR
+  R[route] & B[boat] & A[ais] & W[waypoints] & Tr[track] & M[mesure]
+  R & B & A & W & Tr & M --> P[&amp;MBTilesRenderer]
+  R & B & A & W & Tr & M --> S[&amp;mut Screen]
+  B -.->|WARN every frame off screen| Lg[plotter.log]
+  A -.->|32 px, reads pub fields| S
+  classDef leak stroke:#dc2626,stroke-width:2px;
+  class Lg leak
+              </pre>
+            </div>
+            <div class="rounded-lg border border-slate-200 bg-white p-4">
+              <div class="lbl text-slate-500 mb-2">After — shapes in lon/lat, one painter</div>
+              <pre class="mermaid">
+flowchart LR
+  R[route] & B[boat] & A[ais] & W[waypoints] & Tr[track] & M[mesure] -->|polyline · marker · label| D[DrawList]
+  D --> P[Painter<br/>ChartView · cull · clip · AppearanceConfig]
+  P --> S[Screen canvas]
+  classDef deep fill:#0f172a,color:#f1f5f9,stroke:#0f172a,stroke-width:3px;
+  class P deep
+              </pre>
+            </div>
+          </div>
+
+          <p><span class="font-semibold">Problem.</span> Each overlay module takes both the renderer and the screen, culls its own way, and `boat.rs` logs a WARN on every frame while the boat is off screen. Several primitives skip `ClipRect` and two hard-code colours, against CLAUDE.md's own rules.</p>
+          <p><span class="font-semibold">Solution.</span> Data modules emit lon/lat shapes into a draw list; one painter projects through `ChartView`, culls, clips and styles from config. `Screen`'s single-caller primitives collapse into it.</p>
+          <ul class="list-disc pl-5 text-sm space-y-1">
+            <li>tests: goto draws boat→leg→rest, labels culled</li>
+            <li>one culling rule, one colour source</li>
+            <li>log churn stops</li>
+          </ul>
+        </article>
+
+        <!-- ================= 8 ================= -->
+        <article id="c8" class="space-y-5">
+          <h2 class="font-serif text-2xl">8. A unified point-list type for route, track, waypoints and measurement</h2>
+          <div class="flex gap-2 text-xs">
+            <span class="px-2 py-0.5 rounded bg-slate-500 text-white">Speculative</span>
+            <span class="px-2 py-0.5 rounded bg-slate-200">in-process</span>
+          </div>
+          <p class="font-mono text-sm text-slate-700">src/route.rs · src/track.rs · src/waypoints.rs · src/mesure.rs</p>
+          <div class="rounded-lg border border-slate-200 bg-white p-4 text-sm">
+            <div class="grid grid-cols-4 gap-2 text-[11px]">
+              <div class="mod rounded p-2"><span class="lbl">track</span><br/>append-only, pre-projected, simplified, checkpointed</div>
+              <div class="mod rounded p-2"><span class="lbl">route</span><br/>legs, distance remaining, midpoints, active waypoint</div>
+              <div class="mod rounded p-2"><span class="lbl">waypoints</span><br/>named, unordered</div>
+              <div class="mod rounded p-2"><span class="lbl">mesure</span><br/>two marks</div>
+            </div>
+          </div>
+          <p><span class="font-semibold">Problem.</span> They look alike from a distance.</p>
+          <p><span class="font-semibold">Solution.</span> Do not unify the types. Share the helpers (candidates 1, 2, 5) and keep four modules with four different shapes. A common type would be forced and would fail the deletion test.</p>
+        </article>
+
+        <!-- ================= leave alone ================= -->
+        <article class="rounded-lg border border-slate-200 bg-white p-6 space-y-3">
+          <h2 class="font-serif text-xl">Pass the deletion test — leave alone</h2>
+          <ul class="text-sm grid md:grid-cols-2 gap-x-8 gap-y-1 list-disc pl-5">
+            <li><code>geo_data</code>: small and deep; extend it (candidate 1), do not split it</li>
+            <li><code>Confirmation</code>/<code>ConfirmDialog</code>, <code>MenuBar</code>/<code>Topbar</code>: the font-free halves are the test seam; the pass-throughs buy SDL isolation</li>
+            <li><code>ClipRect</code>, <code>clip_segment</code>, <code>gps</code>, <code>projection</code>: pure and deep</li>
+            <li><code>Streamer</code>: three methods hide three threads and frame dropping</li>
+            <li><code>apply_delta</code>, <code>update_ais_target</code>, <code>retain_fresh</code>: good seams</li>
+            <li><code>MBTilesRenderer</code> core (look_at, set_rotation, render_frame, prefetch_step, zoom): deep; trim the five internal-only pub fns, do not break it up</li>
+            <li><code>Route::active_waypoint</code>: the model clamp</li>
+          </ul>
+          <p class="text-xs text-slate-600 pt-2">Smaller friction noted, not carded: all <code>Session</code> fields pub (resolves with 3 and 6); <code>display_buttombar</code> is pure text composition that could be <code>Session::status_line()</code>; <code>Buttombar</code> re-implements <code>screen::draw_text</code> twice and <code>unwrap</code>s on the render thread; CLAUDE.md says <code>Plotter::sync_view</code> where it is now <code>Session::sync_view</code>; <code>drag_map</code> presents without overlays, so boat, route and AIS vanish while panning.</p>
+        </article>
+      </section>
+
+      <section id="top-recommendation" class="rounded-xl deep text-slate-100 p-8 space-y-3">
+        <div class="lbl text-slate-400">Top recommendation</div>
+        <h2 class="font-serif text-3xl"><a href="#c1" class="underline decoration-emerald-400">1. One persisted-collection module</a></h2>
+        <p class="text-slate-200">It is the only candidate that fixes a broken non-negotiable: today a corrupt route, track or waypoint file keeps the chart off the screen. It is self-contained, three tests go red first, and it lays the path and format foundation that candidates 5 and 6 build on. Candidate 2 (<code>ChartView</code>) is the next most valuable and the natural second step, since 3 and 7 both want it.</p>
+      </section>
+
+    </main>
+  </body>
+</html>

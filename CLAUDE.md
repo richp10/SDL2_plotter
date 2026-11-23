@@ -7,7 +7,7 @@ Guidance for AI coding agents (and humans) working in this repository.
 **SDL2 Plotter** is a marine chart plotter in Rust: a single binary that renders local MBTiles raster charts with SDL2, follows the boat using live data from a Signal K server over WebSocket, shows AIS targets, and lets the navigator keep routes, waypoints, a track and distance measurements. It also serves the screen as an MJPEG stream so a tablet in the cockpit can watch. Deployment target: a Raspberry Pi running a minimal Linux without a desktop, at the chart table, 24 hours a day for weeks. Windows is a development platform only.
 
 - **Build, run, configure:** [`README.md`](README.md). Windows specifics and verified build numbers: [`WINDOWS_BUILD.md`](WINDOWS_BUILD.md).
-- **Known debt:** identifiers and comments mix French and English (see Conventions). Settling on one language is deliberately left for later and is the only open item from the 2026-11-23 code review.
+- **Known debt:** identifiers and comments mix French and English (see Conventions); settling on one language is deliberately left for later. Deepening work in progress is tracked on the wayfinder map [`docs/wayfinder/architecture-deepening.md`](docs/wayfinder/architecture-deepening.md), charted from [`docs/architecture-review-2026-11-23.html`](docs/architecture-review-2026-11-23.html).
 
 > **It is a safety instrument.** The person at the chart table may be tired, wet and relying on this screen in the dark. Every design choice below follows from one rule: the chart must keep drawing and the boat must keep moving on it, whatever else fails.
 

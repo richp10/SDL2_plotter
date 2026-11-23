@@ -17,6 +17,9 @@ struct RawFrame {
 
 #[derive(Clone)]
 pub struct Streamer {
+    /// Latest encoded frame, written by the encoder thread and read by the
+    /// client threads. Only tests read it through the struct.
+    #[cfg_attr(not(test), allow(dead_code))]
     frame: Arc<RwLock<Option<Vec<u8>>>>,
     frame_interval: Duration,
     last_capture: Arc<std::sync::Mutex<Instant>>,

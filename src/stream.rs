@@ -210,6 +210,31 @@ mod tests {
         }
     }
 
+    /// cargo test --release bench_ -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn bench_jpeg_encode_of_a_full_frame() {
+        let (width, height) = (1600u32, 800u32);
+        let pixels: Vec<u8> = (0..width * height)
+            .flat_map(|i| {
+                let (x, y) = (i % width, i / width);
+                [(x % 256) as u8, (y % 256) as u8, ((x + y) % 256) as u8]
+            })
+            .collect();
+        let mut samples: Vec<Duration> = (0..10)
+            .map(|_| {
+                let start = Instant::now();
+                let mut jpeg = Vec::new();
+                JpegEncoder::new_with_quality(&mut jpeg, 70)
+                    .encode(&pixels, width, height, image::ColorType::Rgb8)
+                    .unwrap();
+                start.elapsed()
+            })
+            .collect();
+        samples.sort();
+        println!("bench jpeg encode 1600x800 q70: {:?}", samples[samples.len() / 2]);
+    }
+
     #[test]
     fn first_frame_arrives_promptly_when_the_request_is_sent_immediately() {
         let address = start_test_server();

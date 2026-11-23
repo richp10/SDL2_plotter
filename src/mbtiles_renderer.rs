@@ -845,6 +845,107 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
+    // ----- benchmarks: cargo test --release bench_ -- --ignored --nocapture -----
+
+    /// The real charts to benchmark against that are present (they are
+    /// gitignored): path and the zoom to render at.
+    fn bench_charts() -> Vec<(&'static str, i32)> {
+        [("map/OpenSeaMap-test.mbtiles", 8), ("assets/OSM.mbtiles", 6)]
+            .into_iter()
+            .filter(|(path, _)| std::path::Path::new(path).exists())
+            .collect()
+    }
+
+    fn median(mut samples: Vec<Duration>) -> Duration {
+        samples.sort();
+        samples[samples.len() / 2]
+    }
+
+    fn timed<T>(f: impl FnOnce() -> T) -> (T, Duration) {
+        let start = Instant::now();
+        let value = f();
+        (value, start.elapsed())
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_render_frame_cold_and_warm() {
+        for (path, zoom) in bench_charts() {
+        let config = RenderingConfig::default();
+        let probe = MBTilesRenderer::new(path, zoom, 1600, 800, &config, path).unwrap();
+        let (lon, lat) = probe.tiles_center().unwrap();
+
+        let cold = median(
+            (0..5)
+                .map(|_| {
+                    let mut renderer =
+                        MBTilesRenderer::new(path, zoom, 1600, 800, &config, path).unwrap();
+                    timed(|| renderer.get_raw_rgba(lon, lat, (0, 0))).1
+                })
+                .collect(),
+        );
+        let mut renderer = MBTilesRenderer::new(path, zoom, 1600, 800, &config, path).unwrap();
+        renderer.get_raw_rgba(lon, lat, (0, 0));
+        let warm = median(
+            (0..20)
+                .map(|_| timed(|| renderer.get_raw_rgba(lon, lat, (0, 0))).1)
+                .collect(),
+        );
+        println!(
+            "bench render 1600x800 {path} z{}: cold {cold:?}, warm {warm:?}, {} tiles cached",
+            renderer.zoom,
+            renderer.cache.len()
+        );
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_prefetch_step_of_eight_tiles() {
+        for (path, zoom) in bench_charts() {
+        let config = RenderingConfig::default();
+        let samples = (0..5)
+            .map(|_| {
+                let mut renderer =
+                    MBTilesRenderer::new(path, zoom, 1600, 800, &config, path).unwrap();
+                let (lon, lat) = renderer.tiles_center().unwrap();
+                renderer.last_center = renderer.project(lon, lat);
+                timed(|| renderer.prefetch_step(8)).1
+            })
+            .collect();
+        println!("bench prefetch_step(8) cold {path}: {:?}", median(samples));
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_single_tile_decode() {
+        for (path, zoom) in bench_charts() {
+        let renderer =
+            MBTilesRenderer::new(path, zoom, 1600, 800, &RenderingConfig::default(), path)
+                .unwrap();
+        let (lon, lat) = renderer.tiles_center().unwrap();
+        let (x, y) = renderer.project(lon, lat);
+        let (tx, ty) = ((x / 256.0) as i64, (y / 256.0) as i64);
+        let bytes = renderer.fetch_tile_bytes(renderer.zoom, tx, ty).unwrap().unwrap();
+        let fetch = median(
+            (0..20)
+                .map(|_| timed(|| renderer.fetch_tile_bytes(renderer.zoom, tx, ty)).1)
+                .collect(),
+        );
+        let decode = median(
+            (0..20)
+                .map(|_| timed(|| image::load_from_memory(&bytes).unwrap().to_rgba8()).1)
+                .collect(),
+        );
+        println!(
+            "bench tile {path} z{} ({} bytes): sqlite fetch {fetch:?}, png decode {decode:?}",
+            renderer.zoom,
+            bytes.len()
+        );
+        }
+    }
+
     #[test]
     fn zooming_in_at_the_maximum_zoom_keeps_the_tile_cache() {
         let path = fixture_chart(&[2, 3]);

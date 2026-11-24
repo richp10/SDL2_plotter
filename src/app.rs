@@ -1,4 +1,5 @@
 use crate::boat::BoatState;
+use crate::catalogue::Catalogue;
 use crate::{
     ais, buttombar, config::AppConfig, mbtiles_renderer, route, screen, signalk, state, topbar,
     track, waypoints,
@@ -27,6 +28,8 @@ use tools::Target;
 
 const STATE_FILE: &str = "default/state.json";
 const DEFAULT_TRACK_PATH: &str = "default/track.json";
+/// What the user decided about each chart file; see `catalogue`.
+const CHART_SETTINGS: &str = "settings/charts.json";
 const LONG_CLICK: Duration = Duration::from_millis(500);
 const MOVE_TOLERANCE: i32 = 5;
 const DIAGNOSTICS_INTERVAL: Duration = Duration::from_secs(10);
@@ -88,16 +91,20 @@ impl<'ttf> Plotter<'ttf> {
             config.signalk.clone(),
         ));
 
-        let charts_path = state::list_maps(&config.charts.directory);
-        let charts_name: Vec<String> = charts_path
-            .iter()
-            .map(|path| {
-                std::path::Path::new(path)
-                    .file_stem()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or(path)
-                    .to_string()
-            })
+        let catalogue = Catalogue::load(
+            Path::new(&config.charts.directory),
+            Path::new(CHART_SETTINGS),
+        );
+        for line in catalogue.describe() {
+            crate::diagnostics::record("INFO", line);
+        }
+        let charts_path: Vec<String> = catalogue
+            .visible()
+            .map(|chart| chart.path.to_string_lossy().into_owned())
+            .collect();
+        let charts_name: Vec<String> = catalogue
+            .visible()
+            .map(|chart| chart.name.clone())
             .collect();
         let state = state::State::new(STATE_FILE, config.charts.default.clone())
             .map_err(anyhow::Error::msg)?;

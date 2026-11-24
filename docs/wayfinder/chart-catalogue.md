@@ -27,6 +27,8 @@ renderer changes, release run), and CLAUDE.md describing the result.
 
 <!-- one line per closed ticket, appended as each is resolved -->
 
+- [C1 — Catalogue model and settings](#c1--catalogue-model-and-settingschartsjson) — `Catalogue::load` scans, caches real zooms and coverage, guesses layers and roles from names, keeps user choices in `settings/charts.json`, never fails; the menu shows display names.
+
 ## Not yet specified
 
 - Blending imagery over a chart with an opacity slider (deferred by the
@@ -42,7 +44,8 @@ renderer changes, release run), and CLAUDE.md describing the result.
 ## Tickets
 
 ### C1 — Catalogue model and `settings/charts.json`
-- type: task · status: open · blocked by: none
+- type: task · status: closed · blocked by: none
+- Resolution: `src/catalogue.rs`. `Catalogue::load(dir, settings) -> Catalogue` never fails: unreadable or empty `.mbtiles` are skipped with a WARN; a damaged or unknown-version `settings/charts.json` is set aside as `.corrupt` with an ERROR; a missing directory is an empty catalogue. Each `ChartFile` carries file name, path, display name, layer, real zoom levels (from `SELECT DISTINCT zoom_level`, metadata ignored), `Bounds` (metadata `bounds` validated, else the tile extent at the lowest zoom, TMS rows), hidden, order, reviewed. The scan is cached per file keyed by size and mtime in nanoseconds; settings of absent files are kept for when they return. New files: layer from the first known source word (Navionics, OpenSeaMap, NOAA -> Chart; Bing, Google, ArcGIS, Esri -> "<source> satellite", Imagery), else "Imagery" for sat/imagery/aerial/ortho/photo, else the default "Charts" layer; display name from metadata `name` when at least six characters, else the file stem; `reviewed = false`. The MBTiles `type` key is ignored. Startup replaces `state::list_maps` (deleted) with the catalogue: the menu shows visible files by display name in the user's order and the log has one INFO line per file. `files()`/`layers()` are test-only until C2/C6 use them. On the owner's twelve files: three Navionics, one OpenSeaMap, and Bing/Google/ArcGIS as Imagery, as intended; a cached start costs about 6 ms. Nine tests.
 - Question: a pure `catalogue` module that scans the chart directory, reads
   real zoom ranges and coverage (cached by size and mtime), guesses layers
   and roles from names, merges the user's saved settings, and persists them

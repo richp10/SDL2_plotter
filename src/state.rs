@@ -85,23 +85,6 @@ impl State {
     }
 }
 
-/// Liste les fichiers .mbtiles d'un dossier, triés par nom.
-pub fn list_maps(dir: &str) -> Vec<String> {
-    let mut maps: Vec<String> = std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| {
-            p.extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("mbtiles"))
-        })
-        .map(|p| p.to_string_lossy().into_owned())
-        .collect();
-    maps.sort();
-    maps
-}
-
 #[cfg(test)]
 mod tests {
     use super::State;

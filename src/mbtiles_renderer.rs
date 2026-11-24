@@ -6,6 +6,8 @@
 //! application sees.
 
 mod projection;
+#[cfg(test)]
+mod thumbnail;
 mod tile_store;
 mod view;
 

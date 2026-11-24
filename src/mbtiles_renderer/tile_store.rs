@@ -96,7 +96,7 @@ impl Drop for TileLoader {
 
 /// Raw tile bytes, or `None` when the chart has no tile there. MBTiles rows
 /// are TMS (row 0 at the south), so the XYZ row is flipped.
-fn fetch_tile_bytes(
+pub(super) fn fetch_tile_bytes(
     conn: &Connection,
     z: i32,
     x: i64,

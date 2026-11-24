@@ -486,6 +486,10 @@ mod tests {
         ]);
         fx.session.state.follow = true;
         fx.session.locate_chart("Coast_Navionics.mbtiles");
+        // The zoom animates to the file's first level; the file follows.
+        std::thread::sleep(std::time::Duration::from_millis(260));
+        fx.session.renderer.advance_zoom_animation();
+        fx.session.sync_view();
         assert!(!fx.session.state.follow);
         assert_eq!(fx.session.state.zoom, 3, "its first level");
         assert!(fx.session.highlight.is_some());

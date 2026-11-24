@@ -502,6 +502,7 @@ mod tests {
         );
         fx.session.execute_action(AppAction::ZoomIn);
         assert_eq!(fx.session.state.zoom, 4);
+        settle(&mut fx);
         assert!(
             fx.session
                 .renderer
@@ -524,6 +525,7 @@ mod tests {
             fx.session.execute_action(AppAction::ZoomOut);
         }
         assert_eq!(fx.session.state.zoom, 3);
+        settle(&mut fx);
         assert!(fx
             .session
             .renderer
@@ -541,18 +543,20 @@ mod tests {
         fx.session.state.layer = Some("Navionics".into());
         fx.session.state.zoom = 3;
         fx.session.renderer.zoom_to(3);
-        fx.session.sync_view();
+        settle(&mut fx);
         assert!(fx
             .session
             .renderer
             .path()
             .ends_with("Ocean_Navionics.mbtiles"));
         fx.session.execute_action(AppAction::ZoomOut);
+        settle(&mut fx);
         assert!(
             fx.session.renderer.path().ends_with("World.mbtiles"),
             "World is a chart in the default layer, the fallback"
         );
         fx.session.execute_action(AppAction::ZoomIn);
+        settle(&mut fx);
         assert!(fx
             .session
             .renderer
@@ -562,6 +566,13 @@ mod tests {
     }
 
     /// An ocean chart at levels 1-3 and a coast chart at 4-5, one layer.
+    /// Lets the zoom animation finish and syncs, as the loop would.
+    fn settle(fx: &mut super::super::session::test_support::Fixture) {
+        std::thread::sleep(std::time::Duration::from_millis(260));
+        fx.session.renderer.advance_zoom_animation();
+        fx.session.sync_view();
+    }
+
     fn ocean_and_coast() -> super::super::session::test_support::Fixture {
         let mut fx = session_with_charts(&[
             ("Ocean_Navionics.mbtiles", &[1, 2, 3]),
@@ -571,6 +582,30 @@ mod tests {
         fx.session.renderer.zoom_to(3);
         fx.session.sync_view();
         fx
+    }
+
+    /// Regression: the file must follow the zoom being drawn, not the zoom
+    /// reached, or a wheel burst opens a deep file while the drawing is
+    /// still levels above it (the 57 s frame).
+    #[test]
+    fn mid_animation_the_file_follows_the_zoom_being_drawn() {
+        let mut fx = ocean_and_coast();
+        fx.session.execute_action(AppAction::ZoomIn);
+        assert_eq!(fx.session.state.zoom, 4);
+        assert!(
+            fx.session
+                .renderer
+                .path()
+                .ends_with("Ocean_Navionics.mbtiles"),
+            "still drawn at zoom 3: the coast chart (from 4) waits"
+        );
+        settle(&mut fx);
+        assert!(fx
+            .session
+            .renderer
+            .path()
+            .ends_with("Coast_Navionics.mbtiles"));
+        fx.finish();
     }
 
     #[test]
@@ -584,6 +619,7 @@ mod tests {
 
         fx.session.execute_action(AppAction::ZoomIn);
         assert_eq!(fx.session.state.zoom, 4);
+        settle(&mut fx);
         assert!(fx
             .session
             .renderer

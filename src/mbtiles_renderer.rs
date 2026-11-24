@@ -169,11 +169,23 @@ impl MBTilesRenderer {
         )
     }
 
-    fn texture_rect(&self) -> Rect {
+    /// The source image the view needs at the file's level, or `None` when
+    /// it would not fit the texture: the file drawn more than about a level
+    /// above its first level (a lock while zooming far out, or an animation
+    /// that has not caught up). Such a frame draws no tiles from the file
+    /// rather than an image of tens of thousands of pixels each way.
+    fn source_size(&self) -> Option<(u32, u32)> {
         let display_rect = self.render_rect();
         let zoom_scale = 2.0_f64.powf(self.display_zoom - self.source_zoom() as f64);
         let (width, height) =
             source_dimensions(display_rect.width(), display_rect.height(), zoom_scale);
+        (width <= self.render_width && height <= self.render_height).then_some((width, height))
+    }
+
+    fn texture_rect(&self) -> Rect {
+        let Some((width, height)) = self.source_size() else {
+            return self.render_rect();
+        };
         Rect::new(
             (self.render_width - width) as i32 / 2,
             (self.render_height - height) as i32 / 2,
@@ -192,6 +204,9 @@ impl MBTilesRenderer {
     /// Returns true while tiles are still missing or being loaded.
     pub fn prefetch_step(&mut self, budget: usize) -> bool {
         self.store.drain();
+        if self.source_size().is_none() {
+            return false; // nothing of this file is drawn at this zoom
+        }
         let source_zoom = self.source_zoom();
         let n_tiles: i64 = 1i64 << source_zoom;
         let tile_size = TILE_SIZE as f64;
@@ -253,6 +268,11 @@ impl MBTilesRenderer {
     /// The whole zoom level shown or being animated to.
     pub fn zoom(&self) -> i32 {
         self.zoom
+    }
+
+    /// The zoom being drawn now: fractional during the zoom animation.
+    pub fn display_zoom(&self) -> f64 {
+        self.display_zoom
     }
 
     /// The deepest level the open file holds.
@@ -422,6 +442,13 @@ impl MBTilesRenderer {
     }
 
     fn render_view(&mut self, center_x: f64, center_y: f64) -> (RgbaImage, Rect) {
+        if self.source_size().is_none() {
+            let rect = self.render_rect();
+            return (
+                ImageBuffer::from_pixel(rect.width(), rect.height(), MAP_BACKGROUND),
+                rect,
+            );
+        }
         let source_zoom = self.source_zoom();
         let zoom_scale = 2.0_f64.powf(self.display_zoom - source_zoom as f64);
         let rect = self.texture_rect();
@@ -741,6 +768,32 @@ mod tests {
         drop(renderer);
         std::fs::remove_file(chart).unwrap();
         std::fs::remove_file(under).unwrap();
+    }
+
+    /// Regression: a file whose first level is far deeper than the zoom
+    /// being drawn needed a source image 2^levels the screen each way
+    /// (93245x46624 px, a 57 s frame, after a wheel burst onto the Azores).
+    #[test]
+    fn a_file_drawn_far_above_its_first_level_never_needs_more_than_the_texture() {
+        let world = fixture_chart(&[0, 1]);
+        let deep = fixture_chart(&[5]);
+        let mut renderer = renderer_for(&world, 0);
+        renderer.look_at(0.0, 0.0, (0, 0));
+        renderer.zoom_to(5); // animating: still drawn at zoom 0
+        renderer.change_map(deep.to_str().unwrap()).unwrap();
+        let (pixels, rect) = renderer.render_frame();
+        assert!(
+            rect.width() <= renderer.render_width && rect.height() <= renderer.render_height,
+            "source image {}x{} for a {}x{} texture",
+            rect.width(),
+            rect.height(),
+            renderer.render_width,
+            renderer.render_height
+        );
+        assert_eq!(pixels.len(), (rect.width() * rect.height() * 4) as usize);
+        drop(renderer);
+        std::fs::remove_file(world).unwrap();
+        std::fs::remove_file(deep).unwrap();
     }
 
     #[test]

@@ -164,11 +164,14 @@ impl Session {
             .panned_center(0, 0)
             .or(self.state.position)
             .unwrap_or_default();
+        // The zoom being drawn, not the one reached: during the animation
+        // a file deeper than the drawing would be drawn levels above its
+        // first level (a wheel burst onto the Azores cost a 57 s frame).
         self.catalogue.choose(Request {
             layer: self.state.layer.as_deref(),
             lock: self.state.lock.as_deref(),
             centre,
-            zoom: self.state.zoom,
+            zoom: self.renderer.display_zoom().round() as i32,
         })
     }
 

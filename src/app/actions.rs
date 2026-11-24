@@ -713,8 +713,24 @@ mod tests {
         fx
     }
 
-    fn ends(path: &Option<std::path::PathBuf>, name: &str) -> bool {
-        path.as_ref().is_some_and(|p| p.ends_with(name))
+    fn ends(preview: &Option<super::super::session::Preview>, name: &str) -> bool {
+        preview.as_ref().is_some_and(|p| p.path.ends_with(name))
+    }
+
+    #[test]
+    fn zooming_out_past_a_photos_first_level_keeps_the_photo_layer() {
+        let mut fx = island();
+        fx.session.execute_action(AppAction::NextPhoto);
+        fx.session.state.zoom = 0;
+        fx.session.renderer.zoom_to(0);
+        settle(&mut fx);
+        assert_eq!(fx.session.state.layer.as_deref(), Some("Bing satellite"));
+        assert!(!fx.session.renderer.path().ends_with("Isle_BingSat.mbtiles"));
+        fx.session.state.zoom = 3;
+        fx.session.renderer.zoom_to(3);
+        settle(&mut fx);
+        assert!(fx.session.renderer.path().ends_with("Isle_BingSat.mbtiles"));
+        fx.finish();
     }
 
     #[test]

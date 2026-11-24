@@ -267,7 +267,7 @@ impl Session {
             None => sources.first(),
         };
         let (preview, preview_is_photo) = match next {
-            Some(file) => (Some(file.path.clone()), true),
+            Some(file) => (Some(Preview::of(file)), true),
             None => {
                 let (centre, zoom) = self.view_centre_and_zoom();
                 let chart = self.catalogue.choose(Request {
@@ -276,7 +276,7 @@ impl Session {
                     centre,
                     zoom,
                 });
-                (chart.file.map(|f| f.path.clone()), false)
+                (chart.file.map(Preview::of), false)
             }
         };
         Some(PhotoButton {
@@ -327,11 +327,16 @@ impl Session {
     }
 
     fn show_chosen_chart(&mut self) {
-        // A photo layer with nothing here: back to the chart for good, so
-        // the photo never comes back without a tap.
+        // A photo layer with no file over the centre: back to the chart
+        // for good, so the photo never comes back without a tap. Zooming
+        // out past its first level is not leaving it: the chart shows as a
+        // fallback and the photo returns on zooming in.
         let photo_left = self.on_photo_layer() && {
-            let choice = self.chart_choice();
-            choice.fallback_from.is_some() && choice.fallback_from == self.state.layer.as_deref()
+            let (centre, _) = self.view_centre_and_zoom();
+            self.state
+                .layer
+                .as_deref()
+                .is_some_and(|layer| !self.catalogue.covers(layer, centre))
         };
         if photo_left {
             crate::diagnostics::record("INFO", "Photo hors couverture, retour à la carte");
@@ -401,9 +406,27 @@ impl Session {
 /// shown, which source of how many it is (1-based).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PhotoButton {
-    pub preview: Option<PathBuf>,
+    pub preview: Option<Preview>,
     pub preview_is_photo: bool,
+    /// Which source is shown, of how many.
     pub position: Option<(usize, usize)>,
+}
+
+/// The file a thumbnail is cut from, with the levels the catalogue read
+/// from its tiles (so drawing never scans the file for them).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Preview {
+    pub path: PathBuf,
+    pub levels: Vec<i32>,
+}
+
+impl Preview {
+    fn of(file: &ChartFile) -> Self {
+        Preview {
+            path: file.path.clone(),
+            levels: file.zooms.clone(),
+        }
+    }
 }
 
 /// The chart part of the bottom bar.

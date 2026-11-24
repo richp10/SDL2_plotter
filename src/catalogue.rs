@@ -550,6 +550,11 @@ impl Catalogue {
             .collect()
     }
 
+    /// Some visible file of `layer` covers `centre`, at any zoom.
+    pub fn covers(&self, layer: &str, centre: (f64, f64)) -> bool {
+        !self.covering(layer, centre).is_empty()
+    }
+
     /// The visible files of `layer` whose coverage contains `centre`.
     fn covering(&self, layer: &str, centre: (f64, f64)) -> Vec<&ChartFile> {
         self.visible()

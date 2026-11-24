@@ -78,9 +78,14 @@ impl Plotter<'_> {
         }
         if let Some(button) = self.session.photo_button() {
             let (centre, zoom) = self.session.view_centre_and_zoom();
-            let thumbnail = button.preview.as_deref().and_then(|path| {
-                self.thumbnails
-                    .get(path, centre, zoom, super::photo_button::SIZE)
+            let thumbnail = button.preview.as_ref().and_then(|preview| {
+                self.thumbnails.get(
+                    &preview.path,
+                    &preview.levels,
+                    centre,
+                    zoom,
+                    super::photo_button::SIZE,
+                )
             });
             self.photo_button
                 .show(&mut screen.canvas, &button, thumbnail.as_ref());

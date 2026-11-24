@@ -18,17 +18,19 @@ const IMAGES: usize = 32;
 /// Files kept open.
 const FILES: usize = 4;
 
-type TileAt = (PathBuf, i32, i64, i64, u32);
-
-/// One open file and the zoom levels it holds.
-struct Source {
-    conn: Connection,
-    levels: Vec<i32>,
+/// One thumbnail: the file, the tile (level, x, y) and the size.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct TileAt {
+    path: PathBuf,
+    level: i32,
+    x: i64,
+    y: i64,
+    size: u32,
 }
 
 pub struct Thumbnails {
     images: LruCache<TileAt, Option<Arc<RgbaImage>>>,
-    files: LruCache<PathBuf, Option<Source>>,
+    files: LruCache<PathBuf, Option<Connection>>,
 }
 
 impl Thumbnails {
@@ -40,69 +42,79 @@ impl Thumbnails {
     }
 
     /// The tile of `path` containing `centre` (lon, lat), at `zoom` or the
-    /// file's deepest level below it (its first level if it starts deeper),
-    /// scaled to `size` x `size`. `None` if the file cannot be opened or
-    /// has no tile there.
+    /// deepest of `levels` (the file's, ascending, as the catalogue read
+    /// them) below it, or its first level if it starts deeper; scaled to
+    /// `size` x `size`. `None` if the file cannot be opened or has no tile
+    /// there. A miss reads and decodes one tile, the same work the renderer
+    /// does on the main thread for a tile its loader has not delivered yet.
     pub fn get(
         &mut self,
         path: &Path,
+        levels: &[i32],
         centre: (f64, f64),
         zoom: i32,
         size: u32,
     ) -> Option<Arc<RgbaImage>> {
-        if !self.files.contains(path) {
-            let source = open(path);
-            if source.is_none() {
-                crate::diagnostics::record(
-                    "WARN",
-                    format!("Vignette impossible: {}", path.display()),
-                );
-            }
-            self.files.put(path.to_path_buf(), source);
-        }
-        let source = self.files.get(path)?.as_ref()?;
-        let level = source
-            .levels
+        let level = levels
             .iter()
             .rev()
             .find(|&&level| level <= zoom)
-            .or(source.levels.first())
+            .or(levels.first())
             .copied()?;
-        let n = 1i64 << level;
+        let n = 1i64 << level.clamp(0, 30);
         let (wx, wy) = lonlat_to_world(centre.0, centre.1, level as f64);
         let tile = |world: f64| ((world / TILE_SIZE as f64).floor() as i64).clamp(0, n - 1);
-        let (x, y) = (tile(wx), tile(wy));
-        let key = (path.to_path_buf(), level, x, y, size);
+        let key = TileAt {
+            path: path.to_path_buf(),
+            level,
+            x: tile(wx),
+            y: tile(wy),
+            size,
+        };
         if let Some(image) = self.images.get(&key) {
             return image.clone();
         }
-        let image = fetch_tile_bytes(&source.conn, level, x, y)
-            .ok()
-            .flatten()
-            .and_then(|bytes| image::load_from_memory(&bytes).ok())
-            .map(|tile| {
-                Arc::new(imageops::resize(
+        if !self.files.contains(path) {
+            let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .map_err(|error| {
+                    crate::diagnostics::record(
+                        "WARN",
+                        format!("Vignette impossible, {}: {error}", path.display()),
+                    )
+                })
+                .ok();
+            self.files.put(path.to_path_buf(), conn);
+        }
+        let conn = self.files.get(path)?.as_ref()?;
+        // Cached either way, so each failure is logged once per tile.
+        let image = match fetch_tile_bytes(conn, key.level, key.x, key.y) {
+            Ok(Some(bytes)) => match image::load_from_memory(&bytes) {
+                Ok(tile) => Some(Arc::new(imageops::resize(
                     &tile.to_rgba8(),
                     size,
                     size,
                     imageops::FilterType::Triangle,
-                ))
-            });
+                ))),
+                Err(error) => {
+                    crate::diagnostics::record(
+                        "WARN",
+                        format!("Vignette illisible, {}: {error}", path.display()),
+                    );
+                    None
+                }
+            },
+            Ok(None) => None,
+            Err(error) => {
+                crate::diagnostics::record(
+                    "WARN",
+                    format!("Vignette impossible, {}: {error}", path.display()),
+                );
+                None
+            }
+        };
         self.images.put(key, image.clone());
         image
     }
-}
-
-fn open(path: &Path) -> Option<Source> {
-    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
-    let levels = {
-        let mut stmt = conn
-            .prepare("SELECT DISTINCT zoom_level FROM tiles ORDER BY zoom_level")
-            .ok()?;
-        let rows = stmt.query_map([], |row| row.get::<_, i32>(0)).ok()?;
-        rows.flatten().collect()
-    };
-    Some(Source { conn, levels })
 }
 
 #[cfg(test)]
@@ -115,7 +127,9 @@ mod tests {
     fn a_thumbnail_is_the_tile_under_the_centre_scaled_down() {
         let path = fixture_chart_with(&[2], Rgba([10, 200, 30, 255]));
         let mut thumbnails = Thumbnails::new();
-        let image = thumbnails.get(&path, (5.0, 5.0), 2, 72).expect("a tile");
+        let image = thumbnails
+            .get(&path, &[2], (5.0, 5.0), 2, 72)
+            .expect("a tile");
         assert_eq!(image.dimensions(), (72, 72));
         assert_eq!(image.get_pixel(36, 36), &Rgba([10, 200, 30, 255]));
         drop(thumbnails);
@@ -126,8 +140,8 @@ mod tests {
     fn the_same_tile_is_not_cut_twice() {
         let path = fixture_chart(&[2]);
         let mut thumbnails = Thumbnails::new();
-        let first = thumbnails.get(&path, (5.0, 5.0), 2, 72).unwrap();
-        let second = thumbnails.get(&path, (6.0, 6.0), 2, 72).unwrap();
+        let first = thumbnails.get(&path, &[2], (5.0, 5.0), 2, 72).unwrap();
+        let second = thumbnails.get(&path, &[2], (6.0, 6.0), 2, 72).unwrap();
         assert!(Arc::ptr_eq(&first, &second));
         drop(thumbnails);
         std::fs::remove_file(path).unwrap();
@@ -141,13 +155,13 @@ mod tests {
             .execute("DELETE FROM tiles WHERE tile_column != 0", [])
             .unwrap();
         let mut thumbnails = Thumbnails::new();
-        assert!(thumbnails.get(&path, (100.0, 5.0), 2, 72).is_none());
-        assert!(thumbnails.get(&path, (-170.0, 5.0), 2, 72).is_some());
+        assert!(thumbnails.get(&path, &[2], (100.0, 5.0), 2, 72).is_none());
+        assert!(thumbnails.get(&path, &[2], (-170.0, 5.0), 2, 72).is_some());
         let missing = std::env::temp_dir().join(format!(
             "plotter-missing-{}.mbtiles",
             crate::mbtiles_renderer::test_support::unique_name()
         ));
-        assert!(thumbnails.get(&missing, (5.0, 5.0), 2, 72).is_none());
+        assert!(thumbnails.get(&missing, &[2], (5.0, 5.0), 2, 72).is_none());
         drop(thumbnails);
         std::fs::remove_file(path).unwrap();
     }
@@ -156,8 +170,8 @@ mod tests {
     fn a_zoom_past_the_files_levels_uses_its_deepest_level() {
         let path = fixture_chart(&[1, 2]);
         let mut thumbnails = Thumbnails::new();
-        assert!(thumbnails.get(&path, (5.0, 5.0), 9, 72).is_some());
-        assert!(thumbnails.get(&path, (5.0, 5.0), 0, 72).is_some());
+        assert!(thumbnails.get(&path, &[1, 2], (5.0, 5.0), 9, 72).is_some());
+        assert!(thumbnails.get(&path, &[1, 2], (5.0, 5.0), 0, 72).is_some());
         drop(thumbnails);
         std::fs::remove_file(path).unwrap();
     }

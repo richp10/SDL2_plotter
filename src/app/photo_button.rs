@@ -38,6 +38,8 @@ pub(super) struct PhotoButtonView<'ttf> {
     height: u32,
     /// The thumbnail last uploaded, so an unchanged one is not sent again.
     uploaded: Option<(Arc<RgbaImage>, Texture)>,
+    /// An upload failed and was logged; not logged again every frame.
+    upload_failed: bool,
 }
 
 impl<'ttf> PhotoButtonView<'ttf> {
@@ -50,6 +52,7 @@ impl<'ttf> PhotoButtonView<'ttf> {
             font: ttf_context.load_font(&fonts.file, fonts.ui_size)?,
             height,
             uploaded: None,
+            upload_failed: false,
         })
     }
 
@@ -67,9 +70,16 @@ impl<'ttf> PhotoButtonView<'ttf> {
     ) {
         let area = self.area();
         let drawn = thumbnail.is_some_and(|image| {
-            self.upload(canvas, image)
-                .and_then(|texture| canvas.copy(texture, None, Some(area)))
-                .is_ok()
+            let result = self
+                .upload(canvas, image)
+                .and_then(|texture| canvas.copy(texture, None, Some(area)));
+            if let Err(error) = &result {
+                if !self.upload_failed {
+                    crate::diagnostics::record("WARN", format!("Vignette non affichée: {error}"));
+                    self.upload_failed = true;
+                }
+            }
+            result.is_ok()
         });
         if !drawn {
             canvas.set_draw_color(EMPTY);
@@ -134,12 +144,24 @@ impl<'ttf> PhotoButtonView<'ttf> {
                 .texture_creator()
                 .create_texture_static(PixelFormatEnum::RGBA32, image.width(), image.height())
                 .map_err(|e| e.to_string())?;
-            texture
-                .update(None, image.as_raw(), image.width() as usize * 4)
-                .map_err(|e| e.to_string())?;
+            if let Err(error) = texture.update(None, image.as_raw(), image.width() as usize * 4) {
+                // SAFETY: as above; a texture dropped undestroyed leaks.
+                unsafe { texture.destroy() };
+                return Err(error.to_string());
+            }
             self.uploaded = Some((image.clone(), texture));
         }
         Ok(&self.uploaded.as_ref().expect("just uploaded").1)
+    }
+}
+
+impl Drop for PhotoButtonView<'_> {
+    fn drop(&mut self) {
+        if let Some((_, texture)) = self.uploaded.take() {
+            // SAFETY: the view is dropped with the Plotter, before the
+            // window's canvas.
+            unsafe { texture.destroy() };
+        }
     }
 }
 

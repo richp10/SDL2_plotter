@@ -177,28 +177,35 @@ impl Session {
             || self.default_chart.clone(),
             |file| file.path.to_string_lossy().into_owned(),
         );
+        let beneath = choice
+            .beneath
+            .map(|file| file.path.to_string_lossy().into_owned());
         let summary = describe_choice(&choice, &target);
         if summary != self.last_choice {
             crate::diagnostics::record("DEBUG", format!("Carte choisie: {summary}"));
             self.last_choice = summary;
         }
-        if target == self.renderer.path() || self.unavailable.contains(&target) {
-            return;
-        }
-        // Same zoom, same view: the file changes under it, offset included.
-        match self.renderer.change_map(&target) {
-            Ok(()) => {
-                crate::diagnostics::record("INFO", format!("Carte affichée: {target}"));
-                self.state.map = target;
-            }
-            Err(error) => {
-                crate::diagnostics::record(
-                    "ERROR",
-                    format!("Impossible d'ouvrir {target}: {error}"),
-                );
-                self.unavailable.insert(target);
+        if target != self.renderer.path() && !self.unavailable.contains(&target) {
+            // Same zoom, same view: the file changes under it, offset included.
+            match self.renderer.change_map(&target) {
+                Ok(()) => {
+                    crate::diagnostics::record("INFO", format!("Carte affichée: {target}"));
+                    self.state.map = target;
+                }
+                Err(error) => self.mark_unavailable(target, error),
             }
         }
+        let beneath = beneath.filter(|path| !self.unavailable.contains(path));
+        if beneath.as_deref() != self.renderer.beneath_path() {
+            if let Err(error) = self.renderer.set_beneath(beneath.as_deref()) {
+                self.mark_unavailable(beneath.unwrap_or_default(), error);
+            }
+        }
+    }
+
+    fn mark_unavailable(&mut self, path: String, error: rusqlite::Error) {
+        crate::diagnostics::record("ERROR", format!("Impossible d'ouvrir {path}: {error}"));
+        self.unavailable.insert(path);
     }
 
     fn push_view(&mut self) {
@@ -236,6 +243,9 @@ fn describe_choice(choice: &Choice, target: &str) -> String {
     if let Some(layer) = choice.fallback_from {
         line.push_str(&format!(", rien dans la couche {layer} ici"));
     }
+    if let Some(file) = choice.beneath {
+        line.push_str(&format!(", dessous: {}", file.name));
+    }
     if choice.outside_lock {
         line.push_str(", hors de la carte verrouillée");
     }
@@ -257,7 +267,7 @@ pub(in crate::app) mod test_support {
     use crate::boat::BoatState;
     use crate::catalogue::Catalogue;
     use crate::config::RenderingConfig;
-    use crate::mbtiles_renderer::test_support::fixture_chart;
+    use crate::mbtiles_renderer::test_support::{fixture_chart, unique_name};
     use crate::mbtiles_renderer::MBTilesRenderer;
     use crate::{route::Route, state::State, track::Track, waypoints::Waypoints};
     use std::path::PathBuf;
@@ -278,12 +288,7 @@ pub(in crate::app) mod test_support {
     /// named as given in `dir/charts`, catalogued, the first one open and
     /// also the default chart.
     pub(in crate::app) fn session_with_charts(charts: &[(&str, &[i32])]) -> Fixture {
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let dir =
-            std::env::temp_dir().join(format!("plotter-session-{}-{unique}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("plotter-session-{}", unique_name()));
         let chart_dir = dir.join("charts");
         std::fs::create_dir_all(&chart_dir).unwrap();
         for (name, zooms) in charts {

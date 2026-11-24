@@ -21,7 +21,7 @@ pub(super) struct Tile {
 pub(super) type CachedTile = Option<Arc<Tile>>;
 
 /// `(zoom, column, row)` in XYZ order; the TMS flip happens at the SQL.
-pub(super) type TileKey = (i32, i64, i64);
+pub(crate) type TileKey = (i32, i64, i64);
 
 /// Decodes tiles on its own thread with its own read-only connection, so a
 /// frame is never held up by PNG decoding. Dropping it joins the thread.
@@ -372,6 +372,19 @@ pub(crate) mod test_support {
     use image::{Rgba, RgbaImage};
     use rusqlite::Connection;
 
+    /// A name no other test of this run uses: the process id, the clock and
+    /// a counter, because tests run in parallel and two of them can read the
+    /// same clock value (Windows counts in 100 ns steps).
+    pub(crate) fn unique_name() -> String {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let count = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        format!("{}-{nanos}-{count}", std::process::id())
+    }
+
     /// Writes a small raster MBTiles file holding every tile of the given
     /// zoom levels, each a solid-colour 256x256 PNG.
     pub(crate) fn fixture_chart(zooms: &[i32]) -> std::path::PathBuf {
@@ -379,14 +392,7 @@ pub(crate) mod test_support {
     }
 
     pub(crate) fn fixture_chart_with(zooms: &[i32], colour: Rgba<u8>) -> std::path::PathBuf {
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "plotter-fixture-{}-{unique}.mbtiles",
-            std::process::id()
-        ));
+        let path = std::env::temp_dir().join(format!("plotter-fixture-{}.mbtiles", unique_name()));
         let mut png = Vec::new();
         RgbaImage::from_pixel(TILE_SIZE, TILE_SIZE, colour)
             .write_to(

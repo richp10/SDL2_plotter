@@ -27,6 +27,7 @@ renderer changes, release run), and CLAUDE.md describing the result.
 
 <!-- one line per closed ticket, appended as each is resolved -->
 
+- [C3 — Two-file rendering](#c3--two-file-rendering) — the next best file of the layer is drawn beneath, cut and scaled into the chart's gaps and cached; no cost to warm frames.
 - [C2 — The switching rule](#c2--the-switching-rule) — `Catalogue::choose` picks the file per layer, centre and zoom with overscale, more-detail, fallback (never imagery) and zoom limit; the session switches files as you zoom and pan.
 - [C1 — Catalogue model and settings](#c1--catalogue-model-and-settingschartsjson) — `Catalogue::load` scans, caches real zooms and coverage, guesses layers and roles from names, keeps user choices in `settings/charts.json`, never fails; the menu shows display names.
 
@@ -61,7 +62,8 @@ renderer changes, release run), and CLAUDE.md describing the result.
   part), 10 (what to indicate).
 
 ### C3 — Two-file rendering
-- type: task · status: open · blocked by: C2
+- type: task · status: closed · blocked by: C2
+- Resolution: `Choice::beneath` is the next best visible file of the shown layer covering the centre whose first level is at or above the zoom (so an overscaled ocean chart sits under a harbour chart, and a locked file outside its coverage has the best local file under it); never across layers, so imagery and charts never mix. `MBTilesRenderer::set_beneath(Option<&str>)` opens it as a second `TileStore`; `render_tiles` draws, for each tile the chart lacks or has transparent, the square of the file beneath cut from its closest level at or above the chart's level and scaled up with nearest-neighbour, cached per tile key in an LRU of the configured size and cleared on `change_map` (which carries the file beneath over until the session resets it). The session sets it after choosing the file; a file beneath that fails to open is remembered with the others. Not tiled through the loader thread: a gap tile's source is decoded on the main thread, as main tiles already are when a frame needs them. Benchmarks: warm 1600x800 render 3.1-3.3 ms (unchanged); new `bench_render_frame_with_a_file_beneath` on the OpenSeaMap test chart's west edge over the world chart, cold 46-48 ms against 34-36 ms without, warm 3.1 ms. Also fixed a test race the new session tests exposed: fixture names from pid plus clock collided between parallel tests on Windows; `test_support::unique_name()` adds a counter. Two new tests (rule, renderer) and the session zoom test extended.
 - Question: the renderer draws a gap-fill file beneath the active file,
   each with its own `TileStore`, without blocking the loop; benchmarks
   before and after. Decision 7.

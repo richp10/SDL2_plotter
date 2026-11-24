@@ -12,9 +12,12 @@ mod view;
 use std::time::{Duration, Instant};
 
 use image::{imageops, ImageBuffer, Rgba, RgbaImage};
+use lru::LruCache;
 #[cfg(test)]
 use sdl2::rect::Point;
 use sdl2::rect::Rect;
+use std::num::NonZeroUsize;
+use std::sync::Arc;
 
 use crate::config::RenderingConfig;
 pub use projection::project_norm;
@@ -24,12 +27,18 @@ use projection::{
 };
 #[cfg(test)]
 pub(crate) use tile_store::test_support;
-use tile_store::TileStore;
+use tile_store::{TileKey, TileStore};
 pub use view::ChartView;
 
 const ZOOM_ANIMATION_DURATION: Duration = Duration::from_millis(240);
 const ROTATION_MARGIN: u32 = 4;
 const MAP_BACKGROUND: Rgba<u8> = Rgba([245, 245, 245, 255]);
+
+struct Beneath {
+    path: String,
+    store: TileStore,
+    scaled: LruCache<TileKey, Option<Arc<RgbaImage>>>,
+}
 
 pub struct MBTilesRenderer {
     width: u32,
@@ -43,6 +52,10 @@ pub struct MBTilesRenderer {
     rendering_config: RenderingConfig,
     /// The chart file being drawn.
     path: String,
+    /// The less detailed file drawn where `store` has no tile (or a
+    /// transparent one), and its tiles already cut and scaled to the main
+    /// file's grid. See `beneath_tile`.
+    beneath: Option<Beneath>,
     /// What the screen is looking at, as the application states it.
     view: View,
     /// `view` projected to world pixels at the current `display_zoom` and
@@ -88,6 +101,7 @@ impl MBTilesRenderer {
             rotation: 0.0,
             rendering_config: config.clone(),
             path: mbtiles_path.to_string(),
+            beneath: None,
             view: View {
                 lon: 0.0,
                 lat: 0.0,
@@ -255,6 +269,29 @@ impl MBTilesRenderer {
         &self.path
     }
 
+    /// Draws `path` beneath the chart wherever the chart has no tile, or
+    /// nothing beneath with `None`. Opening the same file again is free; a
+    /// file that fails to open leaves nothing beneath.
+    pub fn set_beneath(&mut self, path: Option<&str>) -> rusqlite::Result<()> {
+        if path == self.beneath_path() {
+            return Ok(());
+        }
+        self.beneath = None;
+        if let Some(path) = path {
+            let cache = self.rendering_config.tile_cache_size;
+            self.beneath = Some(Beneath {
+                path: path.to_string(),
+                store: TileStore::open(path, cache)?,
+                scaled: LruCache::new(NonZeroUsize::new(cache.max(1)).unwrap()),
+            });
+        }
+        Ok(())
+    }
+
+    pub fn beneath_path(&self) -> Option<&str> {
+        self.beneath.as_ref().map(|b| b.path.as_str())
+    }
+
     pub fn advance_zoom_animation(&mut self) -> bool {
         let Some((start_zoom, started_at)) = self.zoom_animation else {
             return false;
@@ -300,6 +337,12 @@ impl MBTilesRenderer {
         new_renderer.zoom = self.zoom;
         new_renderer.display_zoom = self.display_zoom;
         new_renderer.zoom_animation = self.zoom_animation;
+        // The file beneath stays until the caller says otherwise; its cut
+        // tiles were scaled for the old file's levels.
+        new_renderer.beneath = self.beneath.take().map(|mut beneath| {
+            beneath.scaled.clear();
+            beneath
+        });
         new_renderer.set_rotation(self.rotation);
         new_renderer.look_at(self.view.lon, self.view.lat, self.view.offset);
 
@@ -421,9 +464,15 @@ impl MBTilesRenderer {
 
                 let wrapped_x = tx.rem_euclid(n_tiles);
 
-                if let Some(tile) = self.store.tile((zoom, wrapped_x, ty)) {
-                    let px = (tx as f64 * tile_size - origin_x).round() as i64;
-                    let py = (ty as f64 * tile_size - origin_y).round() as i64;
+                let px = (tx as f64 * tile_size - origin_x).round() as i64;
+                let py = (ty as f64 * tile_size - origin_y).round() as i64;
+                let tile = self.store.tile((zoom, wrapped_x, ty));
+                if tile.as_ref().is_none_or(|t| !t.opaque) {
+                    if let Some(under) = self.beneath_tile((zoom, wrapped_x, ty)) {
+                        imageops::replace(&mut canvas, under.as_ref(), px, py);
+                    }
+                }
+                if let Some(tile) = tile {
                     if tile.opaque {
                         // Plain copy: no per-pixel alpha arithmetic needed.
                         imageops::replace(&mut canvas, &tile.image, px, py);
@@ -436,6 +485,42 @@ impl MBTilesRenderer {
         }
 
         canvas
+    }
+
+    /// The square of the file beneath that lies under main tile `key`, cut
+    /// from its closest level at or above the main level and scaled up to a
+    /// whole tile. Cached, so each square is cut once.
+    fn beneath_tile(&mut self, key: TileKey) -> Option<Arc<RgbaImage>> {
+        let beneath = self.beneath.as_mut()?;
+        if let Some(scaled) = beneath.scaled.get(&key) {
+            return scaled.clone();
+        }
+        let (zoom, x, y) = key;
+        let level = beneath
+            .store
+            .available_zooms()
+            .iter()
+            .copied()
+            .filter(|&z| z <= zoom)
+            .max();
+        let scaled = level.and_then(|level| {
+            let d = (zoom - level).min(30);
+            let tile = beneath.store.tile((level, x >> d, y >> d))?;
+            let size = TILE_SIZE;
+            let part = (size >> d.min(8)).max(1);
+            let mask = (1i64 << d) - 1;
+            let offset = |v: i64| (((v & mask) * size as i64) >> d) as u32;
+            let piece =
+                imageops::crop_imm(&tile.image, offset(x), offset(y), part, part).to_image();
+            Some(Arc::new(imageops::resize(
+                &piece,
+                size,
+                size,
+                imageops::FilterType::Nearest,
+            )))
+        });
+        beneath.scaled.put(key, scaled.clone());
+        scaled
     }
 }
 
@@ -604,6 +689,60 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
+    /// The colour drawn `dx` pixels right of the centre of the frame.
+    fn pixel_right_of_centre(renderer: &mut MBTilesRenderer, dx: i64) -> [u8; 4] {
+        let (pixels, rect) = renderer.render_frame();
+        let (width, height) = (rect.width() as i64, rect.height() as i64);
+        let index = (((height / 2) * width + width / 2 + dx) * 4) as usize;
+        [
+            pixels[index],
+            pixels[index + 1],
+            pixels[index + 2],
+            pixels[index + 3],
+        ]
+    }
+
+    #[test]
+    fn where_the_chart_has_no_tile_the_file_beneath_fills_in() {
+        // The chart has only column 1 at zoom 2 (90 W..0, west of centre);
+        // the file beneath covers the whole world at zoom 1.
+        let chart = fixture_chart_with(&[2], Rgba([200, 0, 0, 255]));
+        Connection::open(&chart)
+            .unwrap()
+            .execute("DELETE FROM tiles WHERE tile_column != 1", [])
+            .unwrap();
+        let under = fixture_chart_with(&[1], Rgba([0, 0, 200, 255]));
+        let mut renderer = renderer_for(&chart, 2);
+        renderer.look_at(0.0, 0.0, (0, 0));
+        let red = [200, 0, 0, 255];
+        let blue = [0, 0, 200, 255];
+        let background = MAP_BACKGROUND.0;
+
+        assert_eq!(pixel_right_of_centre(&mut renderer, -50), red);
+        assert_eq!(pixel_right_of_centre(&mut renderer, 50), background);
+
+        renderer.set_beneath(Some(under.to_str().unwrap())).unwrap();
+        assert_eq!(renderer.beneath_path(), under.to_str());
+        assert_eq!(
+            pixel_right_of_centre(&mut renderer, -50),
+            red,
+            "the chart wins"
+        );
+        assert_eq!(
+            pixel_right_of_centre(&mut renderer, 50),
+            blue,
+            "the gap is filled"
+        );
+
+        renderer.set_beneath(None).unwrap();
+        assert_eq!(pixel_right_of_centre(&mut renderer, 50), background);
+        assert!(renderer.set_beneath(Some("missing.mbtiles")).is_err());
+        assert_eq!(renderer.beneath_path(), None);
+        drop(renderer);
+        std::fs::remove_file(chart).unwrap();
+        std::fs::remove_file(under).unwrap();
+    }
+
     #[test]
     fn changing_file_keeps_the_zoom_even_past_the_new_files_levels() {
         let first = fixture_chart(&[2, 3, 4]);
@@ -734,6 +873,47 @@ mod tests {
                 renderer.store.cached_count()
             );
         }
+    }
+
+    /// A sparse chart (OpenSeaMap test: tiles only near the Baltic coast)
+    /// with the world chart beneath it filling every gap: the worst case for
+    /// the cut-and-scale fill, cold and warm.
+    #[test]
+    #[ignore]
+    fn bench_render_frame_with_a_file_beneath() {
+        let (chart, beneath) = ("map/OpenSeaMap-test.mbtiles", "assets/OSM.mbtiles");
+        if !std::path::Path::new(chart).exists() || !std::path::Path::new(beneath).exists() {
+            return;
+        }
+        let config = RenderingConfig::default();
+        // On the chart's west edge (11.25 E), so half the screen is gap.
+        let (_, lat) = MBTilesRenderer::new(chart, 8, 1600, 800, &config)
+            .unwrap()
+            .tiles_center()
+            .unwrap();
+        let lon = 11.25;
+        let open = || {
+            let mut renderer = MBTilesRenderer::new(chart, 8, 1600, 800, &config).unwrap();
+            renderer.set_beneath(Some(beneath)).unwrap();
+            renderer.look_at(lon, lat, (0, 0));
+            renderer
+        };
+        let cold = median(
+            (0..5)
+                .map(|_| {
+                    let mut renderer = open();
+                    timed(|| renderer.render_frame()).1
+                })
+                .collect(),
+        );
+        let mut renderer = open();
+        renderer.render_frame();
+        let warm = median(
+            (0..20)
+                .map(|_| timed(|| renderer.render_frame()).1)
+                .collect(),
+        );
+        println!("bench render 1600x800 {chart} z8 over {beneath}: cold {cold:?}, warm {warm:?}");
     }
 
     #[test]

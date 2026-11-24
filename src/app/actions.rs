@@ -446,8 +446,20 @@ mod tests {
             .path()
             .ends_with("Ocean_Navionics.mbtiles"));
 
+        assert_eq!(
+            fx.session.renderer.beneath_path(),
+            None,
+            "Coast starts deeper"
+        );
         fx.session.execute_action(AppAction::ZoomIn);
         assert_eq!(fx.session.state.zoom, 4);
+        assert!(
+            fx.session
+                .renderer
+                .beneath_path()
+                .is_some_and(|p| p.ends_with("Ocean_Navionics.mbtiles")),
+            "the ocean chart fills in beyond the coast chart"
+        );
         assert!(fx
             .session
             .renderer

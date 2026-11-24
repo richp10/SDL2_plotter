@@ -378,6 +378,16 @@ impl Catalogue {
                 .filter_map(|f| f.zooms.last().copied())
                 .chain(file.map(top))
                 .max(),
+            beneath: file.and_then(|shown| {
+                covering
+                    .iter()
+                    .copied()
+                    .filter(|f| {
+                        f.file_name != shown.file_name
+                            && f.zooms.first().is_some_and(|&min| min <= zoom)
+                    })
+                    .min_by(|a, b| detail_order(a, b))
+            }),
         }
     }
 
@@ -450,6 +460,9 @@ pub struct Choice<'a> {
     pub outside_lock: bool,
     /// The deepest zoom worth zooming in to here, if any file fits.
     pub zoom_limit: Option<i32>,
+    /// The next best file of the same layer, drawn beneath `file` so that
+    /// beyond its edge (or outside a locked file) the screen is never blank.
+    pub beneath: Option<&'a ChartFile>,
 }
 
 /// Known sources by a word in the file or chart name: the layer a file joins
@@ -673,13 +686,9 @@ mod tests {
     use rusqlite::Connection;
 
     fn temp_dir(label: &str) -> PathBuf {
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
         let dir = std::env::temp_dir().join(format!(
-            "plotter-catalogue-{label}-{}-{unique}",
-            std::process::id()
+            "plotter-catalogue-{label}-{}",
+            crate::mbtiles_renderer::test_support::unique_name()
         ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -1167,6 +1176,45 @@ mod tests {
             shown(&choice),
             "Azores_Navionics.mbtiles",
             "a stale lock is ignored"
+        );
+    }
+
+    #[test]
+    fn the_next_best_file_of_the_layer_is_drawn_beneath() {
+        let c = charts();
+        let beneath = |request| {
+            c.catalogue
+                .choose(request)
+                .beneath
+                .map(|f| f.file_name.clone())
+        };
+        assert_eq!(
+            beneath(navionics(AZORES, 9)).as_deref(),
+            Some("Atlantic_Navionics.mbtiles")
+        );
+        assert_eq!(
+            beneath(navionics(AZORES, 14)).as_deref(),
+            Some("Atlantic_Navionics.mbtiles"),
+            "overscaled beneath is better than blank"
+        );
+        assert_eq!(
+            beneath(navionics(MID_ATLANTIC, 9)),
+            None,
+            "nothing else here"
+        );
+        let bing = Request {
+            layer: Some("Bing satellite"),
+            ..navionics(AZORES, 9)
+        };
+        assert_eq!(beneath(bing), None, "imagery never mixes with a chart");
+        let locked_outside = Request {
+            lock: Some("Atlantic_Navionics.mbtiles"),
+            ..navionics((0.0, 57.0), 12)
+        };
+        assert_eq!(
+            beneath(locked_outside).as_deref(),
+            Some("GB_Navionics.mbtiles"),
+            "outside a locked file the best file there fills in"
         );
     }
 

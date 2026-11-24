@@ -3,6 +3,7 @@ use chrono::Local;
 use super::confirm_dialog::ConfirmAction;
 use super::session::Session;
 use super::AppAction;
+use crate::catalogue::Role;
 use crate::Mode;
 
 impl Session {
@@ -17,6 +18,34 @@ impl Session {
                     Mode::EditWaypoint => Mode::Measurement,
                     Mode::Measurement => Mode::EditRoute,
                 };
+            }
+            AppAction::ToggleLock => {
+                self.state.lock = match self.state.lock.take() {
+                    Some(_) => None,
+                    None => self.chart_choice().file.map(|f| f.file_name.clone()),
+                };
+            }
+            AppAction::ToggleImagery => {
+                let on_imagery = self
+                    .state
+                    .layer
+                    .as_deref()
+                    .is_some_and(|layer| self.catalogue.role_of(layer) == Role::Imagery);
+                if on_imagery {
+                    // Back to the last chart layer, or the best chart here.
+                    self.choose_layer(self.state.chart_layer.clone());
+                } else {
+                    let imagery = self.state.imagery_layer.clone().or_else(|| {
+                        self.catalogue
+                            .visible()
+                            .find(|f| self.catalogue.role_of(&f.layer) == Role::Imagery)
+                            .map(|f| f.layer.clone())
+                    });
+                    match imagery {
+                        Some(layer) => self.choose_layer(Some(layer)),
+                        None => crate::diagnostics::record("INFO", "Aucune imagerie disponible"),
+                    }
+                }
             }
             AppAction::ToggleFollow => {
                 self.state.follow = !self.state.follow;
@@ -109,8 +138,9 @@ impl Session {
                 // Choosing a file chooses its layer; `sync_view` then shows
                 // the file of that layer that best fits the view.
                 self.anchor_on_visible_center();
-                match self.catalogue.visible().nth(index) {
-                    Some(file) => self.state.layer = Some(file.layer.clone()),
+                let layer = self.catalogue.visible().nth(index).map(|f| f.layer.clone());
+                match layer {
+                    Some(layer) => self.choose_layer(Some(layer)),
                     None => crate::diagnostics::record(
                         "WARN",
                         format!("Carte {index} absente du catalogue"),
@@ -195,6 +225,19 @@ impl Session {
         if !self.following_boat() {
             self.center_map_on_visible_center();
         }
+    }
+
+    /// The navigator chose a layer: automatic switching stays in it, the
+    /// lock is released, and the layer is remembered for its role.
+    fn choose_layer(&mut self, layer: Option<String>) {
+        self.state.lock = None;
+        if let Some(layer) = &layer {
+            match self.catalogue.role_of(layer) {
+                Role::Chart => self.state.chart_layer = Some(layer.clone()),
+                Role::Imagery => self.state.imagery_layer = Some(layer.clone()),
+            }
+        }
+        self.state.layer = layer;
     }
 
     fn zoom_to(&mut self, zoom: i32) {
@@ -509,6 +552,110 @@ mod tests {
             .renderer
             .path()
             .ends_with("Ocean_Navionics.mbtiles"));
+        fx.finish();
+    }
+
+    /// An ocean chart at levels 1-3 and a coast chart at 4-5, one layer.
+    fn ocean_and_coast() -> super::super::session::test_support::Fixture {
+        let mut fx = session_with_charts(&[
+            ("Ocean_Navionics.mbtiles", &[1, 2, 3]),
+            ("Coast_Navionics.mbtiles", &[4, 5]),
+        ]);
+        fx.session.state.zoom = 3;
+        fx.session.renderer.zoom_to(3);
+        fx.session.sync_view();
+        fx
+    }
+
+    #[test]
+    fn a_locked_chart_stays_through_zooming_and_says_what_it_hides() {
+        let mut fx = ocean_and_coast();
+        fx.session.execute_action(AppAction::ToggleLock);
+        assert_eq!(
+            fx.session.state.lock.as_deref(),
+            Some("Ocean_Navionics.mbtiles")
+        );
+
+        fx.session.execute_action(AppAction::ZoomIn);
+        assert_eq!(fx.session.state.zoom, 4);
+        assert!(fx
+            .session
+            .renderer
+            .path()
+            .ends_with("Ocean_Navionics.mbtiles"));
+        let status = fx.session.chart_status();
+        assert!(
+            status.text.starts_with("Navionics: Ocean_Navionics"),
+            "{}",
+            status.text
+        );
+        assert!(status.text.contains("OVERSCALE ×2"), "{}", status.text);
+        assert!(
+            status.text.contains("More detail: Coast_Navionics"),
+            "{}",
+            status.text
+        );
+        assert!(status.text.contains("LOCKED"), "{}", status.text);
+        assert!(!status.imagery);
+
+        fx.session.execute_action(AppAction::ToggleLock);
+        assert_eq!(fx.session.state.lock, None);
+        assert!(fx
+            .session
+            .renderer
+            .path()
+            .ends_with("Coast_Navionics.mbtiles"));
+        let status = fx.session.chart_status();
+        assert!(!status.text.contains("LOCKED") && !status.text.contains("OVERSCALE"));
+        fx.finish();
+    }
+
+    #[test]
+    fn choosing_a_chart_releases_the_lock() {
+        let mut fx = ocean_and_coast();
+        fx.session.execute_action(AppAction::ToggleLock);
+        fx.session.execute_action(AppAction::ChangeChart(0));
+        assert_eq!(fx.session.state.lock, None);
+        fx.finish();
+    }
+
+    #[test]
+    fn imagery_is_switched_on_and_off_by_hand_and_badged_while_shown() {
+        let mut fx = session_with_charts(&[
+            ("Ocean_Navionics.mbtiles", &[1, 2, 3]),
+            ("Isle_BingSat.mbtiles", &[1, 2, 3]),
+        ]);
+        fx.session.state.layer = Some("Navionics".into());
+        fx.session.sync_view();
+        assert!(!fx.session.chart_status().imagery);
+
+        fx.session.execute_action(AppAction::ToggleImagery);
+        assert_eq!(fx.session.state.layer.as_deref(), Some("Bing satellite"));
+        assert!(fx.session.renderer.path().ends_with("Isle_BingSat.mbtiles"));
+        let status = fx.session.chart_status();
+        assert!(status.imagery);
+        assert!(
+            status.text.starts_with("Bing satellite: "),
+            "{}",
+            status.text
+        );
+
+        fx.session.execute_action(AppAction::ToggleImagery);
+        assert_eq!(fx.session.state.layer.as_deref(), Some("Navionics"));
+        assert!(fx
+            .session
+            .renderer
+            .path()
+            .ends_with("Ocean_Navionics.mbtiles"));
+        assert!(!fx.session.chart_status().imagery);
+        fx.finish();
+    }
+
+    #[test]
+    fn without_imagery_files_the_imagery_toggle_changes_nothing() {
+        let mut fx = ocean_and_coast();
+        fx.session.execute_action(AppAction::ToggleImagery);
+        assert_eq!(fx.session.state.layer.as_deref(), Some("Navionics"));
         fx.finish();
     }
 

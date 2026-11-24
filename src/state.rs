@@ -10,6 +10,15 @@ pub struct State {
     /// The chart layer the navigator chose; automatic switching stays in it.
     #[serde(default)]
     pub layer: Option<String>,
+    /// The chart file the navigator locked against automatic switching.
+    #[serde(default)]
+    pub lock: Option<String>,
+    /// The last chart layer chosen, where "Imagery off" returns.
+    #[serde(default)]
+    pub chart_layer: Option<String>,
+    /// The last imagery layer chosen, where "Imagery on" goes.
+    #[serde(default)]
+    pub imagery_layer: Option<String>,
     pub position: Option<(f64, f64)>,
     pub zoom: i32,
     pub map_offset: (i32, i32),
@@ -62,6 +71,9 @@ impl State {
             goto: false,
             map: init_map,
             layer: None,
+            lock: None,
+            chart_layer: None,
+            imagery_layer: None,
             position: None,
             zoom: 8,
             map_offset: (0, 0),

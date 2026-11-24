@@ -401,12 +401,16 @@ pub(crate) mod test_support {
             )
             .unwrap();
 
-        let conn = Connection::open(&path).unwrap();
+        let mut conn = Connection::open(&path).unwrap();
         conn.execute_batch(
             "CREATE TABLE metadata (name TEXT, value TEXT);
              CREATE TABLE tiles (zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_data BLOB);",
         )
         .unwrap();
+        // One transaction: a commit per tile costs a sync each on Windows,
+        // a minute for a zoom-5 fixture.
+        let conn_tx = conn.transaction().unwrap();
+        let conn = &conn_tx;
         for &z in zooms {
             let n = 1i64 << z;
             for x in 0..n {
@@ -416,6 +420,7 @@ pub(crate) mod test_support {
                 }
             }
         }
+        conn_tx.commit().unwrap();
         path
     }
 }

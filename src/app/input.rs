@@ -101,6 +101,8 @@ impl Plotter<'_> {
                 sdl2::keyboard::Keycode::KpPlus => Some(AppAction::ZoomIn),
                 sdl2::keyboard::Keycode::KpMinus => Some(AppAction::ZoomOut),
                 sdl2::keyboard::Keycode::F => Some(AppAction::ToggleFollow),
+                sdl2::keyboard::Keycode::L => Some(AppAction::ToggleLock),
+                sdl2::keyboard::Keycode::I => Some(AppAction::ToggleImagery),
                 sdl2::keyboard::Keycode::Tab => Some(AppAction::CycleMode),
                 sdl2::keyboard::Keycode::P => Some(AppAction::PreviousWaypoint),
                 sdl2::keyboard::Keycode::N => Some(AppAction::NextWaypoint),
@@ -279,6 +281,14 @@ impl Plotter<'_> {
         } else if self.topbar.is_open() {
             self.topbar.close();
             self.dirty = true;
+        } else if self
+            .buttombar
+            .photo_badge_area()
+            .contains_point((x as i32, y as i32))
+            && self.session.chart_status().imagery
+        {
+            // One tap from a photo back to the chart.
+            self.execute_action(AppAction::ToggleImagery);
         } else {
             self.gestures
                 .press(Point::new(x as i32, y as i32), Instant::now());

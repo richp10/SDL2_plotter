@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use super::confirm_dialog::Confirmation;
 use crate::ais::AisTarget;
 use crate::boat::BoatState;
-use crate::catalogue::{Catalogue, Choice, Request};
+use crate::catalogue::{Catalogue, Choice, Request, Role};
 use crate::mbtiles_renderer::MBTilesRenderer;
 use crate::mesure::Mesure;
 use crate::route::Route;
@@ -89,6 +89,12 @@ impl Session {
                 .visible()
                 .find(|f| f.path.to_string_lossy() == session.state.map)
                 .map(|f| f.layer.clone());
+            if let Some(layer) = session.state.layer.clone() {
+                match session.catalogue.role_of(&layer) {
+                    Role::Chart => session.state.chart_layer = Some(layer),
+                    Role::Imagery => session.state.imagery_layer = Some(layer),
+                }
+            }
         }
         session.state.zoom = session.renderer.zoom();
         // The renderer knows where it is looking before the first event or frame.
@@ -157,10 +163,42 @@ impl Session {
             .unwrap_or_default();
         self.catalogue.choose(Request {
             layer: self.state.layer.as_deref(),
-            lock: None,
+            lock: self.state.lock.as_deref(),
             centre,
             zoom: self.state.zoom,
         })
+    }
+
+    /// What the bottom bar says about the chart shown, and whether it is a
+    /// photo (the badge shows, in the stream too).
+    pub fn chart_status(&self) -> ChartStatus {
+        let choice = self.chart_choice();
+        let mut text = match choice.file {
+            Some(file) => format!("{}: {}", file.layer, file.name),
+            None => "Overview chart".to_string(),
+        };
+        if let Some(levels) = choice.overscale {
+            text.push_str(&format!(" · OVERSCALE ×{}", 1u32 << levels.clamp(0, 20)));
+        }
+        if let (Some(from), Some(file)) = (choice.fallback_from, choice.file) {
+            text.push_str(&format!(" · No {from} here, showing {}", file.layer));
+        }
+        if let Some(file) = choice.more_detail {
+            text.push_str(&format!(" · More detail: {}", file.name));
+        }
+        if self.state.lock.is_some() && choice.file.is_some() {
+            text.push_str(if choice.outside_lock {
+                " · LOCKED · Outside locked chart"
+            } else {
+                " · LOCKED"
+            });
+        }
+        ChartStatus {
+            text,
+            imagery: choice
+                .file
+                .is_some_and(|f| self.catalogue.role_of(&f.layer) == Role::Imagery),
+        }
     }
 
     /// The deepest zoom worth zooming in to at the view centre.
@@ -229,6 +267,14 @@ impl Session {
         self.renderer.set_rotation(rotation);
         self.renderer.look_at(lon, lat, self.state.map_offset);
     }
+}
+
+/// The chart part of the bottom bar.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChartStatus {
+    pub text: String,
+    /// The file shown is imagery, not a chart.
+    pub imagery: bool,
 }
 
 /// One line for the log: the file and every indication that goes with it.

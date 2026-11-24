@@ -27,6 +27,7 @@ renderer changes, release run), and CLAUDE.md describing the result.
 
 <!-- one line per closed ticket, appended as each is resolved -->
 
+- [C4 — Lock, badge and indicators](#c4--lock-imagery-badge-and-indicators-on-screen) — L locks, I toggles imagery, the bottom bar names layer and file with overscale, fallback, more detail and lock, and a red photo badge (in the stream too) taps back to the chart.
 - [C3 — Two-file rendering](#c3--two-file-rendering) — the next best file of the layer is drawn beneath, cut and scaled into the chart's gaps and cached; no cost to warm frames.
 - [C2 — The switching rule](#c2--the-switching-rule) — `Catalogue::choose` picks the file per layer, centre and zoom with overscale, more-detail, fallback (never imagery) and zoom limit; the session switches files as you zoom and pan.
 - [C1 — Catalogue model and settings](#c1--catalogue-model-and-settingschartsjson) — `Catalogue::load` scans, caches real zooms and coverage, guesses layers and roles from names, keeps user choices in `settings/charts.json`, never fails; the menu shows display names.
@@ -69,7 +70,8 @@ renderer changes, release run), and CLAUDE.md describing the result.
   before and after. Decision 7.
 
 ### C4 — Lock, imagery badge and indicators on screen
-- type: task · status: open · blocked by: C2, C3
+- type: task · status: closed · blocked by: C2, C3
+- Resolution: `state.lock`, `chart_layer`, `imagery_layer` (serde defaults). `AppAction::ToggleLock` (key L) locks the file shown or releases; `AppAction::ToggleImagery` (key I) decides by the chosen layer's role, not what shows (a Bing layer falling back to a chart still counts as imagery chosen), going to the last chart layer (or none: the best chart) or the last imagery layer (or the first one present; none present: logged, nothing changes). Every layer choice goes through `Session::choose_layer`: lock released, layer remembered by role. `Session::chart_status() -> ChartStatus { text, imagery }`: "Layer: file name", then " · OVERSCALE ×2^n", " · No X here, showing Y", " · More detail: name", " · LOCKED" and " · Outside locked chart"; "Overview chart" when the default chart shows. UI text English like the rest of the bar. `Buttombar::show` gained a centre message; `show_photo_badge` draws "PHOTO - not a chart (tap for chart)" top centre in red before the stream capture (confirmed in a frame taken from the stream over São Miguel); a tap inside `photo_badge_area` while imagery shows is `ToggleImagery`. Four session tests. Also: the fixture chart now writes its tiles in one transaction; a zoom-5 fixture took a minute (a commit per tile), and the whole suite drops from about 50 s to 9 s.
 - Question: lock persisted in `state.json`, the photo badge (in the stream
   too), and the bottom-bar indicators wired to C2's output. Decisions 8–10.
 

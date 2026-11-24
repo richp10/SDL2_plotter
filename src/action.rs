@@ -9,6 +9,10 @@ pub enum AppAction {
     SetMode(Mode),
     CycleMode,
     ToggleFollow,
+    /// Freeze the chart file shown against automatic switching, or release.
+    ToggleLock,
+    /// Switch between the chosen chart layer and the last imagery layer.
+    ToggleImagery,
     FollowOn,
     FollowOff,
     ToggleGoto,
@@ -42,6 +46,8 @@ impl AppAction {
             Self::SetMode(_) => "SetMode",
             Self::CycleMode => "CycleMode",
             Self::ToggleFollow => "ToggleFollow",
+            Self::ToggleLock => "ToggleLock",
+            Self::ToggleImagery => "ToggleImagery",
             Self::FollowOn => "On",
             Self::FollowOff => "Off",
             Self::ToggleGoto => "ToggleGoto",

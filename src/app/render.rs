@@ -52,7 +52,11 @@ impl Plotter<'_> {
         screen.paint(&draws).map_err(anyhow::Error::msg)?;
 
         screen.night_layer(0).map_err(anyhow::Error::msg)?;
-        self.display_buttombar(screen);
+        let chart = self.session.chart_status();
+        self.display_buttombar(screen, &chart.text);
+        if chart.imagery {
+            self.buttombar.show_photo_badge(&mut screen.canvas);
+        }
         if let Some(streamer) = &self.streamer {
             streamer
                 .capture(&screen.canvas)
@@ -78,12 +82,12 @@ impl Plotter<'_> {
         }
     }
 
-    pub(super) fn display_buttombar(&mut self, screen: &mut Screen<'_>) {
+    pub(super) fn display_buttombar(&mut self, screen: &mut Screen<'_>, chart: &str) {
         if let Some(pending) = &self.pending_waypoint {
             let message_left = format!("Nom du waypoint : {}", pending.name);
             let message_right = "Entrée : valider | Échap : annuler";
             self.buttombar
-                .show(&mut screen.canvas, &message_left, message_right);
+                .show(&mut screen.canvas, &message_left, "", message_right);
             return;
         }
 
@@ -119,6 +123,6 @@ impl Plotter<'_> {
             " / North Up"
         };
         self.buttombar
-            .show(&mut screen.canvas, &message_left, &message_right);
+            .show(&mut screen.canvas, &message_left, chart, &message_right);
     }
 }

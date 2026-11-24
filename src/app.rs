@@ -16,6 +16,7 @@ mod chart_manager;
 mod confirm_dialog;
 mod gesture;
 mod input;
+mod photo_button;
 mod render;
 mod session;
 mod tools;
@@ -73,6 +74,9 @@ pub(crate) struct Plotter<'ttf> {
     buttombar: buttombar::Buttombar<'ttf>,
     confirm_dialog: confirm_dialog::ConfirmDialog<'ttf>,
     chart_manager: chart_manager::ChartManager<'ttf>,
+    /// The photo button and the thumbnails it shows.
+    photo_button: photo_button::PhotoButtonView<'ttf>,
+    thumbnails: mbtiles_renderer::Thumbnails,
     pending_waypoint: Option<PendingWaypoint>,
     text_input: sdl2::keyboard::TextInputUtil,
     mouse: Mouse,
@@ -129,6 +133,8 @@ impl<'ttf> Plotter<'ttf> {
         let chart_manager =
             chart_manager::ChartManager::new(ttf_context, width, height, &config.fonts)
                 .map_err(anyhow::Error::msg)?;
+        let photo_button = photo_button::PhotoButtonView::new(ttf_context, height, &config.fonts)
+            .map_err(anyhow::Error::msg)?;
         let route = route::Route::new();
         let track = track::Track::with_checkpoint_interval(
             Path::new(DEFAULT_TRACK_PATH),
@@ -165,6 +171,8 @@ impl<'ttf> Plotter<'ttf> {
             buttombar,
             confirm_dialog,
             chart_manager,
+            photo_button,
+            thumbnails: mbtiles_renderer::Thumbnails::new(),
             pending_waypoint: None,
             text_input,
             mouse: Mouse::Hand,

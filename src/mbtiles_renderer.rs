@@ -6,7 +6,6 @@
 //! application sees.
 
 mod projection;
-#[cfg(test)]
 mod thumbnail;
 mod tile_store;
 mod view;
@@ -27,6 +26,7 @@ use projection::{
     lonlat_to_world, rotated_bounds, screen_to_world_delta, smooth_zoom_progress,
     source_dimensions, source_zoom_for, world_to_lonlat, TILE_SIZE,
 };
+pub use thumbnail::Thumbnails;
 #[cfg(test)]
 pub(crate) use tile_store::test_support;
 use tile_store::{TileKey, TileStore};

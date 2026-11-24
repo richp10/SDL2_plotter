@@ -1,6 +1,10 @@
 use sdl2::render::Texture;
 
 use super::Plotter;
+
+/// The night overlay's opacity, over the chart and the photo button alike.
+/// Night mode is not built yet: nothing is dimmed.
+pub(super) const NIGHT_OPACITY: u8 = 0;
 use crate::screen::Screen;
 use crate::Mode;
 
@@ -59,7 +63,9 @@ impl Plotter<'_> {
         let draws = crate::overlay::plan(&self.session.renderer.view(), &shapes);
         screen.paint(&draws).map_err(anyhow::Error::msg)?;
 
-        screen.night_layer(0).map_err(anyhow::Error::msg)?;
+        screen
+            .night_layer(NIGHT_OPACITY)
+            .map_err(anyhow::Error::msg)?;
         let chart = self.session.chart_status();
         self.display_buttombar(screen, &chart.text);
         if chart.imagery {
@@ -68,6 +74,18 @@ impl Plotter<'_> {
         if let Some(streamer) = &self.streamer {
             streamer
                 .capture(&screen.canvas)
+                .map_err(anyhow::Error::msg)?;
+        }
+        if let Some(button) = self.session.photo_button() {
+            let (centre, zoom) = self.session.view_centre_and_zoom();
+            let thumbnail = button.preview.as_deref().and_then(|path| {
+                self.thumbnails
+                    .get(path, centre, zoom, super::photo_button::SIZE)
+            });
+            self.photo_button
+                .show(&mut screen.canvas, &button, thumbnail.as_ref());
+            screen
+                .night_rect(self.photo_button.area(), NIGHT_OPACITY)
                 .map_err(anyhow::Error::msg)?;
         }
         self.topbar.show(&mut screen.canvas);

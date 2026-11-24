@@ -448,6 +448,16 @@ impl<'ttf> Screen<'ttf> {
         Ok(())
     }
 
+    /// The night overlay over one area only: chrome drawn after the
+    /// chart's overlay that must dim the same.
+    pub fn night_rect(&mut self, area: Rect, opacity: u8) -> Result<(), String> {
+        self.canvas.set_blend_mode(BlendMode::Blend);
+        let [red, green, blue, _] = self.appearance.night_overlay_color;
+        self.canvas
+            .set_draw_color(Color::RGBA(red, green, blue, opacity));
+        self.canvas.fill_rect(area)
+    }
+
     fn show_text(&mut self, texte: &str, x: i32, y: i32) -> Result<(), String> {
         let texture_creator = self.canvas.texture_creator();
         let font = &self.font;

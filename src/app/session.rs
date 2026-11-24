@@ -175,7 +175,7 @@ impl Session {
     /// reached: during the animation a file deeper than the drawing would be
     /// drawn levels above its first level (a wheel burst onto the Azores
     /// cost a 57 s frame).
-    fn view_centre_and_zoom(&self) -> ((f64, f64), i32) {
+    pub(super) fn view_centre_and_zoom(&self) -> ((f64, f64), i32) {
         let centre = self
             .renderer
             .view()
@@ -234,7 +234,6 @@ impl Session {
 
     /// The photo button, while a photo source is available here or a photo
     /// is shown: what a tap goes to, and which source is on.
-    #[cfg(test)]
     pub fn photo_button(&self) -> Option<PhotoButton> {
         let sources = self.photo_sources();
         let showing = self.showing_photo();
@@ -380,7 +379,6 @@ impl Session {
 /// The photo button: the file whose tile previews where a tap goes (the
 /// next photo source, or the chart after the last), and while a photo is
 /// shown, which source of how many it is (1-based).
-#[cfg(test)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct PhotoButton {
     pub preview: Option<PathBuf>,

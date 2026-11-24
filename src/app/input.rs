@@ -377,6 +377,13 @@ impl Plotter<'_> {
             self.topbar.close();
             self.dirty = true;
         } else if self
+            .photo_button
+            .area()
+            .contains_point((x as i32, y as i32))
+            && self.session.photo_button().is_some()
+        {
+            self.execute_action(AppAction::NextPhoto);
+        } else if self
             .buttombar
             .photo_badge_area()
             .contains_point((x as i32, y as i32))

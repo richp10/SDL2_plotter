@@ -7,7 +7,7 @@
 use sdl2::event::Event;
 use sdl2::keyboard::Mod;
 use sdl2::rect::Point;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use super::chart_manager::{kind_tap, Cell, ChartEdit, Hit, KindTap};
 use super::gesture::Gesture;
@@ -15,6 +15,10 @@ use super::tools::{ClickRequest, Target};
 use super::{AppAction, Mouse, PendingWaypoint, Plotter};
 use crate::screen::Screen;
 use crate::Mode;
+
+/// How often a chart drag redraws the chart under the finger: often
+/// enough that what it uncovers fills in, rarely enough to stay smooth.
+const DRAG_REDRAW_INTERVAL: Duration = Duration::from_millis(100);
 
 impl Plotter<'_> {
     pub(super) fn handle_pending_waypoint_event(&mut self, event: &Event) {
@@ -220,7 +224,7 @@ impl Plotter<'_> {
         &mut self,
         event: Event,
         screen: &mut Screen<'_>,
-        texture: &sdl2::render::Texture,
+        texture: &mut sdl2::render::Texture,
     ) -> Result<(), String> {
         if let Event::Quit { .. } = event {
             // Falls through to the normal handling below.
@@ -333,7 +337,7 @@ impl Plotter<'_> {
         &mut self,
         event: &Event,
         screen: &mut Screen<'_>,
-        texture: &sdl2::render::Texture,
+        texture: &mut sdl2::render::Texture,
     ) -> Result<(), String> {
         match event {
             Event::MouseButtonDown {
@@ -411,7 +415,8 @@ impl Plotter<'_> {
             Some(Gesture::DragEnd { origin, at }) => {
                 match self.grab.take() {
                     Some(Target::Chart) => {
-                        self.execute_action(AppAction::Pan(at.x - origin.x, at.y - origin.y));
+                        self.session
+                            .end_chart_drag((at.x - origin.x, at.y - origin.y));
                     }
                     Some(target) => self.session.drag_end(target),
                     None => {}
@@ -428,7 +433,7 @@ impl Plotter<'_> {
         x: u32,
         y: u32,
         screen: &mut Screen<'_>,
-        texture: &sdl2::render::Texture,
+        texture: &mut sdl2::render::Texture,
     ) -> Result<(), String> {
         if self.topbar.motion(x, y) {
             self.dirty = true;
@@ -442,6 +447,8 @@ impl Plotter<'_> {
             Some(Gesture::DragStart { origin, at }) => {
                 // The grab is decided once, at the press, and then locked.
                 self.grab = Some(self.session.target_at(origin));
+                self.drag_redrawn = Instant::now();
+                self.session.start_chart_drag();
                 self.drag(origin, at, screen, texture)
             }
             Some(Gesture::DragMove { origin, at }) => self.drag(origin, at, screen, texture),
@@ -463,15 +470,25 @@ impl Plotter<'_> {
         origin: Point,
         at: Point,
         screen: &mut Screen<'_>,
-        texture: &sdl2::render::Texture,
+        texture: &mut sdl2::render::Texture,
     ) -> Result<(), String> {
         match self.grab {
             Some(Target::Chart) => {
-                // The chart is dragged as a texture for immediacy; the pan
-                // becomes an action when the button is released.
+                // The chart is dragged as a texture for immediacy. Every
+                // DRAG_REDRAW_INTERVAL the drag so far becomes a pan and the
+                // texture is redrawn there from loaded tiles, so what the
+                // drag uncovers fills in before the release.
+                let total = (at.x - origin.x, at.y - origin.y);
+                if self.drag_redrawn.elapsed() >= DRAG_REDRAW_INTERVAL
+                    && self.session.chart_drag_shift(total) != (0, 0)
+                {
+                    self.session.drag_chart(total);
+                    self.redraw_chart_texture(texture)?;
+                    self.drag_redrawn = Instant::now();
+                }
                 screen.drag_map(
                     texture,
-                    (at.x - origin.x, at.y - origin.y),
+                    self.session.chart_drag_shift(total),
                     self.session.renderer.placement(),
                 )?;
                 self.mouse = Mouse::Hand;

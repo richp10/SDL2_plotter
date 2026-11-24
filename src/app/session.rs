@@ -51,6 +51,8 @@ pub(crate) struct Session {
     pub confirmation: Confirmation,
     /// Where GPX exports are written.
     pub export_dir: PathBuf,
+    /// How much of the chart drag under way has been applied as a pan.
+    pub(super) chart_drag: (i32, i32),
 }
 
 impl Session {
@@ -68,6 +70,7 @@ impl Session {
         export_dir: PathBuf,
     ) -> Self {
         let mut session = Session {
+            chart_drag: (0, 0),
             renderer,
             state,
             mode: Mode::default(),

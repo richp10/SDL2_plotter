@@ -9,6 +9,19 @@ use crate::screen::Screen;
 use crate::Mode;
 
 impl Plotter<'_> {
+    /// Mid-drag: the chart texture redrawn at the view from tiles already
+    /// loaded, nothing else. The full frame follows the release.
+    pub(super) fn redraw_chart_texture(&mut self, texture: &mut Texture) -> Result<(), String> {
+        let (pixels, texture_rect) = self.session.renderer.render_draft();
+        texture
+            .update(
+                Some(texture_rect),
+                &pixels,
+                (texture_rect.width() * 4) as usize,
+            )
+            .map_err(|error| error.to_string())
+    }
+
     pub(super) fn display(
         &mut self,
         screen: &mut Screen<'_>,

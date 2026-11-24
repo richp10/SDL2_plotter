@@ -351,6 +351,16 @@ impl TileStore {
         tile
     }
 
+    /// The tile if it is already decoded, else asked of the loader and
+    /// `None`: nothing is read or decoded on this thread.
+    pub(super) fn tile_if_loaded(&mut self, key: TileKey) -> Option<CachedTile> {
+        if let Some(cached) = self.cache.get(&key) {
+            return Some(cached.clone());
+        }
+        self.loader.request(key);
+        None
+    }
+
     /// True when the tile is cached or already on its way from the loader.
     pub(super) fn is_known(&self, key: &TileKey) -> bool {
         self.cache.contains(key) || self.loader.is_pending(key)

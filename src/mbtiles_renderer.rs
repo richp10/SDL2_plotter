@@ -77,6 +77,8 @@ pub struct MBTilesRenderer {
     /// The other files drawn where the chart has no tile (or a transparent
     /// one), best first. See `fill_stack`.
     fills: Vec<Fill>,
+    /// Drawing a draft (`render_draft`): only tiles already loaded.
+    draft: bool,
     /// What the screen is looking at, as the application states it.
     view: View,
     /// `view` projected to world pixels at the current `display_zoom` and
@@ -124,6 +126,7 @@ impl MBTilesRenderer {
             path: mbtiles_path.to_string(),
             own_fill: scaled_cache(config.tile_cache_size),
             fills: Vec::new(),
+            draft: false,
             view: View {
                 lon: 0.0,
                 lat: 0.0,
@@ -433,6 +436,17 @@ impl MBTilesRenderer {
 
     /// Renders the current view (see `look_at`) into RGBA pixels and returns
     /// them with the texture rectangle they fill.
+    /// A frame for the middle of a drag: like `render_frame`, but a chart
+    /// tile not loaded yet is asked of the loader and treated as missing
+    /// (so filled, hatched, from what is at hand) instead of being decoded
+    /// here. The frame drawn after the drag is complete again.
+    pub fn render_draft(&mut self) -> (Vec<u8>, Rect) {
+        self.draft = true;
+        let frame = self.render_frame();
+        self.draft = false;
+        frame
+    }
+
     pub fn render_frame(&mut self) -> (Vec<u8>, Rect) {
         let (center_x, center_y) = self.center_world;
         let (image, rect) = self.render_view(center_x, center_y);
@@ -524,7 +538,11 @@ impl MBTilesRenderer {
                 let px = (tx as f64 * tile_size - origin_x).round() as i64;
                 let py = (ty as f64 * tile_size - origin_y).round() as i64;
                 let key = (zoom, wrapped_x, ty);
-                let tile = self.store.tile(key);
+                let tile = if self.draft {
+                    self.store.tile_if_loaded(key).flatten()
+                } else {
+                    self.store.tile(key)
+                };
                 if tile.as_ref().is_none_or(|t| !t.opaque) {
                     // Bottom of the stack first: the one opaque square, if
                     // any, then whatever lets it show through.
@@ -889,6 +907,36 @@ mod tests {
         for path in [chart, first, world] {
             std::fs::remove_file(path).unwrap();
         }
+    }
+
+    #[test]
+    fn a_draft_frame_draws_only_tiles_already_loaded_and_asks_for_the_rest() {
+        let red = Rgba([200, 0, 0, 255]);
+        let chart = fixture_chart_with(&[2], red);
+        let mut renderer = renderer_for(&chart, 2);
+        renderer.look_at(0.0, 0.0, (0, 0));
+        let centre = |renderer: &mut MBTilesRenderer| {
+            let (pixels, rect) = renderer.render_draft();
+            let (width, height) = (rect.width() as usize, rect.height() as usize);
+            let i = ((height / 2) * width + width / 2) * 4;
+            [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
+        };
+        assert_eq!(
+            centre(&mut renderer),
+            MAP_BACKGROUND.0,
+            "nothing decoded on this thread"
+        );
+        let started = Instant::now();
+        while centre(&mut renderer) != red.0 {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "the loader never delivered"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+            renderer.prefetch_step(0);
+        }
+        drop(renderer);
+        std::fs::remove_file(chart).unwrap();
     }
 
     #[test]

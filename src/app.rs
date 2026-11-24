@@ -57,6 +57,8 @@ pub(crate) struct Plotter<'ttf> {
     gestures: GestureRecognizer,
     /// What a drag in progress grabbed, decided once at its start.
     grab: Option<Target>,
+    /// When the chart was last redrawn during the drag under way.
+    drag_redrawn: Instant,
     topbar: topbar::Topbar<'ttf>,
     buttombar: buttombar::Buttombar<'ttf>,
     confirm_dialog: confirm_dialog::ConfirmDialog<'ttf>,
@@ -153,6 +155,7 @@ impl<'ttf> Plotter<'ttf> {
             dirty: true,
             gestures: GestureRecognizer::new(LONG_CLICK, MOVE_TOLERANCE),
             grab: None,
+            drag_redrawn: Instant::now(),
             topbar,
             buttombar,
             confirm_dialog,

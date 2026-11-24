@@ -359,6 +359,65 @@ mod tests {
     }
 
     #[test]
+    fn a_chart_drag_applied_in_steps_ends_where_one_pan_would() {
+        // Not following; following; following course up (the boat turned).
+        for (follow, course_up) in [(false, false), (true, false), (true, true)] {
+            let run = |steps: &[(i32, i32)]| {
+                let mut fx = session(&[2]);
+                fx.session.state.follow = follow;
+                fx.session.state.course_up = course_up;
+                fx.session.state.position = Some((10.0, 20.0));
+                fx.session.boat = crate::boat::BoatState {
+                    longitude: 10.0,
+                    latitude: 20.0,
+                    course_over_ground: 0.7,
+                    ..valid_boat()
+                };
+                fx.session.sync_view();
+                for &total in steps {
+                    fx.session.drag_chart(total);
+                }
+                fx.session.end_chart_drag(*steps.last().unwrap());
+                let landed = (visible_centre(&fx.session), fx.session.state.map_offset);
+                fx.finish();
+                landed
+            };
+            let (stepped, stepped_offset) = run(&[(40, -10), (90, 5), (150, 30)]);
+            let (once, once_offset) = run(&[(150, 30)]);
+            assert!(
+                (stepped.0 - once.0).abs() < 1e-6 && (stepped.1 - once.1).abs() < 1e-6,
+                "follow {follow}, course up {course_up}: {stepped:?} vs {once:?}"
+            );
+            assert_eq!(stepped_offset, once_offset);
+        }
+    }
+
+    #[test]
+    fn the_dragged_texture_shows_only_the_part_of_the_drag_not_yet_applied() {
+        let mut fx = session(&[2]);
+        fx.session.state.follow = false;
+        fx.session.state.position = Some((0.0, 0.0));
+        fx.session.sync_view();
+        assert_eq!(fx.session.chart_drag_shift((25, 5)), (25, 5));
+        fx.session.drag_chart((40, -10));
+        assert_eq!(fx.session.chart_drag_shift((90, 5)), (50, 15));
+        fx.session.end_chart_drag((90, 5));
+        assert_eq!(
+            fx.session.chart_drag_shift((7, 7)),
+            (7, 7),
+            "the next drag starts afresh"
+        );
+        fx.session.drag_chart((30, 0));
+        fx.session.start_chart_drag();
+        assert_eq!(
+            fx.session.chart_drag_shift((4, 4)),
+            (4, 4),
+            "a drag whose release was lost leaves nothing behind"
+        );
+        fx.finish();
+    }
+
+    #[test]
     fn panning_while_not_following_moves_the_saved_position() {
         let mut fx = session(&[2]);
         fx.session.state.follow = false;

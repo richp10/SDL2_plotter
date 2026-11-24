@@ -522,7 +522,6 @@ impl Catalogue {
     /// `MAX_PHOTO_OVERSCALE` levels past its deepest. The layer named
     /// `preferred` first, then the others in the order their first visible
     /// file comes in the catalogue.
-    #[cfg(test)]
     pub fn photo_sources(
         &self,
         centre: (f64, f64),
@@ -639,7 +638,6 @@ const SOURCES: [(&str, &str, Role); 7] = [
 
 /// How many levels past its deepest a photo is still offered: beyond that it
 /// is too blurred to be worth a tap.
-#[cfg(test)]
 pub const MAX_PHOTO_OVERSCALE: i32 = 2;
 
 /// Words that mark imagery from an unknown source.

@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use super::confirm_dialog::Confirmation;
 use crate::ais::AisTarget;
 use crate::boat::BoatState;
-use crate::catalogue::{Catalogue, Choice, Request, Role};
+use crate::catalogue::{Catalogue, ChartFile, Choice, Request, Role};
 use crate::mbtiles_renderer::MBTilesRenderer;
 use crate::mesure::Mesure;
 use crate::route::Route;
@@ -43,6 +43,9 @@ pub(crate) struct Session {
     unavailable: HashSet<String>,
     /// The last choice, as logged, so a change is logged once.
     last_choice: String,
+    /// The photo layer the current round of photos started from: their
+    /// order stays put while `NextPhoto` steps through them.
+    pub(super) photo_round: Option<String>,
     /// Coverage outlined on the chart by the manager's "Where".
     pub highlight: Option<crate::catalogue::Bounds>,
     pub confirmation: Confirmation,
@@ -80,6 +83,7 @@ impl Session {
             default_chart,
             unavailable: HashSet::new(),
             last_choice: String::new(),
+            photo_round: None,
             highlight: None,
             confirmation: Confirmation::default(),
             export_dir,
@@ -158,20 +162,108 @@ impl Session {
 
     /// What `Catalogue::choose` says about the current view.
     pub fn chart_choice(&self) -> Choice<'_> {
+        let (centre, zoom) = self.view_centre_and_zoom();
+        self.catalogue.choose(Request {
+            layer: self.state.layer.as_deref(),
+            lock: self.state.lock.as_deref(),
+            centre,
+            zoom,
+        })
+    }
+
+    /// The centre of the screen and the zoom being drawn, not the one
+    /// reached: during the animation a file deeper than the drawing would be
+    /// drawn levels above its first level (a wheel burst onto the Azores
+    /// cost a 57 s frame).
+    fn view_centre_and_zoom(&self) -> ((f64, f64), i32) {
         let centre = self
             .renderer
             .view()
             .panned_center(0, 0)
             .or(self.state.position)
             .unwrap_or_default();
-        // The zoom being drawn, not the one reached: during the animation
-        // a file deeper than the drawing would be drawn levels above its
-        // first level (a wheel burst onto the Azores cost a 57 s frame).
-        self.catalogue.choose(Request {
-            layer: self.state.layer.as_deref(),
-            lock: self.state.lock.as_deref(),
-            centre,
-            zoom: self.renderer.display_zoom().round() as i32,
+        (centre, self.renderer.display_zoom().round() as i32)
+    }
+
+    /// The photo sources available at the view, in the order `NextPhoto`
+    /// steps through them: the round's first, else the last one used.
+    fn photo_sources(&self) -> Vec<&ChartFile> {
+        let (centre, zoom) = self.view_centre_and_zoom();
+        let first = self
+            .photo_round
+            .as_deref()
+            .or(self.state.imagery_layer.as_deref());
+        self.catalogue.photo_sources(centre, zoom, first)
+    }
+
+    /// The chosen layer is a photo layer.
+    pub(super) fn on_photo_layer(&self) -> bool {
+        self.state
+            .layer
+            .as_deref()
+            .is_some_and(|layer| self.catalogue.role_of(layer) == Role::Imagery)
+    }
+
+    /// The file shown is a photo.
+    pub(super) fn showing_photo(&self) -> bool {
+        self.chart_choice()
+            .file
+            .is_some_and(|f| self.catalogue.role_of(&f.layer) == Role::Imagery)
+    }
+
+    /// Where the shown photo is among the sources here, 0-based.
+    fn photo_index(&self, sources: &[&ChartFile]) -> Option<usize> {
+        let shown = self.chart_choice().file?;
+        if self.catalogue.role_of(&shown.layer) != Role::Imagery {
+            return None;
+        }
+        sources.iter().position(|f| f.layer == shown.layer)
+    }
+
+    /// The photo layer one `NextPhoto` goes to; `None` means the chart
+    /// (from a photo) or nothing at all (from a chart).
+    pub(super) fn next_photo_layer(&self) -> Option<String> {
+        let sources = self.photo_sources();
+        let next = match self.photo_index(&sources) {
+            Some(k) => k + 1,
+            None if self.showing_photo() => sources.len(),
+            None => 0,
+        };
+        sources.get(next).map(|f| f.layer.clone())
+    }
+
+    /// The photo button, while a photo source is available here or a photo
+    /// is shown: what a tap goes to, and which source is on.
+    #[cfg(test)]
+    pub fn photo_button(&self) -> Option<PhotoButton> {
+        let sources = self.photo_sources();
+        let showing = self.showing_photo();
+        if sources.is_empty() && !showing {
+            return None;
+        }
+        let index = self.photo_index(&sources);
+        let next = match index {
+            Some(k) => sources.get(k + 1),
+            None if showing => None,
+            None => sources.first(),
+        };
+        let (preview, preview_is_photo) = match next {
+            Some(file) => (Some(file.path.clone()), true),
+            None => {
+                let (centre, zoom) = self.view_centre_and_zoom();
+                let chart = self.catalogue.choose(Request {
+                    layer: self.state.chart_layer.as_deref(),
+                    lock: None,
+                    centre,
+                    zoom,
+                });
+                (chart.file.map(|f| f.path.clone()), false)
+            }
+        };
+        Some(PhotoButton {
+            preview,
+            preview_is_photo,
+            position: index.map(|k| (k + 1, sources.len())),
         })
     }
 
@@ -216,6 +308,16 @@ impl Session {
     }
 
     fn show_chosen_chart(&mut self) {
+        // A photo layer with nothing here: back to the chart for good, so
+        // the photo never comes back without a tap.
+        let photo_left = self.on_photo_layer() && {
+            let choice = self.chart_choice();
+            choice.fallback_from.is_some() && choice.fallback_from == self.state.layer.as_deref()
+        };
+        if photo_left {
+            crate::diagnostics::record("INFO", "Photo hors couverture, retour à la carte");
+            self.choose_layer(self.state.chart_layer.clone());
+        }
         let choice = self.chart_choice();
         let target = choice.file.map_or_else(
             || self.default_chart.clone(),
@@ -273,6 +375,17 @@ impl Session {
         self.renderer.set_rotation(rotation);
         self.renderer.look_at(lon, lat, self.state.map_offset);
     }
+}
+
+/// The photo button: the file whose tile previews where a tap goes (the
+/// next photo source, or the chart after the last), and while a photo is
+/// shown, which source of how many it is (1-based).
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct PhotoButton {
+    pub preview: Option<PathBuf>,
+    pub preview_is_photo: bool,
+    pub position: Option<(usize, usize)>,
 }
 
 /// The chart part of the bottom bar.
@@ -340,11 +453,29 @@ pub(in crate::app) mod test_support {
     /// named as given in `dir/charts`, catalogued, the first one open and
     /// also the default chart.
     pub(in crate::app) fn session_with_charts(charts: &[(&str, &[i32])]) -> Fixture {
+        let bounded: Vec<(&str, &[i32], &str)> = charts
+            .iter()
+            .map(|&(name, zooms)| (name, zooms, ""))
+            .collect();
+        session_with_bounded_charts(&bounded)
+    }
+
+    /// As `session_with_charts`, each file declaring the given `bounds`
+    /// metadata ("west,south,east,north"; empty for none), which the
+    /// catalogue takes as its coverage.
+    pub(in crate::app) fn session_with_bounded_charts(charts: &[(&str, &[i32], &str)]) -> Fixture {
         let dir = std::env::temp_dir().join(format!("plotter-session-{}", unique_name()));
         let chart_dir = dir.join("charts");
         std::fs::create_dir_all(&chart_dir).unwrap();
-        for (name, zooms) in charts {
-            std::fs::rename(fixture_chart(zooms), chart_dir.join(name)).unwrap();
+        for (name, zooms, bounds) in charts {
+            let path = chart_dir.join(name);
+            std::fs::rename(fixture_chart(zooms), &path).unwrap();
+            if !bounds.is_empty() {
+                rusqlite::Connection::open(&path)
+                    .unwrap()
+                    .execute("INSERT INTO metadata VALUES ('bounds', ?1)", [bounds])
+                    .unwrap();
+            }
         }
         let chart = chart_dir.join(charts[0].0);
         let chart_str = chart.to_str().unwrap().to_string();

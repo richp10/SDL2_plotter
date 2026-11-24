@@ -190,7 +190,7 @@ impl Plotter<'_> {
                 sdl2::keyboard::Keycode::KpMinus => Some(AppAction::ZoomOut),
                 sdl2::keyboard::Keycode::F => Some(AppAction::ToggleFollow),
                 sdl2::keyboard::Keycode::L => Some(AppAction::ToggleLock),
-                sdl2::keyboard::Keycode::I => Some(AppAction::ToggleImagery),
+                sdl2::keyboard::Keycode::I => Some(AppAction::NextPhoto),
                 sdl2::keyboard::Keycode::C => Some(AppAction::OpenChartManager),
                 sdl2::keyboard::Keycode::Tab => Some(AppAction::CycleMode),
                 sdl2::keyboard::Keycode::P => Some(AppAction::PreviousWaypoint),
@@ -383,7 +383,7 @@ impl Plotter<'_> {
             && self.session.chart_status().imagery
         {
             // One tap from a photo back to the chart.
-            self.execute_action(AppAction::ToggleImagery);
+            self.execute_action(AppAction::BackToChart);
         } else {
             self.gestures
                 .press(Point::new(x as i32, y as i32), Instant::now());

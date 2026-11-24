@@ -62,7 +62,7 @@ impl MenuBar {
                 .map(|(index, label)| entry(&label, AppAction::ChooseLayer(index))),
         );
         charts.push(entry("Lock chart", AppAction::ToggleLock));
-        charts.push(entry("Imagery on/off", AppAction::ToggleImagery));
+        charts.push(entry("Next photo", AppAction::NextPhoto));
         let menus = vec![
             Menu {
                 title: "App",
@@ -370,7 +370,7 @@ mod tests {
         bar.event(ITEM_WIDTH + 10, 10);
         assert_eq!(
             bar.event(ITEM_WIDTH + 10, HEIGHT + 4 * ENTRY_HEIGHT + 5),
-            Some(AppAction::ToggleImagery)
+            Some(AppAction::NextPhoto)
         );
     }
 

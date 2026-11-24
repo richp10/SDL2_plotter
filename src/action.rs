@@ -11,8 +11,10 @@ pub enum AppAction {
     ToggleFollow,
     /// Freeze the chart file shown against automatic switching, or release.
     ToggleLock,
-    /// Switch between the chosen chart layer and the last imagery layer.
-    ToggleImagery,
+    /// One step of chart, each photo source available here, chart again.
+    NextPhoto,
+    /// From a photo straight back to the chosen chart layer.
+    BackToChart,
     /// Open the chart manager window (the shell's, not the session's).
     OpenChartManager,
     FollowOn,
@@ -50,7 +52,8 @@ impl AppAction {
             Self::CycleMode => "CycleMode",
             Self::ToggleFollow => "ToggleFollow",
             Self::ToggleLock => "ToggleLock",
-            Self::ToggleImagery => "ToggleImagery",
+            Self::NextPhoto => "NextPhoto",
+            Self::BackToChart => "BackToChart",
             Self::OpenChartManager => "OpenChartManager",
             Self::FollowOn => "On",
             Self::FollowOff => "Off",

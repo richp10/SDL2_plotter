@@ -27,28 +27,12 @@ impl Session {
                     None => self.chart_choice().file.map(|f| f.file_name.clone()),
                 };
             }
-            AppAction::ToggleImagery => {
-                let on_imagery = self
-                    .state
-                    .layer
-                    .as_deref()
-                    .is_some_and(|layer| self.catalogue.role_of(layer) == Role::Imagery);
-                if on_imagery {
-                    // Back to the last chart layer, or the best chart here.
-                    self.choose_layer(self.state.chart_layer.clone());
-                } else {
-                    let imagery = self.state.imagery_layer.clone().or_else(|| {
-                        self.catalogue
-                            .visible()
-                            .find(|f| self.catalogue.role_of(&f.layer) == Role::Imagery)
-                            .map(|f| f.layer.clone())
-                    });
-                    match imagery {
-                        Some(layer) => self.choose_layer(Some(layer)),
-                        None => crate::diagnostics::record("INFO", "Aucune imagerie disponible"),
-                    }
-                }
-            }
+            AppAction::NextPhoto => match self.next_photo_layer() {
+                Some(layer) => self.choose_layer(Some(layer)),
+                None if self.showing_photo() => self.choose_layer(self.state.chart_layer.clone()),
+                None => crate::diagnostics::record("INFO", "Aucune photo ici"),
+            },
+            AppAction::BackToChart => self.choose_layer(self.state.chart_layer.clone()),
             AppAction::ToggleFollow => {
                 self.state.follow = !self.state.follow;
                 self.center_map_on_visible_center();
@@ -237,6 +221,7 @@ impl Session {
     /// lock is released, and the layer is remembered for its role.
     pub(super) fn choose_layer(&mut self, layer: Option<String>) {
         self.state.lock = None;
+        let was_photo = self.on_photo_layer();
         if let Some(layer) = &layer {
             match self.catalogue.role_of(layer) {
                 Role::Chart => self.state.chart_layer = Some(layer.clone()),
@@ -244,6 +229,13 @@ impl Session {
             }
         }
         self.state.layer = layer;
+        // A round of photos starts from a chart and keeps its order to the
+        // end, even though the last one used changes on every step.
+        if !self.on_photo_layer() {
+            self.photo_round = None;
+        } else if !was_photo {
+            self.photo_round = self.state.layer.clone();
+        }
     }
 
     fn zoom_to(&mut self, zoom: i32) {
@@ -264,7 +256,9 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
-    use super::super::session::test_support::{session, session_with_charts};
+    use super::super::session::test_support::{
+        session, session_with_bounded_charts, session_with_charts,
+    };
     use super::*;
 
     #[test]
@@ -662,7 +656,7 @@ mod tests {
     }
 
     #[test]
-    fn imagery_is_switched_on_and_off_by_hand_and_badged_while_shown() {
+    fn a_photo_is_switched_on_and_off_by_hand_and_badged_while_shown() {
         let mut fx = session_with_charts(&[
             ("Ocean_Navionics.mbtiles", &[1, 2, 3]),
             ("Isle_BingSat.mbtiles", &[1, 2, 3]),
@@ -671,7 +665,7 @@ mod tests {
         fx.session.sync_view();
         assert!(!fx.session.chart_status().imagery);
 
-        fx.session.execute_action(AppAction::ToggleImagery);
+        fx.session.execute_action(AppAction::NextPhoto);
         assert_eq!(fx.session.state.layer.as_deref(), Some("Bing satellite"));
         assert!(fx.session.renderer.path().ends_with("Isle_BingSat.mbtiles"));
         let status = fx.session.chart_status();
@@ -682,7 +676,7 @@ mod tests {
             status.text
         );
 
-        fx.session.execute_action(AppAction::ToggleImagery);
+        fx.session.execute_action(AppAction::NextPhoto);
         assert_eq!(fx.session.state.layer.as_deref(), Some("Navionics"));
         assert!(fx
             .session
@@ -694,9 +688,131 @@ mod tests {
     }
 
     #[test]
-    fn without_imagery_files_the_imagery_toggle_changes_nothing() {
+    fn without_imagery_files_next_photo_changes_nothing() {
         let mut fx = ocean_and_coast();
-        fx.session.execute_action(AppAction::ToggleImagery);
+        fx.session.execute_action(AppAction::NextPhoto);
+        assert_eq!(fx.session.state.layer.as_deref(), Some("Navionics"));
+        fx.finish();
+    }
+
+    /// A world ocean chart and two photos of one island (0..40 E, 0..40 N),
+    /// all at levels 1-3, viewed over the island at zoom 3 on the chart.
+    fn island() -> super::super::session::test_support::Fixture {
+        let mut fx = session_with_bounded_charts(&[
+            ("Ocean_Navionics.mbtiles", &[1, 2, 3], "-180,-85,180,85"),
+            ("Isle_BingSat.mbtiles", &[1, 2, 3], "0,0,40,40"),
+            ("Isle_GoogleSat.mbtiles", &[1, 2, 3], "0,0,40,40"),
+        ]);
+        fx.session.state.follow = false;
+        fx.session.state.position = Some((20.0, 20.0));
+        fx.session.state.layer = Some("Navionics".into());
+        fx.session.state.chart_layer = Some("Navionics".into());
+        fx.session.state.zoom = 3;
+        fx.session.renderer.zoom_to(3);
+        settle(&mut fx);
+        fx
+    }
+
+    fn ends(path: &Option<std::path::PathBuf>, name: &str) -> bool {
+        path.as_ref().is_some_and(|p| p.ends_with(name))
+    }
+
+    #[test]
+    fn next_photo_steps_through_the_sources_here_and_back_to_the_chart() {
+        let mut fx = island();
+        let button = fx.session.photo_button().expect("photos here");
+        assert_eq!(button.position, None);
+        assert!(ends(&button.preview, "Isle_BingSat.mbtiles"));
+        assert!(button.preview_is_photo);
+
+        fx.session.execute_action(AppAction::NextPhoto);
+        assert!(fx.session.renderer.path().ends_with("Isle_BingSat.mbtiles"));
+        let button = fx.session.photo_button().unwrap();
+        assert_eq!(button.position, Some((1, 2)));
+        assert!(ends(&button.preview, "Isle_GoogleSat.mbtiles"));
+
+        fx.session.execute_action(AppAction::NextPhoto);
+        assert!(fx
+            .session
+            .renderer
+            .path()
+            .ends_with("Isle_GoogleSat.mbtiles"));
+        let button = fx.session.photo_button().unwrap();
+        assert_eq!(button.position, Some((2, 2)));
+        assert!(ends(&button.preview, "Ocean_Navionics.mbtiles"));
+        assert!(!button.preview_is_photo);
+
+        fx.session.execute_action(AppAction::NextPhoto);
+        assert_eq!(fx.session.state.layer.as_deref(), Some("Navionics"));
+        assert!(fx
+            .session
+            .renderer
+            .path()
+            .ends_with("Ocean_Navionics.mbtiles"));
+        fx.finish();
+    }
+
+    #[test]
+    fn the_last_photo_used_comes_first() {
+        let mut fx = island();
+        fx.session.execute_action(AppAction::NextPhoto);
+        fx.session.execute_action(AppAction::NextPhoto);
+        fx.session.execute_action(AppAction::BackToChart);
+        let button = fx.session.photo_button().unwrap();
+        assert!(ends(&button.preview, "Isle_GoogleSat.mbtiles"));
+        fx.finish();
+    }
+
+    #[test]
+    fn no_button_and_no_change_where_no_photo_exists() {
+        let mut fx = island();
+        fx.session.state.position = Some((-100.0, 20.0));
+        fx.session.sync_view();
+        assert!(fx.session.photo_button().is_none());
+        fx.session.execute_action(AppAction::NextPhoto);
+        assert_eq!(fx.session.state.layer.as_deref(), Some("Navionics"));
+        fx.finish();
+    }
+
+    #[test]
+    fn leaving_the_photos_coverage_drops_back_to_the_chart_for_good() {
+        let mut fx = island();
+        fx.session.execute_action(AppAction::NextPhoto);
+        assert!(fx.session.renderer.path().ends_with("Isle_BingSat.mbtiles"));
+
+        fx.session.state.position = Some((-100.0, 20.0));
+        fx.session.sync_view();
+        assert_eq!(fx.session.state.layer.as_deref(), Some("Navionics"));
+
+        fx.session.state.position = Some((20.0, 20.0));
+        fx.session.sync_view();
+        assert_eq!(fx.session.state.layer.as_deref(), Some("Navionics"));
+        assert!(fx
+            .session
+            .renderer
+            .path()
+            .ends_with("Ocean_Navionics.mbtiles"));
+        fx.finish();
+    }
+
+    #[test]
+    fn a_tap_releases_the_lock() {
+        let mut fx = island();
+        fx.session.execute_action(AppAction::ToggleLock);
+        assert!(fx.session.state.lock.is_some());
+        fx.session.execute_action(AppAction::NextPhoto);
+        assert_eq!(fx.session.state.lock, None);
+        assert!(fx.session.renderer.path().ends_with("Isle_BingSat.mbtiles"));
+        fx.finish();
+    }
+
+    #[test]
+    fn back_to_chart_returns_from_any_source() {
+        let mut fx = island();
+        fx.session.execute_action(AppAction::NextPhoto);
+        fx.session.execute_action(AppAction::NextPhoto);
+        assert_eq!(fx.session.state.layer.as_deref(), Some("Google satellite"));
+        fx.session.execute_action(AppAction::BackToChart);
         assert_eq!(fx.session.state.layer.as_deref(), Some("Navionics"));
         fx.finish();
     }

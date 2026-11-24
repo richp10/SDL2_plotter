@@ -82,6 +82,7 @@ renderer changes, release run), and CLAUDE.md describing the result.
   too), and the bottom-bar indicators wired to C2's output. Decisions 8–10.
 
 ### C5 — Charts menu as layer switcher
+- Superseded 2026-11-24: the layer list, "Next photo" and `ChooseLayer` were removed from the Charts menu at the owner's request (it listed layers with nothing here); the chart manager's "Where" and the photo button choose layers now.
 - type: task · status: closed · blocked by: C1
 - Resolution: `AppAction::ChangeChart(i)` became `ChooseLayer(i)`, an index into `Catalogue::switchable_layers()` (layers with at least one visible file, catalogue order), which both the menu and the session read, so the two cannot disagree. The Charts menu lists the layers (imagery labelled "(photo)"), then "Lock chart" (`ToggleLock`) and "Imagery on/off" (`ToggleImagery`). With the owner's files the menu is five layer entries plus two, instead of twelve clipped file names. "Chart manager..." is added with the window in C6, so no entry leads nowhere. The menu is built at startup; a layer created or emptied in the manager needs it rebuilt (C6). Tests: the switcher omits a layer whose files are all hidden; the menu's lock and imagery entries; the session tests renamed.
 - Question: the menu lists layers, "Chart manager…", "Lock chart" and

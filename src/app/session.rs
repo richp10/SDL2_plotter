@@ -232,26 +232,6 @@ impl Session {
         sources.get(next).map(|f| f.layer.clone())
     }
 
-    /// The Charts menu's layer entries, in `Catalogue::switchable_layers`
-    /// order: photo layers marked as such, and "not here" where none of
-    /// their files is a photo source at the view.
-    pub fn layer_labels(&self) -> Vec<String> {
-        let here: Vec<String> = self
-            .photo_sources()
-            .iter()
-            .map(|f| f.layer.clone())
-            .collect();
-        self.catalogue
-            .switchable_layers()
-            .iter()
-            .map(|layer| match layer.role {
-                Role::Chart => layer.name.clone(),
-                Role::Imagery if here.contains(&layer.name) => format!("{} (photo)", layer.name),
-                Role::Imagery => format!("{} (photo, not here)", layer.name),
-            })
-            .collect()
-    }
-
     /// The photo button, while a photo source is available here or a photo
     /// is shown: what a tap goes to, and which source is on.
     pub fn photo_button(&self) -> Option<PhotoButton> {

@@ -38,7 +38,9 @@ from the screen whether a photo of this spot exists.
 5. **Lock.** A tap releases a lock, as every layer change does.
 6. **Charts menu.** Imagery layers not available here are labelled
    "(not here)", worked out when the menu opens; they can still be chosen.
-   The menu's imagery entry becomes "Next photo".
+   The menu's imagery entry becomes "Next photo". (Both removed after use,
+   2026-11-24, with the menu's whole layer list: the chart manager chooses
+   layers and the button steps photos.)
 7. **Stream.** The button is drawn after the stream capture, like the menus;
    the bottom bar, with the layer name, is in the stream.
 8. **Night mode.** The button is dimmed with the same overlay and opacity as

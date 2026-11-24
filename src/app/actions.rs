@@ -119,23 +119,6 @@ impl Session {
                     }
                 }
             }
-            AppAction::ChooseLayer(index) => {
-                // `sync_view` then shows the file of the layer that best
-                // fits the view.
-                self.anchor_on_visible_center();
-                let layer = self
-                    .catalogue
-                    .switchable_layers()
-                    .get(index)
-                    .map(|l| l.name.clone());
-                match layer {
-                    Some(layer) => self.choose_layer(Some(layer)),
-                    None => crate::diagnostics::record(
-                        "WARN",
-                        format!("Couche {index} absente du catalogue"),
-                    ),
-                }
-            }
             AppAction::Pan(dx, dy) => {
                 if self.following_boat() {
                     // The boat stays the anchor; the drag is an offset from it.
@@ -346,23 +329,6 @@ mod tests {
     }
 
     #[test]
-    fn changing_chart_keeps_the_visible_centre_when_the_view_was_dragged() {
-        let mut fx = session(&[2]);
-        fx.session.state.follow = false;
-        fx.session.state.position = Some((0.0, 0.0));
-        fx.session.state.map_offset = (90, 30);
-        fx.session.sync_view();
-        let before = visible_centre(&fx.session);
-        assert!(before.0 < -5.0, "the drag moved the view: {before:?}");
-
-        fx.session.execute_action(AppAction::ChooseLayer(0));
-
-        assert_close(visible_centre(&fx.session), before);
-        assert_eq!(fx.session.state.map_offset, (0, 0));
-        fx.finish();
-    }
-
-    #[test]
     fn zooming_keeps_the_visible_centre_when_the_view_was_dragged() {
         let mut fx = session(&[2, 3]);
         fx.session.state.follow = false;
@@ -460,16 +426,14 @@ mod tests {
     }
 
     #[test]
-    fn choosing_a_layer_shows_its_best_file_and_an_unknown_entry_changes_nothing() {
+    fn choosing_a_layer_shows_its_best_file() {
         let mut fx =
             session_with_charts(&[("A_Navionics.mbtiles", &[2]), ("B_BingSat.mbtiles", &[2])]);
-        fx.session.execute_action(AppAction::ChooseLayer(1));
+        fx.session.choose_layer(Some("Bing satellite".into()));
+        fx.session.sync_view();
         assert_eq!(fx.session.state.layer.as_deref(), Some("Bing satellite"));
         assert!(fx.session.state.map.ends_with("B_BingSat.mbtiles"));
         assert!(fx.session.renderer.path().ends_with("B_BingSat.mbtiles"));
-
-        fx.session.execute_action(AppAction::ChooseLayer(7));
-        assert_eq!(fx.session.state.layer.as_deref(), Some("Bing satellite"));
         fx.finish();
     }
 
@@ -649,7 +613,7 @@ mod tests {
     fn choosing_a_layer_releases_the_lock() {
         let mut fx = ocean_and_coast();
         fx.session.execute_action(AppAction::ToggleLock);
-        fx.session.execute_action(AppAction::ChooseLayer(0));
+        fx.session.choose_layer(Some("Navionics".into()));
         assert_eq!(fx.session.state.lock, None);
         fx.finish();
     }
@@ -814,30 +778,6 @@ mod tests {
         fx.session.execute_action(AppAction::NextPhoto);
         assert_eq!(fx.session.state.lock, None);
         assert!(fx.session.renderer.path().ends_with("Isle_BingSat.mbtiles"));
-        fx.finish();
-    }
-
-    #[test]
-    fn the_charts_menu_marks_photo_layers_not_available_here() {
-        let mut fx = island();
-        assert_eq!(
-            fx.session.layer_labels(),
-            vec![
-                "Bing satellite (photo)",
-                "Google satellite (photo)",
-                "Navionics"
-            ]
-        );
-        fx.session.state.position = Some((-100.0, 20.0));
-        fx.session.sync_view();
-        assert_eq!(
-            fx.session.layer_labels(),
-            vec![
-                "Bing satellite (photo, not here)",
-                "Google satellite (photo, not here)",
-                "Navionics"
-            ]
-        );
         fx.finish();
     }
 

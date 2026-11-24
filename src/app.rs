@@ -109,9 +109,8 @@ impl<'ttf> Plotter<'ttf> {
         let renderer =
             MBTilesRenderer::new(&state.map, state.zoom, width, height, &config.rendering)?;
 
-        // The layer entries need the session; they are set once it exists.
-        let topbar = topbar::Topbar::new(ttf_context, width, Vec::new(), &config.fonts)
-            .map_err(anyhow::Error::msg)?;
+        let topbar =
+            topbar::Topbar::new(ttf_context, width, &config.fonts).map_err(anyhow::Error::msg)?;
         let buttombar = buttombar::Buttombar::new(ttf_context, width, height, &config.fonts)
             .expect("failed to build buttombar bar");
         let confirm_dialog =
@@ -149,7 +148,7 @@ impl<'ttf> Plotter<'ttf> {
             PathBuf::from("export"),
         );
 
-        let mut plotter = Self {
+        Ok(Self {
             session,
             dirty: true,
             gestures: GestureRecognizer::new(LONG_CLICK, MOVE_TOLERANCE),
@@ -167,9 +166,7 @@ impl<'ttf> Plotter<'ttf> {
             track_rx,
             ais_rx,
             streamer,
-        };
-        plotter.topbar.set_layers(plotter.session.layer_labels());
-        Ok(plotter)
+        })
     }
 
     /// Runs an action on the session and schedules a redraw. Opening the
@@ -185,13 +182,12 @@ impl<'ttf> Plotter<'ttf> {
         self.dirty = true;
     }
 
-    /// Closes the chart manager and rebuilds the menus from its changes.
+    /// Closes the chart manager.
     fn close_chart_manager(&mut self) {
         if self.chart_manager.typing.is_some() {
             self.text_input.stop();
         }
         self.chart_manager.close();
-        self.topbar.set_layers(self.session.layer_labels());
         self.dirty = true;
     }
 

@@ -367,10 +367,6 @@ impl Plotter<'_> {
     }
 
     fn handle_mouse_down(&mut self, x: u32, y: u32) {
-        if !self.topbar.is_open() && y < crate::topbar::HEIGHT {
-            // A menu is about to open: say which photos exist here now.
-            self.topbar.set_layers(self.session.layer_labels());
-        }
         if self.topbar.mouse(x, y) {
             self.handle_topbar_event(x, y);
             // Opening, switching or closing a menu changes the frame even

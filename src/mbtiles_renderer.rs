@@ -41,7 +41,8 @@ pub struct MBTilesRenderer {
     zoom_animation: Option<(f64, Instant)>,
     rotation: f64,
     rendering_config: RenderingConfig,
-    default_map: String,
+    /// The chart file being drawn.
+    path: String,
     /// What the screen is looking at, as the application states it.
     view: View,
     /// `view` projected to world pixels at the current `display_zoom` and
@@ -68,7 +69,6 @@ impl MBTilesRenderer {
         width: u32,
         height: u32,
         config: &RenderingConfig,
-        default_map: &str,
     ) -> rusqlite::Result<Self> {
         let (render_width, render_height) = Self::texture_dimensions(width, height);
         let store = TileStore::open(mbtiles_path, config.tile_cache_size)?;
@@ -87,7 +87,7 @@ impl MBTilesRenderer {
             zoom_animation: None,
             rotation: 0.0,
             rendering_config: config.clone(),
-            default_map: default_map.to_string(),
+            path: mbtiles_path.to_string(),
             view: View {
                 lon: 0.0,
                 lat: 0.0,
@@ -220,7 +220,11 @@ impl MBTilesRenderer {
         source_zoom_for(self.display_zoom, self.store.available_zooms(), self.zoom)
     }
 
-    fn set_zoom(&mut self, zoom: i32) {
+    /// Animates to `zoom`. Which levels make sense is the catalogue's
+    /// decision, not this file's: past the file's deepest level the tiles
+    /// are drawn overscaled, above its first level underscaled. Asking for
+    /// the current level changes nothing, so the tile cache is kept.
+    pub fn zoom_to(&mut self, zoom: i32) {
         if self.zoom == zoom {
             return;
         }
@@ -230,6 +234,25 @@ impl MBTilesRenderer {
         } else {
             self.zoom_animation = Some((self.display_zoom, Instant::now()));
         }
+    }
+
+    /// The whole zoom level shown or being animated to.
+    pub fn zoom(&self) -> i32 {
+        self.zoom
+    }
+
+    /// The deepest level the open file holds.
+    pub fn top_zoom(&self) -> i32 {
+        self.store
+            .available_zooms()
+            .last()
+            .copied()
+            .unwrap_or(self.zoom)
+    }
+
+    /// The chart file being drawn.
+    pub fn path(&self) -> &str {
+        &self.path
     }
 
     pub fn advance_zoom_animation(&mut self) -> bool {
@@ -260,35 +283,6 @@ impl MBTilesRenderer {
         self.reproject();
     }
 
-    /// Moves to the next available zoom level. At the chart's maximum zoom
-    /// nothing changes: the tile cache and view are kept as they are.
-    pub fn zoom_increase(&mut self) -> i32 {
-        let zooms = self.store.available_zooms();
-        if let Some(i) = zooms.iter().position(|&z| z == self.zoom) {
-            if let Some(&next) = zooms.get(i + 1) {
-                self.set_zoom(next);
-            }
-        }
-        self.zoom
-    }
-
-    pub fn zoom_decrease(&mut self) -> i32 {
-        let zooms = self.store.available_zooms();
-        if let Some(i) = zooms.iter().position(|&z| z == self.zoom) {
-            if let Some(&prev) = i.checked_sub(1).and_then(|j| zooms.get(j)) {
-                self.set_zoom(prev);
-            } else {
-                crate::diagnostics::record(
-                    "DEBUG",
-                    "Zoom minimal atteint, retour à la carte par défaut",
-                );
-                let fallback_map = self.default_map.clone();
-                let _ = self.change_map(&fallback_map);
-            }
-        }
-        self.zoom
-    }
-
     pub fn change_map(&mut self, mbtiles_path: &str) -> rusqlite::Result<()> {
         // On construit le nouveau renderer d'abord : si ça échoue, self n'est pas touché.
         // Le cache est neuf (donc vide), les métadonnées et les zooms sont rechargés,
@@ -299,10 +293,13 @@ impl MBTilesRenderer {
             self.width,
             self.height,
             &self.rendering_config,
-            &self.default_map,
         )?;
 
-        // The view carries over; the new chart may have settled on another zoom.
+        // The view and the zoom carry over, mid-animation included: which
+        // file fits the zoom was decided by the caller.
+        new_renderer.zoom = self.zoom;
+        new_renderer.display_zoom = self.display_zoom;
+        new_renderer.zoom_animation = self.zoom_animation;
         new_renderer.set_rotation(self.rotation);
         new_renderer.look_at(self.view.lon, self.view.lat, self.view.offset);
 
@@ -459,8 +456,7 @@ mod tests {
     fn centre_pixel_of(path: &std::path::Path) -> Rgba<u8> {
         let path_str = path.to_str().unwrap();
         let mut renderer =
-            MBTilesRenderer::new(path_str, 2, 512, 256, &RenderingConfig::default(), path_str)
-                .unwrap();
+            MBTilesRenderer::new(path_str, 2, 512, 256, &RenderingConfig::default()).unwrap();
         renderer.look_at(0.0, 0.0, (0, 0));
         let (pixels, rect) = renderer.render_frame();
         let (width, height) = (rect.width() as usize, rect.height() as usize);
@@ -502,8 +498,7 @@ mod tests {
         drop(conn);
 
         let renderer =
-            MBTilesRenderer::new(path_str, 8, 512, 256, &RenderingConfig::default(), path_str)
-                .unwrap();
+            MBTilesRenderer::new(path_str, 8, 512, 256, &RenderingConfig::default()).unwrap();
         assert_eq!(renderer.tiles_center(), None);
         assert_eq!(renderer.initial_center(), (-5.0, 55.0));
         drop(renderer);
@@ -515,8 +510,7 @@ mod tests {
         let path = fixture_chart(&[3]); // 64 tiles, all in view plus margin at 512x256
         let path_str = path.to_str().unwrap();
         let mut renderer =
-            MBTilesRenderer::new(path_str, 3, 512, 256, &RenderingConfig::default(), path_str)
-                .unwrap();
+            MBTilesRenderer::new(path_str, 3, 512, 256, &RenderingConfig::default()).unwrap();
         renderer.look_at(0.0, 0.0, (0, 0));
         assert_eq!(renderer.store.cached_count(), 0);
 
@@ -545,19 +539,18 @@ mod tests {
     }
 
     #[test]
-    fn zooming_in_at_the_maximum_zoom_keeps_the_tile_cache() {
+    fn zooming_to_the_current_level_keeps_the_tile_cache() {
         let path = fixture_chart(&[2, 3]);
         let path_str = path.to_str().unwrap();
         let mut renderer =
-            MBTilesRenderer::new(path_str, 3, 512, 256, &RenderingConfig::default(), path_str)
-                .unwrap();
+            MBTilesRenderer::new(path_str, 3, 512, 256, &RenderingConfig::default()).unwrap();
         assert_eq!(renderer.zoom, 3);
         renderer.look_at(0.0, 0.0, (0, 0));
         while renderer.prefetch_step(64) {}
         let cached_before = renderer.store.cached_count();
         assert!(cached_before > 0);
 
-        assert_eq!(renderer.zoom_increase(), 3);
+        renderer.zoom_to(3);
 
         assert_eq!(renderer.store.cached_count(), cached_before);
         assert!(renderer.zoom_animation.is_none());
@@ -567,15 +560,7 @@ mod tests {
 
     fn renderer_for(path: &std::path::Path, zoom: i32) -> MBTilesRenderer {
         let path_str = path.to_str().unwrap();
-        MBTilesRenderer::new(
-            path_str,
-            zoom,
-            512,
-            256,
-            &RenderingConfig::default(),
-            path_str,
-        )
-        .unwrap()
+        MBTilesRenderer::new(path_str, zoom, 512, 256, &RenderingConfig::default()).unwrap()
     }
 
     fn assert_close(actual: (f64, f64), expected: (f64, f64)) {
@@ -620,13 +605,32 @@ mod tests {
     }
 
     #[test]
+    fn changing_file_keeps_the_zoom_even_past_the_new_files_levels() {
+        let first = fixture_chart(&[2, 3, 4]);
+        let second = fixture_chart(&[2]);
+        let mut renderer = renderer_for(&first, 4);
+        renderer.look_at(10.0, 20.0, (0, 0));
+        renderer.change_map(second.to_str().unwrap()).unwrap();
+        assert_eq!(renderer.zoom(), 4, "shown overscaled, not snapped to 2");
+        assert_eq!(renderer.top_zoom(), 2);
+        assert_eq!(renderer.path(), second.to_str().unwrap());
+        assert_close(
+            renderer.view().to_lonlat(Point::new(256, 128)).unwrap(),
+            (10.0, 20.0),
+        );
+        drop(renderer);
+        std::fs::remove_file(first).unwrap();
+        std::fs::remove_file(second).unwrap();
+    }
+
+    #[test]
     fn the_viewed_position_stays_centred_through_a_zoom_animation() {
         let path = fixture_chart(&[2, 3]);
         let mut renderer = renderer_for(&path, 2);
         let brest = (-4.4861, 48.3904);
         renderer.look_at(brest.0, brest.1, (0, 0));
 
-        assert_eq!(renderer.zoom_increase(), 3);
+        renderer.zoom_to(3);
         std::thread::sleep(Duration::from_millis(120)); // mid-animation
         assert!(renderer.advance_zoom_animation());
         assert_close(
@@ -703,20 +707,20 @@ mod tests {
     fn bench_render_frame_cold_and_warm() {
         for (path, zoom) in bench_charts() {
             let config = RenderingConfig::default();
-            let probe = MBTilesRenderer::new(path, zoom, 1600, 800, &config, path).unwrap();
+            let probe = MBTilesRenderer::new(path, zoom, 1600, 800, &config).unwrap();
             let (lon, lat) = probe.tiles_center().unwrap();
 
             let cold = median(
                 (0..5)
                     .map(|_| {
                         let mut renderer =
-                            MBTilesRenderer::new(path, zoom, 1600, 800, &config, path).unwrap();
+                            MBTilesRenderer::new(path, zoom, 1600, 800, &config).unwrap();
                         renderer.look_at(lon, lat, (0, 0));
                         timed(|| renderer.render_frame()).1
                     })
                     .collect(),
             );
-            let mut renderer = MBTilesRenderer::new(path, zoom, 1600, 800, &config, path).unwrap();
+            let mut renderer = MBTilesRenderer::new(path, zoom, 1600, 800, &config).unwrap();
             renderer.look_at(lon, lat, (0, 0));
             renderer.render_frame();
             let warm = median(
@@ -740,7 +744,7 @@ mod tests {
             let samples = (0..5)
                 .map(|_| {
                     let mut renderer =
-                        MBTilesRenderer::new(path, zoom, 1600, 800, &config, path).unwrap();
+                        MBTilesRenderer::new(path, zoom, 1600, 800, &config).unwrap();
                     let (lon, lat) = renderer.tiles_center().unwrap();
                     renderer.look_at(lon, lat, (0, 0));
                     timed(|| renderer.prefetch_step(8)).1
@@ -755,8 +759,7 @@ mod tests {
     fn bench_single_tile_decode() {
         for (path, zoom) in bench_charts() {
             let renderer =
-                MBTilesRenderer::new(path, zoom, 1600, 800, &RenderingConfig::default(), path)
-                    .unwrap();
+                MBTilesRenderer::new(path, zoom, 1600, 800, &RenderingConfig::default()).unwrap();
             let (lon, lat) = renderer.tiles_center().unwrap();
             let (x, y) = renderer.project(lon, lat);
             let (tx, ty) = ((x / 256.0) as i64, (y / 256.0) as i64);

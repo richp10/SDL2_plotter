@@ -35,6 +35,25 @@ pub struct Bounds {
     pub north: f64,
 }
 
+impl Bounds {
+    /// Whether `(lon, lat)` lies inside, including coverage that crosses the
+    /// antimeridian (`west > east`).
+    pub fn contains(&self, (lon, lat): (f64, f64)) -> bool {
+        let in_longitude = if self.west <= self.east {
+            (self.west..=self.east).contains(&lon)
+        } else {
+            lon >= self.west || lon <= self.east
+        };
+        in_longitude && (self.south..=self.north).contains(&lat)
+    }
+
+    /// Size in square degrees: only for comparing coverage.
+    pub fn area(&self) -> f64 {
+        let width = (self.east - self.west).rem_euclid(360.0);
+        width * (self.north - self.south)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Layer {
     pub name: String,
@@ -295,6 +314,142 @@ impl Catalogue {
             .find(|l| l.name == layer)
             .map_or(Role::Chart, |l| l.role)
     }
+
+    /// Which file to show for `request`, and what the navigator must be told
+    /// about it. See the design's decisions 5, 6 and 8.
+    pub fn choose<'a>(&'a self, request: Request<'a>) -> Choice<'a> {
+        let Request {
+            layer,
+            lock,
+            centre,
+            zoom,
+        } = request;
+        let locked = lock.and_then(|lock| self.files.iter().find(|f| f.file_name == lock));
+
+        let mut fallback_from = None;
+        let file = match locked {
+            Some(locked) => Some(locked),
+            None => layer
+                .and_then(|layer| self.best_in(layer, centre, zoom))
+                .or_else(|| {
+                    // Nothing in the chosen layer here: the best chart instead,
+                    // never imagery, and say so.
+                    fallback_from = layer;
+                    self.layers
+                        .iter()
+                        .filter(|l| l.role == Role::Chart && Some(l.name.as_str()) != layer)
+                        .filter_map(|l| self.best_in(&l.name, centre, zoom))
+                        .min_by(|a, b| detail_order(a, b))
+                }),
+        };
+        if file.is_some() && layer.is_none() {
+            fallback_from = None;
+        }
+
+        let shown_layer = file.map(|f| f.layer.as_str());
+        let covering: Vec<&ChartFile> = shown_layer
+            .map(|layer| self.covering(layer, centre))
+            .unwrap_or_default();
+        let top = |f: &ChartFile| f.zooms.last().copied().unwrap_or(zoom);
+        Choice {
+            file,
+            overscale: file.map(|f| zoom - top(f)).filter(|&levels| levels >= 1),
+            more_detail: file.and_then(|shown| {
+                covering
+                    .iter()
+                    .copied()
+                    .filter(|f| f.file_name != shown.file_name && top(f) > top(shown))
+                    .min_by(|a, b| detail_order(a, b))
+            }),
+            fallback_from,
+            outside_lock: locked.is_some_and(|f| !f.bounds.contains(centre)),
+            // How deep the shown layer goes here, and the chosen layer too:
+            // its files may start deeper than a fallback that shows now, and
+            // zooming in must reach them. With nothing shown, every chart.
+            zoom_limit: self
+                .layers
+                .iter()
+                .filter(|l| {
+                    Some(l.name.as_str()) == shown_layer
+                        || Some(l.name.as_str()) == layer
+                        || (file.is_none() && l.role == Role::Chart)
+                })
+                .flat_map(|l| self.covering(&l.name, centre))
+                .filter_map(|f| f.zooms.last().copied())
+                .chain(file.map(top))
+                .max(),
+        }
+    }
+
+    /// The visible files of `layer` whose coverage contains `centre`.
+    fn covering(&self, layer: &str, centre: (f64, f64)) -> Vec<&ChartFile> {
+        self.visible()
+            .filter(|f| f.layer == layer && f.bounds.contains(centre))
+            .collect()
+    }
+
+    /// The file of `layer` to show at `centre` and `zoom`: the most detailed
+    /// one whose zoom levels include `zoom`, else, past the top of all of
+    /// them, the one going deepest (shown overscaled). A file whose first
+    /// level is deeper than `zoom` cannot draw yet and is passed over.
+    fn best_in(&self, layer: &str, centre: (f64, f64), zoom: i32) -> Option<&ChartFile> {
+        let in_range = |f: &&ChartFile| matches!((f.zooms.first(), f.zooms.last()), (Some(&min), Some(&max)) if min <= zoom && zoom <= max);
+        let candidates = self.covering(layer, centre);
+        candidates
+            .iter()
+            .copied()
+            .filter(in_range)
+            .min_by(|a, b| detail_order(a, b))
+            .or_else(|| {
+                candidates
+                    .iter()
+                    .copied()
+                    .filter(|f| f.zooms.last().is_some_and(|&max| max < zoom))
+                    .min_by(|a, b| detail_order(a, b))
+            })
+    }
+}
+
+/// Most detailed first: the deepest top zoom, then the smaller coverage,
+/// then the navigator's order.
+fn detail_order(a: &ChartFile, b: &ChartFile) -> std::cmp::Ordering {
+    let top = |f: &ChartFile| f.zooms.last().copied().unwrap_or(i32::MIN);
+    top(b)
+        .cmp(&top(a))
+        .then(a.bounds.area().total_cmp(&b.bounds.area()))
+        .then(a.order.cmp(&b.order))
+}
+
+/// What `Catalogue::choose` decides from.
+#[derive(Debug, Clone, Copy)]
+pub struct Request<'a> {
+    /// The layer the navigator chose; `None` before any choice.
+    pub layer: Option<&'a str>,
+    /// The file name the navigator locked, if any.
+    pub lock: Option<&'a str>,
+    /// The position at the centre of the screen.
+    pub centre: (f64, f64),
+    /// The whole zoom level being shown or animated to.
+    pub zoom: i32,
+}
+
+/// The file to show and the indications that go with it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Choice<'a> {
+    /// `None`: nothing in the catalogue fits; show the default chart.
+    pub file: Option<&'a ChartFile>,
+    /// Zoom levels past the file's most detailed level, when at least one.
+    pub overscale: Option<i32>,
+    /// A more detailed file of the shown layer that covers the centre but
+    /// that the zoom or the lock keeps off screen.
+    pub more_detail: Option<&'a ChartFile>,
+    /// The requested layer, when it has nothing here and a chart layer is
+    /// shown instead. Never set the other way: imagery is no fallback.
+    pub fallback_from: Option<&'a str>,
+    /// The locked file does not cover the centre.
+    pub outside_lock: bool,
+    /// The deepest zoom worth zooming in to here, if any file fits.
+    pub zoom_limit: Option<i32>,
 }
 
 /// Known sources by a word in the file or chart name: the layer a file joins
@@ -817,5 +972,215 @@ mod tests {
         let catalogue = Catalogue::load(&dir.join("absent"), &dir.join("charts.json"));
         assert!(catalogue.files().is_empty());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // ----- choosing the file to show -----
+
+    /// An ocean chart and two more detailed ones, from one chart source,
+    /// plus satellite imagery of the islands only:
+    /// - Atlantic_Navionics: z7-11, 98 W..3 W, 5 S..52 N
+    /// - Azores_Navionics: z7-17, 34 W..22 W, 36 N..41 N
+    /// - GB_Navionics: z10-15, 9 W..3 E, 49 N..60 N
+    /// - Azores_BingSat: z7-17, the Azores
+    struct Charts {
+        dir: PathBuf,
+        catalogue: Catalogue,
+    }
+
+    impl Drop for Charts {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn charts() -> Charts {
+        let dir = temp_dir("choose");
+        let zooms = |range: std::ops::RangeInclusive<i32>| -> Vec<(i32, i64, i64)> {
+            range.map(|z| (z, 0, 0)).collect()
+        };
+        chart(
+            &dir,
+            "Atlantic_Navionics.mbtiles",
+            &zooms(7..=11),
+            &[("bounds", "-98,-5,-3,52")],
+        );
+        chart(
+            &dir,
+            "Azores_Navionics.mbtiles",
+            &zooms(7..=17),
+            &[("bounds", "-34,36,-22,41")],
+        );
+        chart(
+            &dir,
+            "GB_Navionics.mbtiles",
+            &zooms(10..=15),
+            &[("bounds", "-9,49,3,60")],
+        );
+        chart(
+            &dir,
+            "Azores_BingSat.mbtiles",
+            &zooms(7..=17),
+            &[("bounds", "-34,36,-22,41")],
+        );
+        let catalogue = Catalogue::load(&dir, &dir.join("charts.json"));
+        Charts { dir, catalogue }
+    }
+
+    const AZORES: (f64, f64) = (-28.0, 38.5);
+    const MID_ATLANTIC: (f64, f64) = (-40.0, 30.0);
+    const CORNWALL: (f64, f64) = (-5.0, 50.2);
+
+    fn navionics(centre: (f64, f64), zoom: i32) -> Request<'static> {
+        Request {
+            layer: Some("Navionics"),
+            lock: None,
+            centre,
+            zoom,
+        }
+    }
+
+    fn shown<'a>(choice: &Choice<'a>) -> &'a str {
+        choice
+            .file
+            .map_or("(default chart)", |f| f.file_name.as_str())
+    }
+
+    #[test]
+    fn the_most_detailed_file_covering_the_centre_is_shown() {
+        let c = charts();
+        let choice = c.catalogue.choose(navionics(AZORES, 9));
+        assert_eq!(shown(&choice), "Azores_Navionics.mbtiles");
+        assert_eq!(choice.overscale, None);
+        let choice = c.catalogue.choose(navionics(MID_ATLANTIC, 9));
+        assert_eq!(shown(&choice), "Atlantic_Navionics.mbtiles");
+        assert_eq!(choice.fallback_from, None);
+    }
+
+    #[test]
+    fn past_the_top_zoom_the_file_stays_on_overscaled() {
+        let c = charts();
+        let choice = c.catalogue.choose(navionics(MID_ATLANTIC, 13));
+        assert_eq!(shown(&choice), "Atlantic_Navionics.mbtiles");
+        assert_eq!(choice.overscale, Some(2));
+        assert_eq!(choice.zoom_limit, Some(11), "nothing deeper here");
+    }
+
+    #[test]
+    fn a_more_detailed_file_the_zoom_hides_is_announced() {
+        let c = charts();
+        // Off Cornwall at zoom 8 the GB chart (z10-15) cannot draw yet.
+        let choice = c.catalogue.choose(navionics(CORNWALL, 8));
+        assert_eq!(shown(&choice), "Atlantic_Navionics.mbtiles");
+        assert_eq!(
+            choice.more_detail.map(|f| f.file_name.as_str()),
+            Some("GB_Navionics.mbtiles")
+        );
+        assert_eq!(choice.zoom_limit, Some(15), "zooming in reaches it");
+        let choice = c.catalogue.choose(navionics(CORNWALL, 10));
+        assert_eq!(shown(&choice), "GB_Navionics.mbtiles");
+        assert_eq!(choice.more_detail, None);
+    }
+
+    #[test]
+    fn imagery_shows_only_where_it_exists_and_a_chart_is_the_fallback() {
+        let c = charts();
+        let bing = |centre| Request {
+            layer: Some("Bing satellite"),
+            lock: None,
+            centre,
+            zoom: 9,
+        };
+        let choice = c.catalogue.choose(bing(AZORES));
+        assert_eq!(shown(&choice), "Azores_BingSat.mbtiles");
+        assert_eq!(choice.fallback_from, None);
+
+        let choice = c.catalogue.choose(bing(MID_ATLANTIC));
+        assert_eq!(shown(&choice), "Atlantic_Navionics.mbtiles");
+        assert_eq!(choice.fallback_from, Some("Bing satellite"));
+    }
+
+    #[test]
+    fn with_no_layer_chosen_the_best_chart_is_shown_never_imagery() {
+        let c = charts();
+        let choice = c.catalogue.choose(Request {
+            layer: None,
+            ..navionics(AZORES, 12)
+        });
+        assert_eq!(shown(&choice), "Azores_Navionics.mbtiles");
+        assert_eq!(choice.fallback_from, None);
+    }
+
+    #[test]
+    fn below_every_files_zoom_or_outside_all_coverage_the_default_chart_is_left_to_show() {
+        let c = charts();
+        let choice = c.catalogue.choose(navionics(AZORES, 5));
+        assert_eq!(shown(&choice), "(default chart)");
+        assert_eq!(choice.zoom_limit, Some(17), "zooming in reaches the charts");
+        let choice = c.catalogue.choose(navionics((150.0, -30.0), 9));
+        assert_eq!(shown(&choice), "(default chart)");
+        assert_eq!(choice.fallback_from, Some("Navionics"));
+        assert_eq!(choice.zoom_limit, None);
+    }
+
+    #[test]
+    fn a_hidden_file_is_never_chosen() {
+        let mut c = charts();
+        c.catalogue
+            .files
+            .iter_mut()
+            .find(|f| f.file_name == "Azores_Navionics.mbtiles")
+            .unwrap()
+            .hidden = true;
+        let choice = c.catalogue.choose(navionics(AZORES, 9));
+        assert_eq!(shown(&choice), "Atlantic_Navionics.mbtiles");
+        assert_eq!(choice.more_detail, None);
+    }
+
+    #[test]
+    fn a_locked_file_stays_shown_and_says_what_it_hides_or_misses() {
+        let c = charts();
+        let locked = |centre, zoom| Request {
+            lock: Some("Atlantic_Navionics.mbtiles"),
+            ..navionics(centre, zoom)
+        };
+        let choice = c.catalogue.choose(locked(AZORES, 12));
+        assert_eq!(shown(&choice), "Atlantic_Navionics.mbtiles");
+        assert_eq!(choice.overscale, Some(1));
+        assert_eq!(
+            choice.more_detail.map(|f| f.file_name.as_str()),
+            Some("Azores_Navionics.mbtiles")
+        );
+        assert!(!choice.outside_lock);
+
+        let choice = c.catalogue.choose(locked((0.0, 57.0), 12));
+        assert_eq!(shown(&choice), "Atlantic_Navionics.mbtiles");
+        assert!(
+            choice.outside_lock,
+            "the North Sea is beyond the Atlantic chart"
+        );
+
+        let choice = c.catalogue.choose(Request {
+            lock: Some("gone.mbtiles"),
+            ..navionics(AZORES, 9)
+        });
+        assert_eq!(
+            shown(&choice),
+            "Azores_Navionics.mbtiles",
+            "a stale lock is ignored"
+        );
+    }
+
+    #[test]
+    fn coverage_across_the_antimeridian_is_understood() {
+        let pacific = Bounds {
+            west: 170.0,
+            south: -20.0,
+            east: -170.0,
+            north: -10.0,
+        };
+        assert!(pacific.contains((179.0, -15.0)));
+        assert!(pacific.contains((-175.0, -15.0)));
+        assert!(!pacific.contains((0.0, -15.0)));
+        assert!((pacific.area() - 200.0).abs() < 1e-9);
     }
 }

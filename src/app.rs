@@ -98,24 +98,14 @@ impl<'ttf> Plotter<'ttf> {
         for line in catalogue.describe() {
             crate::diagnostics::record("INFO", line);
         }
-        let charts_path: Vec<String> = catalogue
-            .visible()
-            .map(|chart| chart.path.to_string_lossy().into_owned())
-            .collect();
         let charts_name: Vec<String> = catalogue
             .visible()
             .map(|chart| chart.name.clone())
             .collect();
         let state = state::State::new(STATE_FILE, config.charts.default.clone())
             .map_err(anyhow::Error::msg)?;
-        let renderer = MBTilesRenderer::new(
-            &state.map,
-            state.zoom,
-            width,
-            height,
-            &config.rendering,
-            &config.charts.default,
-        )?;
+        let renderer =
+            MBTilesRenderer::new(&state.map, state.zoom, width, height, &config.rendering)?;
 
         let topbar = topbar::Topbar::new(ttf_context, width, charts_name.clone(), &config.fonts)
             .map_err(anyhow::Error::msg)?;
@@ -146,7 +136,8 @@ impl<'ttf> Plotter<'ttf> {
             route,
             track,
             waypoints,
-            charts_path,
+            catalogue,
+            config.charts.default.clone(),
             PathBuf::from("export"),
         );
 

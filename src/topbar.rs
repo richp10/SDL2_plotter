@@ -50,7 +50,7 @@ pub struct Topbar<'ttf> {
 
 impl MenuBar {
     /// The menu bar. `chart_names` are the Charts entries, in the order of
-    /// `Session::charts_path`, so entry `i` is `ChangeChart(i)`; a chart
+    /// the catalogue's visible files, so entry `i` is `ChangeChart(i)`; a chart
     /// whose name matches another entry's label is still a chart.
     pub fn new(chart_names: Vec<String>) -> Self {
         let charts = chart_names

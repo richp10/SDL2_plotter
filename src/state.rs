@@ -7,6 +7,9 @@ pub struct State {
     pub follow: bool,
     pub goto: bool,
     pub map: String,
+    /// The chart layer the navigator chose; automatic switching stays in it.
+    #[serde(default)]
+    pub layer: Option<String>,
     pub position: Option<(f64, f64)>,
     pub zoom: i32,
     pub map_offset: (i32, i32),
@@ -58,6 +61,7 @@ impl State {
             follow: false,
             goto: false,
             map: init_map,
+            layer: None,
             position: None,
             zoom: 8,
             map_offset: (0, 0),

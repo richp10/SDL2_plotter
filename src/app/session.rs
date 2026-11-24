@@ -5,12 +5,14 @@
 //! driven by tests with a fixture chart and temporary paths. `Plotter` owns
 //! one `Session` plus the SDL widgets and channels around it.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use super::confirm_dialog::Confirmation;
 use crate::ais::AisTarget;
 use crate::boat::BoatState;
+use crate::catalogue::{Catalogue, Choice, Request};
 use crate::mbtiles_renderer::MBTilesRenderer;
 use crate::mesure::Mesure;
 use crate::route::Route;
@@ -33,8 +35,14 @@ pub(crate) struct Session {
     pub mesure: Mesure,
     pub track: Track,
     pub waypoints: Waypoints,
-    /// Chart files offered in the Charts menu, in menu order.
-    pub charts_path: Vec<String>,
+    /// Every chart file and what the navigator decided about it.
+    pub catalogue: Catalogue,
+    /// Shown when nothing in the catalogue fits the view (`charts.default`).
+    default_chart: String,
+    /// Files that failed to open, not retried every frame.
+    unavailable: HashSet<String>,
+    /// The last choice, as logged, so a change is logged once.
+    last_choice: String,
     pub confirmation: Confirmation,
     /// Where GPX exports are written.
     pub export_dir: PathBuf,
@@ -50,7 +58,8 @@ impl Session {
         route: Route,
         track: Track,
         waypoints: Waypoints,
-        charts_path: Vec<String>,
+        catalogue: Catalogue,
+        default_chart: String,
         export_dir: PathBuf,
     ) -> Self {
         let mut session = Session {
@@ -65,10 +74,23 @@ impl Session {
             mesure: Mesure::new(),
             track,
             waypoints,
-            charts_path,
+            catalogue,
+            default_chart,
+            unavailable: HashSet::new(),
+            last_choice: String::new(),
             confirmation: Confirmation::default(),
             export_dir,
         };
+        // A state saved before layers existed: the layer of the chart it
+        // showed. The renderer may have settled on another zoom.
+        if session.state.layer.is_none() {
+            session.state.layer = session
+                .catalogue
+                .visible()
+                .find(|f| f.path.to_string_lossy() == session.state.map)
+                .map(|f| f.layer.clone());
+        }
+        session.state.zoom = session.renderer.zoom();
         // The renderer knows where it is looking before the first event or frame.
         session.sync_view();
         session
@@ -118,7 +140,68 @@ impl Session {
     /// the first time. Pushes it, the pan offset and the course-up rotation
     /// into the renderer so `screen_to_gps`, `gps_to_point`, prefetching and
     /// the next frame all use the same geometry.
+    /// Pushes the view derived from the state into the renderer, then shows
+    /// the chart file the catalogue chooses for it.
     pub fn sync_view(&mut self) {
+        self.push_view();
+        self.show_chosen_chart();
+    }
+
+    /// What `Catalogue::choose` says about the current view.
+    pub fn chart_choice(&self) -> Choice<'_> {
+        let centre = self
+            .renderer
+            .view()
+            .panned_center(0, 0)
+            .or(self.state.position)
+            .unwrap_or_default();
+        self.catalogue.choose(Request {
+            layer: self.state.layer.as_deref(),
+            lock: None,
+            centre,
+            zoom: self.state.zoom,
+        })
+    }
+
+    /// The deepest zoom worth zooming in to at the view centre.
+    pub fn zoom_limit(&self) -> i32 {
+        self.chart_choice()
+            .zoom_limit
+            .unwrap_or(0)
+            .max(self.renderer.top_zoom())
+    }
+
+    fn show_chosen_chart(&mut self) {
+        let choice = self.chart_choice();
+        let target = choice.file.map_or_else(
+            || self.default_chart.clone(),
+            |file| file.path.to_string_lossy().into_owned(),
+        );
+        let summary = describe_choice(&choice, &target);
+        if summary != self.last_choice {
+            crate::diagnostics::record("DEBUG", format!("Carte choisie: {summary}"));
+            self.last_choice = summary;
+        }
+        if target == self.renderer.path() || self.unavailable.contains(&target) {
+            return;
+        }
+        // Same zoom, same view: the file changes under it, offset included.
+        match self.renderer.change_map(&target) {
+            Ok(()) => {
+                crate::diagnostics::record("INFO", format!("Carte affichée: {target}"));
+                self.state.map = target;
+            }
+            Err(error) => {
+                crate::diagnostics::record(
+                    "ERROR",
+                    format!("Impossible d'ouvrir {target}: {error}"),
+                );
+                self.unavailable.insert(target);
+            }
+        }
+    }
+
+    fn push_view(&mut self) {
         let saved = *self
             .state
             .position
@@ -141,6 +224,24 @@ impl Session {
     }
 }
 
+/// One line for the log: the file and every indication that goes with it.
+fn describe_choice(choice: &Choice, target: &str) -> String {
+    let mut line = target.to_string();
+    if let Some(levels) = choice.overscale {
+        line.push_str(&format!(", surzoom ×{}", 1u32 << levels.clamp(0, 20)));
+    }
+    if let Some(file) = choice.more_detail {
+        line.push_str(&format!(", plus détaillée: {}", file.name));
+    }
+    if let Some(layer) = choice.fallback_from {
+        line.push_str(&format!(", rien dans la couche {layer} ici"));
+    }
+    if choice.outside_lock {
+        line.push_str(", hors de la carte verrouillée");
+    }
+    line
+}
+
 pub(crate) fn valid_boat_position(boat: &BoatState) -> bool {
     boat.position_valid
         && boat.longitude.is_finite()
@@ -154,15 +255,15 @@ pub(crate) fn valid_boat_position(boat: &BoatState) -> bool {
 pub(in crate::app) mod test_support {
     use super::Session;
     use crate::boat::BoatState;
+    use crate::catalogue::Catalogue;
     use crate::config::RenderingConfig;
     use crate::mbtiles_renderer::test_support::fixture_chart;
     use crate::mbtiles_renderer::MBTilesRenderer;
     use crate::{route::Route, state::State, track::Track, waypoints::Waypoints};
     use std::path::PathBuf;
 
-    /// A Session over a fixture chart, with every file under a temp dir.
-    /// The route has three points along the meridian; the Charts menu has
-    /// the fixture chart first and a missing file second.
+    /// A Session over one fixture chart, with every file under a temp dir.
+    /// The route has three points along the meridian.
     pub(in crate::app) struct Fixture {
         pub dir: PathBuf,
         pub chart: PathBuf,
@@ -170,15 +271,27 @@ pub(in crate::app) mod test_support {
     }
 
     pub(in crate::app) fn session(zooms: &[i32]) -> Fixture {
+        session_with_charts(&[("fixture.mbtiles", zooms)])
+    }
+
+    /// A Session over fixture charts (whole-world tiles at the given zooms)
+    /// named as given in `dir/charts`, catalogued, the first one open and
+    /// also the default chart.
+    pub(in crate::app) fn session_with_charts(charts: &[(&str, &[i32])]) -> Fixture {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let dir =
             std::env::temp_dir().join(format!("plotter-session-{}-{unique}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let chart = fixture_chart(zooms);
+        let chart_dir = dir.join("charts");
+        std::fs::create_dir_all(&chart_dir).unwrap();
+        for (name, zooms) in charts {
+            std::fs::rename(fixture_chart(zooms), chart_dir.join(name)).unwrap();
+        }
+        let chart = chart_dir.join(charts[0].0);
         let chart_str = chart.to_str().unwrap().to_string();
+        let catalogue = Catalogue::load(&chart_dir, &dir.join("charts.json"));
         let state = State::new(dir.join("state.json"), chart_str.clone()).unwrap();
         let renderer = MBTilesRenderer::new(
             &chart_str,
@@ -186,7 +299,6 @@ pub(in crate::app) mod test_support {
             512,
             256,
             &RenderingConfig::default(),
-            &chart_str,
         )
         .unwrap();
         let session = Session::new(
@@ -199,10 +311,8 @@ pub(in crate::app) mod test_support {
             ),
             Track::new(&dir.join("track.json")),
             Waypoints::empty_at(&dir.join("waypoints.json")),
-            vec![
-                chart_str,
-                dir.join("missing.mbtiles").to_string_lossy().into_owned(),
-            ],
+            catalogue,
+            chart_str,
             dir.join("export"),
         );
         Fixture {
@@ -221,7 +331,7 @@ pub(in crate::app) mod test_support {
                 session,
             } = self;
             drop(session);
-            std::fs::remove_file(chart).unwrap();
+            drop(chart);
             std::fs::remove_dir_all(dir).unwrap();
         }
     }

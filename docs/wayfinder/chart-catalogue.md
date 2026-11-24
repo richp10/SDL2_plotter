@@ -27,6 +27,7 @@ renderer changes, release run), and CLAUDE.md describing the result.
 
 <!-- one line per closed ticket, appended as each is resolved -->
 
+- [C2 — The switching rule](#c2--the-switching-rule) — `Catalogue::choose` picks the file per layer, centre and zoom with overscale, more-detail, fallback (never imagery) and zoom limit; the session switches files as you zoom and pan.
 - [C1 — Catalogue model and settings](#c1--catalogue-model-and-settingschartsjson) — `Catalogue::load` scans, caches real zooms and coverage, guesses layers and roles from names, keeps user choices in `settings/charts.json`, never fails; the menu shows display names.
 
 ## Not yet specified
@@ -52,7 +53,8 @@ renderer changes, release run), and CLAUDE.md describing the result.
   with the set-aside policy. Covers design decisions 1–4.
 
 ### C2 — The switching rule
-- type: task · status: open · blocked by: C1
+- type: task · status: closed · blocked by: C1
+- Resolution: `Catalogue::choose(Request { layer, lock, centre, zoom }) -> Choice { file, overscale, more_detail, fallback_from, outside_lock, zoom_limit }`, pure. Within the chosen layer, visible files covering the centre (`Bounds::contains`, antimeridian aware) whose levels include the zoom compete on deepest top level, then smaller area, then order; past every top level the deepest is shown overscaled; a file whose first level is deeper is passed over. A lock wins outright and reports `outside_lock`. Nothing in the layer: the best file of the other `Chart` layers, `fallback_from` naming the layer; imagery is never a fallback; nothing at all: `file = None`, the caller shows `charts.default`. `zoom_limit` counts the shown and the chosen layer (a test caught that, counting the shown layer only, the world chart fallback could not be zoomed back out of). Wiring: `Session` owns the catalogue and `charts.default`; `sync_view` pushes the view then shows the chosen file (`change_map` only on change, failures remembered, choice logged at DEBUG); `state.layer` (new, serde default, derived from `state.map` on first start); `ZoomIn` up to `zoom_limit`, `ZoomOut` to 0; `ChangeChart(i)` chooses the file's layer. The renderer lost its zoom policy: `zoom_increase`/`zoom_decrease` and `default_map` are gone, `zoom_to`, `zoom`, `top_zoom`, `path` added, and `change_map` keeps zoom and animation. Lock is in the rule but always `None` until C4; gap fill is C3. Benchmarks unchanged within noise (warm 1600x800 render 3.2-3.4 ms before and after on repeat runs; the drawing path is untouched). 13 new tests (9 rule, 4 session), 180 in all.
 - Question: a pure function from (catalogue, active layer, lock, view centre,
   whole zoom) to (active file, gap-fill file, indicators), including the
   fallback to a Chart layer and the world chart. Decisions 5, 6, 8 (rule

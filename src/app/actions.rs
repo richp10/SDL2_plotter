@@ -106,19 +106,15 @@ impl Session {
                 }
             }
             AppAction::ChangeChart(index) => {
-                // The new chart may open at another zoom, where a pixel offset
-                // means a different distance: anchor on what is visible first.
+                // Choosing a file chooses its layer; `sync_view` then shows
+                // the file of that layer that best fits the view.
                 self.anchor_on_visible_center();
-                match self.renderer.change_map(&self.charts_path[index]) {
-                    Ok(()) => {
-                        self.state.map = self.charts_path[index].clone();
-                    }
-                    Err(error) => {
-                        crate::diagnostics::record(
-                            "ERROR",
-                            format!("Impossible d'ouvrir {}: {error}", self.charts_path[index]),
-                        );
-                    }
+                match self.catalogue.visible().nth(index) {
+                    Some(file) => self.state.layer = Some(file.layer.clone()),
+                    None => crate::diagnostics::record(
+                        "WARN",
+                        format!("Carte {index} absente du catalogue"),
+                    ),
                 }
             }
             AppAction::Pan(dx, dy) => {
@@ -133,12 +129,18 @@ impl Session {
                 }
             }
             AppAction::ZoomIn => {
-                self.anchor_on_visible_center();
-                self.state.zoom = self.renderer.zoom_increase();
+                // As deep as the most detailed file here goes, no deeper.
+                if self.state.zoom < self.zoom_limit() {
+                    self.anchor_on_visible_center();
+                    self.zoom_to(self.state.zoom + 1);
+                }
             }
             AppAction::ZoomOut => {
-                self.anchor_on_visible_center();
-                self.state.zoom = self.renderer.zoom_decrease();
+                // Below every file's first level the default chart shows.
+                if self.state.zoom > 0 {
+                    self.anchor_on_visible_center();
+                    self.zoom_to(self.state.zoom - 1);
+                }
             }
             AppAction::HideWaypoints => self.state.display_waypoint = false,
             AppAction::ShowWaypoints => self.state.display_waypoint = true,
@@ -195,6 +197,11 @@ impl Session {
         }
     }
 
+    fn zoom_to(&mut self, zoom: i32) {
+        self.renderer.zoom_to(zoom);
+        self.state.zoom = zoom;
+    }
+
     pub(super) fn center_map_on_visible_center(&mut self) {
         if let Some(position) = self.state.position {
             self.state.position = Some(
@@ -208,7 +215,7 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
-    use super::super::session::test_support::session;
+    use super::super::session::test_support::{session, session_with_charts};
     use super::*;
 
     #[test]
@@ -322,7 +329,7 @@ mod tests {
         fx.session.sync_view();
         let before = visible_centre(&fx.session);
 
-        fx.session.execute_action(AppAction::ZoomIn);
+        fx.session.execute_action(AppAction::ZoomOut);
         std::thread::sleep(std::time::Duration::from_millis(300));
         fx.session.renderer.advance_zoom_animation();
         fx.session.sync_view();
@@ -384,7 +391,7 @@ mod tests {
         fx.session.execute_action(AppAction::ZoomIn);
         assert_eq!(fx.session.state.zoom, 3);
         fx.session.execute_action(AppAction::ZoomIn);
-        assert_eq!(fx.session.state.zoom, 3, "top of the chart: no change");
+        assert_eq!(fx.session.state.zoom, 3, "top of the only chart: no change");
         fx.finish();
     }
 
@@ -411,23 +418,112 @@ mod tests {
     }
 
     #[test]
-    fn changing_chart_records_it_and_an_unreadable_chart_leaves_the_state_alone() {
-        let mut fx = session(&[2]);
-        let chart = fx.session.charts_path[0].clone();
-        fx.session.state.map_offset = (5, 5);
-        fx.session.execute_action(AppAction::ChangeChart(0));
-        assert_eq!(fx.session.state.map, chart);
-        assert_eq!(fx.session.state.map_offset, (0, 0));
-
-        fx.session.state.map_offset = (7, 7);
-        fx.session.sync_view();
-        let before = visible_centre(&fx.session);
+    fn choosing_a_chart_chooses_its_layer_and_an_unknown_entry_changes_nothing() {
+        let mut fx =
+            session_with_charts(&[("A_Navionics.mbtiles", &[2]), ("B_BingSat.mbtiles", &[2])]);
         fx.session.execute_action(AppAction::ChangeChart(1));
-        assert_eq!(
-            fx.session.state.map, chart,
-            "the missing chart is not recorded"
+        assert_eq!(fx.session.state.layer.as_deref(), Some("Bing satellite"));
+        assert!(fx.session.state.map.ends_with("B_BingSat.mbtiles"));
+        assert!(fx.session.renderer.path().ends_with("B_BingSat.mbtiles"));
+
+        fx.session.execute_action(AppAction::ChangeChart(7));
+        assert_eq!(fx.session.state.layer.as_deref(), Some("Bing satellite"));
+        fx.finish();
+    }
+
+    #[test]
+    fn zooming_in_switches_to_the_more_detailed_file_of_the_layer_and_back() {
+        let mut fx = session_with_charts(&[
+            ("Ocean_Navionics.mbtiles", &[1, 2, 3]),
+            ("Coast_Navionics.mbtiles", &[4, 5]),
+        ]);
+        fx.session.state.zoom = 3;
+        fx.session.renderer.zoom_to(3);
+        fx.session.sync_view();
+        assert!(fx
+            .session
+            .renderer
+            .path()
+            .ends_with("Ocean_Navionics.mbtiles"));
+
+        fx.session.execute_action(AppAction::ZoomIn);
+        assert_eq!(fx.session.state.zoom, 4);
+        assert!(fx
+            .session
+            .renderer
+            .path()
+            .ends_with("Coast_Navionics.mbtiles"));
+        assert!(fx.session.state.map.ends_with("Coast_Navionics.mbtiles"));
+
+        fx.session.execute_action(AppAction::ZoomIn);
+        fx.session.execute_action(AppAction::ZoomIn);
+        assert_eq!(fx.session.state.zoom, 5, "no deeper than the deepest file");
+
+        for _ in 0..2 {
+            fx.session.execute_action(AppAction::ZoomOut);
+        }
+        assert_eq!(fx.session.state.zoom, 3);
+        assert!(fx
+            .session
+            .renderer
+            .path()
+            .ends_with("Ocean_Navionics.mbtiles"));
+        fx.finish();
+    }
+
+    #[test]
+    fn below_every_files_first_level_the_default_chart_shows_and_zooming_in_returns() {
+        let mut fx = session_with_charts(&[
+            ("World.mbtiles", &[0, 1]),
+            ("Ocean_Navionics.mbtiles", &[3, 4]),
+        ]);
+        fx.session.state.layer = Some("Navionics".into());
+        fx.session.state.zoom = 3;
+        fx.session.renderer.zoom_to(3);
+        fx.session.sync_view();
+        assert!(fx
+            .session
+            .renderer
+            .path()
+            .ends_with("Ocean_Navionics.mbtiles"));
+        fx.session.execute_action(AppAction::ZoomOut);
+        assert!(
+            fx.session.renderer.path().ends_with("World.mbtiles"),
+            "World is a chart in the default layer, the fallback"
         );
-        assert_close(visible_centre(&fx.session), before);
+        fx.session.execute_action(AppAction::ZoomIn);
+        assert!(fx
+            .session
+            .renderer
+            .path()
+            .ends_with("Ocean_Navionics.mbtiles"));
+        fx.finish();
+    }
+
+    #[test]
+    fn a_chart_that_fails_to_open_is_logged_once_and_the_current_one_stays() {
+        let mut fx = session_with_charts(&[
+            ("Ocean_Navionics.mbtiles", &[1, 2]),
+            ("Coast_Navionics.mbtiles", &[3]),
+        ]);
+        fx.session.state.zoom = 2;
+        fx.session.renderer.zoom_to(2);
+        fx.session.sync_view();
+        std::fs::remove_file(fx.dir.join("charts/Coast_Navionics.mbtiles")).unwrap();
+
+        fx.session.execute_action(AppAction::ZoomIn);
+        assert_eq!(fx.session.state.zoom, 3);
+        assert!(fx
+            .session
+            .renderer
+            .path()
+            .ends_with("Ocean_Navionics.mbtiles"));
+        fx.session.sync_view();
+        assert!(fx
+            .session
+            .renderer
+            .path()
+            .ends_with("Ocean_Navionics.mbtiles"));
         fx.finish();
     }
 

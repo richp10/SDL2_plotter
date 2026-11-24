@@ -12,6 +12,7 @@ use sdl2::render::{Texture, WindowCanvas};
 use sdl2::ttf::{Font, Sdl2TtfContext};
 
 use super::session::PhotoButton;
+use crate::catalogue::Role;
 use crate::config::FontConfig;
 
 /// The button is a square this many pixels wide.
@@ -84,10 +85,10 @@ impl<'ttf> PhotoButtonView<'ttf> {
         if !drawn {
             canvas.set_draw_color(EMPTY);
             let _ = canvas.fill_rect(area);
-            let label = if button.preview_is_photo {
-                "PHOTO"
-            } else {
-                "CHART"
+            let label = match button.preview_kind {
+                Role::Chart => "CHART",
+                Role::Satellite => "SAT",
+                Role::Map => "MAP",
             };
             let _ = crate::screen::draw_text(
                 canvas,

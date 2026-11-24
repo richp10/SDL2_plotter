@@ -99,7 +99,7 @@ impl Session {
             if let Some(layer) = session.state.layer.clone() {
                 match session.catalogue.role_of(&layer) {
                     Role::Chart => session.state.chart_layer = Some(layer),
-                    Role::Imagery => session.state.imagery_layer = Some(layer),
+                    Role::Satellite | Role::Map => session.state.imagery_layer = Some(layer),
                 }
             }
         }
@@ -201,20 +201,20 @@ impl Session {
         self.state
             .layer
             .as_deref()
-            .is_some_and(|layer| self.catalogue.role_of(layer) == Role::Imagery)
+            .is_some_and(|layer| self.catalogue.role_of(layer) != Role::Chart)
     }
 
     /// The file shown is a photo.
     pub(super) fn showing_photo(&self) -> bool {
         self.chart_choice()
             .file
-            .is_some_and(|f| self.catalogue.role_of(&f.layer) == Role::Imagery)
+            .is_some_and(|f| self.catalogue.role_of(&f.layer) != Role::Chart)
     }
 
     /// Where the shown photo is among the sources here, 0-based.
     fn photo_index(&self, sources: &[&ChartFile]) -> Option<usize> {
         let shown = self.chart_choice().file?;
-        if self.catalogue.role_of(&shown.layer) != Role::Imagery {
+        if self.catalogue.role_of(&shown.layer) == Role::Chart {
             return None;
         }
         sources.iter().position(|f| f.layer == shown.layer)
@@ -246,8 +246,8 @@ impl Session {
             None if showing => None,
             None => sources.first(),
         };
-        let (preview, preview_is_photo) = match next {
-            Some(file) => (Some(Preview::of(file)), true),
+        let (preview, preview_kind) = match next {
+            Some(file) => (Some(Preview::of(file)), self.catalogue.role_of(&file.layer)),
             None => {
                 let (centre, zoom) = self.view_centre_and_zoom();
                 let chart = self.catalogue.choose(Request {
@@ -256,12 +256,12 @@ impl Session {
                     centre,
                     zoom,
                 });
-                (chart.file.map(Preview::of), false)
+                (chart.file.map(Preview::of), Role::Chart)
             }
         };
         Some(PhotoButton {
             preview,
-            preview_is_photo,
+            preview_kind,
             position: index.map(|k| (k + 1, sources.len())),
         })
     }
@@ -271,7 +271,7 @@ impl Session {
         let choice = self.chart_choice();
         let mut text = match choice.file {
             Some(file) => format!("{}: {}", file.layer, file.name),
-            None => "Overview chart".to_string(),
+            None => "Overview map".to_string(),
         };
         if let Some(levels) = choice.overscale {
             text.push_str(&format!(" · OVERSCALE ×{}", 1u32 << levels.clamp(0, 20)));
@@ -288,6 +288,13 @@ impl Session {
             } else {
                 " · LOCKED"
             });
+        }
+        if choice
+            .file
+            .is_some_and(|f| self.catalogue.role_of(&f.layer) != Role::Chart)
+        {
+            // A photo or a land map: nothing on screen gives a depth.
+            text.push_str(" · NO DEPTHS");
         }
         text
     }
@@ -381,7 +388,8 @@ impl Session {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PhotoButton {
     pub preview: Option<Preview>,
-    pub preview_is_photo: bool,
+    /// What the preview is, for the label drawn when it has no tile there.
+    pub preview_kind: Role,
     /// Which source is shown, of how many.
     pub position: Option<(usize, usize)>,
 }

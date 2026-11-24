@@ -207,7 +207,7 @@ impl Session {
         if let Some(layer) = &layer {
             match self.catalogue.role_of(layer) {
                 Role::Chart => self.state.chart_layer = Some(layer.clone()),
-                Role::Imagery => self.state.imagery_layer = Some(layer.clone()),
+                Role::Satellite | Role::Map => self.state.imagery_layer = Some(layer.clone()),
             }
         }
         self.state.layer = layer;
@@ -633,6 +633,7 @@ mod tests {
         assert!(fx.session.renderer.path().ends_with("Isle_BingSat.mbtiles"));
         let status = fx.session.chart_status();
         assert!(fx.session.showing_photo());
+        assert!(status.ends_with(" · NO DEPTHS"), "{status}");
         assert!(status.starts_with("Bing satellite: "), "{}", status);
 
         fx.session.execute_action(AppAction::NextPhoto);
@@ -643,6 +644,53 @@ mod tests {
             .path()
             .ends_with("Ocean_Navionics.mbtiles"));
         assert!(!fx.session.showing_photo());
+        fx.finish();
+    }
+
+    #[test]
+    fn a_chart_says_nothing_about_depths_and_no_chart_here_is_the_overview_map() {
+        let mut fx =
+            session_with_bounded_charts(&[("Isle_Navionics.mbtiles", &[1, 2, 3], "0,0,40,40")]);
+        fx.session.state.follow = false;
+        fx.session.state.position = Some((20.0, 20.0));
+        fx.session.sync_view();
+        assert!(!fx.session.chart_status().contains("NO DEPTHS"));
+        fx.session.state.position = Some((-100.0, 20.0));
+        fx.session.sync_view();
+        assert_eq!(fx.session.chart_status(), "Overview map");
+        fx.finish();
+    }
+
+    #[test]
+    fn a_map_comes_after_the_satellites_and_says_no_depths() {
+        let mut fx = session_with_bounded_charts(&[
+            ("Ocean_Navionics.mbtiles", &[1, 2, 3], "-180,-85,180,85"),
+            ("Isle_OSM.mbtiles", &[1, 2, 3], "0,0,40,40"),
+            ("Isle_BingSat.mbtiles", &[1, 2, 3], "0,0,40,40"),
+        ]);
+        fx.session.state.follow = false;
+        fx.session.state.position = Some((20.0, 20.0));
+        fx.session.state.layer = Some("Navionics".into());
+        fx.session.state.chart_layer = Some("Navionics".into());
+        fx.session.state.zoom = 3;
+        fx.session.renderer.zoom_to(3);
+        settle(&mut fx);
+
+        fx.session.execute_action(AppAction::NextPhoto);
+        assert!(fx.session.renderer.path().ends_with("Isle_BingSat.mbtiles"));
+        let button = fx.session.photo_button().unwrap();
+        assert!(ends(&button.preview, "Isle_OSM.mbtiles"));
+        assert_eq!(button.preview_kind, Role::Map);
+
+        fx.session.execute_action(AppAction::NextPhoto);
+        assert!(fx.session.renderer.path().ends_with("Isle_OSM.mbtiles"));
+        assert_eq!(fx.session.photo_button().unwrap().position, Some((2, 2)));
+        let status = fx.session.chart_status();
+        assert!(status.starts_with("OpenStreetMap: "), "{status}");
+        assert!(status.ends_with(" · NO DEPTHS"), "{status}");
+
+        fx.session.execute_action(AppAction::NextPhoto);
+        assert_eq!(fx.session.state.layer.as_deref(), Some("Navionics"));
         fx.finish();
     }
 
@@ -698,7 +746,7 @@ mod tests {
         let button = fx.session.photo_button().expect("photos here");
         assert_eq!(button.position, None);
         assert!(ends(&button.preview, "Isle_BingSat.mbtiles"));
-        assert!(button.preview_is_photo);
+        assert_eq!(button.preview_kind, Role::Satellite);
 
         fx.session.execute_action(AppAction::NextPhoto);
         assert!(fx.session.renderer.path().ends_with("Isle_BingSat.mbtiles"));
@@ -715,7 +763,7 @@ mod tests {
         let button = fx.session.photo_button().unwrap();
         assert_eq!(button.position, Some((2, 2)));
         assert!(ends(&button.preview, "Ocean_Navionics.mbtiles"));
-        assert!(!button.preview_is_photo);
+        assert_eq!(button.preview_kind, Role::Chart);
 
         fx.session.execute_action(AppAction::NextPhoto);
         assert_eq!(fx.session.state.layer.as_deref(), Some("Navionics"));

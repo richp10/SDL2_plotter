@@ -9,7 +9,7 @@ use sdl2::keyboard::Mod;
 use sdl2::rect::Point;
 use std::time::Instant;
 
-use super::chart_manager::{Cell, ChartEdit, Hit};
+use super::chart_manager::{kind_tap, Cell, ChartEdit, Hit, KindTap};
 use super::gesture::Gesture;
 use super::tools::{ClickRequest, Target};
 use super::{AppAction, Mouse, PendingWaypoint, Plotter};
@@ -80,11 +80,10 @@ impl Plotter<'_> {
                 x,
                 y,
                 ..
-            } => {
-                if let Some(hit) = self.chart_manager.hit(*x, *y, rows) {
-                    self.chart_manager_hit(hit);
-                }
-            }
+            } => match self.chart_manager.hit(*x, *y, rows) {
+                Some(hit) => self.chart_manager_hit(hit),
+                None => self.chart_manager.confirm_kind = None,
+            },
             Event::MouseWheel { y, .. } => self.chart_manager.page(-y.signum(), rows),
             Event::TextInput { text, .. } => {
                 if let Some((_, buffer)) = self.chart_manager.typing.as_mut() {
@@ -124,6 +123,8 @@ impl Plotter<'_> {
     }
 
     fn chart_manager_hit(&mut self, hit: Hit) {
+        // Any tap but the confirming one drops a pending kind change.
+        let waiting = self.chart_manager.confirm_kind.take().map(|(file, _)| file);
         let rows = self.session.catalogue.files().len();
         let (index, cell) = match hit {
             Hit::Close => return self.close_chart_manager(),
@@ -139,7 +140,13 @@ impl Plotter<'_> {
             Cell::Up => ChartEdit::Up,
             Cell::Down => ChartEdit::Down,
             Cell::Layer => ChartEdit::NextLayer,
-            Cell::Role => ChartEdit::ToggleRole,
+            Cell::Role => match kind_tap(&self.session.catalogue, &name, waiting.as_deref()) {
+                KindTap::Apply => ChartEdit::CycleRole,
+                KindTap::Ask(prompt) => {
+                    self.chart_manager.confirm_kind = Some((name, prompt));
+                    return;
+                }
+            },
             Cell::Shown => ChartEdit::ToggleHidden,
             Cell::Zooms => return,
             Cell::Name if !reviewed => ChartEdit::Review,

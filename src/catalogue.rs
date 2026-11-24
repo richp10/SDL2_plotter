@@ -18,12 +18,43 @@ const FORMAT_VERSION: u32 = 1;
 /// The layer a file joins when its name names no known source.
 pub const DEFAULT_LAYER: &str = "Charts";
 
-/// What a layer shows. Imagery is a photo, never a navigational chart.
+/// What a layer shows: a nautical chart with soundings, or a satellite photo
+/// or land map, which have none and are only shown because the navigator
+/// chose them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
     Chart,
-    Imagery,
+    /// Saved as "imagery" before maps were a kind of their own.
+    #[serde(alias = "imagery")]
+    Satellite,
+    Map,
+}
+
+impl Role {
+    /// The kind a tap in the chart manager changes to.
+    pub fn next(self) -> Role {
+        match self {
+            Role::Chart => Role::Satellite,
+            Role::Satellite => Role::Map,
+            Role::Map => Role::Chart,
+        }
+    }
+
+    /// Whether changing to `to` makes a layer a chart or stops it being
+    /// one: what automatic switching uses changes, so the navigator is
+    /// asked first.
+    pub fn needs_confirmation(self, to: Role) -> bool {
+        self != to && (self == Role::Chart || to == Role::Chart)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Role::Chart => "Chart",
+            Role::Satellite => "Satellite",
+            Role::Map => "Map",
+        }
+    }
 }
 
 /// Coverage in degrees.
@@ -294,7 +325,8 @@ impl Catalogue {
             .map(|file| {
                 let role = match self.role_of(&file.layer) {
                     Role::Chart => "carte",
-                    Role::Imagery => "imagerie",
+                    Role::Satellite => "satellite",
+                    Role::Map => "plan terrestre",
                 };
                 let zooms = match (file.zooms.first(), file.zooms.last()) {
                     (Some(min), Some(max)) => format!("z{min}-{max}"),
@@ -341,16 +373,13 @@ impl Catalogue {
         self.edit(file, |_| {})
     }
 
-    /// Switches the role of the file's layer, for every file in it.
-    pub fn toggle_role(&mut self, file: &str) -> bool {
+    /// Moves the file's layer, every file in it, to the next kind.
+    pub fn cycle_role(&mut self, file: &str) -> bool {
         let Some(layer) = self.file(file).map(|f| f.layer.clone()) else {
             return false;
         };
         if let Some(layer) = self.layers.iter_mut().find(|l| l.name == layer) {
-            layer.role = match layer.role {
-                Role::Chart => Role::Imagery,
-                Role::Imagery => Role::Chart,
-            };
+            layer.role = layer.role.next();
         }
         self.edit(file, |_| {})
     }
@@ -375,28 +404,34 @@ impl Catalogue {
         self.edit(file, |_| {})
     }
 
-    /// Puts the file in the next layer, in catalogue order; after the last
-    /// one, in a layer of its own named after it, so any grouping can be
-    /// made with taps alone. A layer left with no file is dropped.
+    /// Puts the file in the next layer of the same kind, in catalogue
+    /// order; after the last one, in a layer of its own named after it, so
+    /// any grouping can be made with taps alone. Only the Kind column
+    /// changes what a file is. A layer left with no file is dropped.
     pub fn cycle_layer(&mut self, file: &str) -> bool {
         let Some(current) = self.file(file).map(|f| (f.layer.clone(), f.name.clone())) else {
             return false;
         };
         let (layer, name) = current;
-        let position = self.layers.iter().position(|l| l.name == layer);
-        let next = position
-            .and_then(|i| self.layers.get(i + 1))
-            .map(|l| l.name.clone());
+        let role = self.role_of(&layer);
+        let same_kind: Vec<String> = self
+            .layers
+            .iter()
+            .filter(|l| l.role == role)
+            .map(|l| l.name.clone())
+            .collect();
+        let position = same_kind.iter().position(|l| *l == layer);
+        let next = position.and_then(|i| same_kind.get(i + 1)).cloned();
         let next = match next {
             Some(next) => next,
             None if !self.layers.iter().any(|l| l.name == name) => {
                 self.layers.push(Layer {
                     name: name.clone(),
-                    role: self.role_of(&layer),
+                    role,
                 });
                 name
             }
-            None => self.layers[0].name.clone(),
+            None => same_kind.first().cloned().unwrap_or(layer),
         };
         self.edit(file, |f| f.layer = next);
         let missing_layers: Vec<String> = self.missing.values().map(|f| f.layer.clone()).collect();
@@ -517,11 +552,11 @@ impl Catalogue {
         }
     }
 
-    /// The photo sources available at `centre` and `zoom`: for each imagery
-    /// layer, the file `choose` would show, kept only if it is at most
-    /// `MAX_PHOTO_OVERSCALE` levels past its deepest. The layer named
-    /// `preferred` first, then the others in the order their first visible
-    /// file comes in the catalogue.
+    /// The photo sources available at `centre` and `zoom`: for each
+    /// satellite or map layer, the file `choose` would show, kept only if it
+    /// is at most `MAX_PHOTO_OVERSCALE` levels past its deepest. The layer
+    /// named `preferred` first, then the satellites, then the maps, each in
+    /// the order their first visible file comes in the catalogue.
     pub fn photo_sources(
         &self,
         centre: (f64, f64),
@@ -531,10 +566,11 @@ impl Catalogue {
         let mut layers: Vec<&str> = Vec::new();
         for file in self.visible() {
             let layer = file.layer.as_str();
-            if !layers.contains(&layer) && self.role_of(layer) == Role::Imagery {
+            if !layers.contains(&layer) && self.role_of(layer) != Role::Chart {
                 layers.push(layer);
             }
         }
+        layers.sort_by_key(|&layer| self.role_of(layer) == Role::Map);
         if let Some(i) = layers.iter().position(|&l| Some(l) == preferred) {
             let first = layers.remove(i);
             layers.insert(0, first);
@@ -618,7 +654,7 @@ pub struct Choice<'a> {
     /// that the zoom or the lock keeps off screen.
     pub more_detail: Option<&'a ChartFile>,
     /// The requested layer, when it has nothing here and a chart layer is
-    /// shown instead. Never set the other way: imagery is no fallback.
+    /// shown instead. Never set the other way: a satellite or map is no fallback.
     pub fallback_from: Option<&'a str>,
     /// The locked file does not cover the centre.
     pub outside_lock: bool,
@@ -631,14 +667,17 @@ pub struct Choice<'a> {
 
 /// Known sources by a word in the file or chart name: the layer a file joins
 /// and that layer's role. Checked in order; the first match wins.
-const SOURCES: [(&str, &str, Role); 7] = [
+const SOURCES: [(&str, &str, Role); 10] = [
     ("navionics", "Navionics", Role::Chart),
     ("openseamap", "OpenSeaMap", Role::Chart),
     ("noaa", "NOAA", Role::Chart),
-    ("bing", "Bing satellite", Role::Imagery),
-    ("google", "Google satellite", Role::Imagery),
-    ("arcgis", "ArcGIS satellite", Role::Imagery),
-    ("esri", "Esri satellite", Role::Imagery),
+    ("bing", "Bing satellite", Role::Satellite),
+    ("google", "Google satellite", Role::Satellite),
+    ("arcgis", "ArcGIS satellite", Role::Satellite),
+    ("esri", "Esri satellite", Role::Satellite),
+    ("openstreetmap", "OpenStreetMap", Role::Map),
+    ("osm", "OpenStreetMap", Role::Map),
+    ("topo", "Topo", Role::Map),
 ];
 
 /// How many levels past its deepest a photo is still offered: beyond that it
@@ -651,8 +690,8 @@ const IMAGERY_WORDS: [&str; 5] = ["sat", "imagery", "aerial", "ortho", "photo"];
 /// Longest display name kept, in characters.
 const MAX_NAME: usize = 64;
 
-/// The layer an imagery file of unknown source joins.
-const IMAGERY_LAYER: &str = "Imagery";
+/// The layer a satellite file of unknown source joins.
+const IMAGERY_LAYER: &str = "Satellite";
 
 /// Below this length a metadata name ("test", "map") says less than the
 /// file name, so the file name is shown instead.
@@ -677,7 +716,7 @@ fn guess(file_name: &str, metadata_name: Option<&str>) -> Guess {
     if IMAGERY_WORDS.iter().any(|word| text.contains(word)) {
         return Guess {
             layer: IMAGERY_LAYER.to_string(),
-            role: Role::Imagery,
+            role: Role::Satellite,
         };
     }
     Guess {
@@ -916,6 +955,9 @@ mod tests {
             "Atlantic_Navionics.mbtiles",
             "harbour_ortho.mbtiles",
             "harbour-scan-2019.mbtiles",
+            "Coast_OSM.mbtiles",
+            "Hills_topo.mbtiles",
+            "Baltic_OpenSeaMap.mbtiles",
         ] {
             chart(&dir, name, &tiles, &whole_world());
         }
@@ -923,7 +965,7 @@ mod tests {
 
         let catalogue = Catalogue::load(&dir, &dir.join("settings/charts.json"));
 
-        assert_eq!(catalogue.files().len(), 5, "only .mbtiles files");
+        assert_eq!(catalogue.files().len(), 8, "only .mbtiles files");
         assert_eq!(
             file(&catalogue, "Azores_Navionics.mbtiles").layer,
             "Navionics"
@@ -937,9 +979,18 @@ mod tests {
             file(&catalogue, "Azores_BingSat.mbtiles").layer,
             "Bing satellite"
         );
-        assert_eq!(role(&catalogue, "Bing satellite"), Role::Imagery);
-        assert_eq!(file(&catalogue, "harbour_ortho.mbtiles").layer, "Imagery");
-        assert_eq!(role(&catalogue, "Imagery"), Role::Imagery);
+        assert_eq!(role(&catalogue, "Bing satellite"), Role::Satellite);
+        assert_eq!(file(&catalogue, "harbour_ortho.mbtiles").layer, "Satellite");
+        assert_eq!(role(&catalogue, "Satellite"), Role::Satellite);
+        assert_eq!(file(&catalogue, "Coast_OSM.mbtiles").layer, "OpenStreetMap");
+        assert_eq!(role(&catalogue, "OpenStreetMap"), Role::Map);
+        assert_eq!(file(&catalogue, "Hills_topo.mbtiles").layer, "Topo");
+        assert_eq!(role(&catalogue, "Topo"), Role::Map);
+        assert_eq!(
+            file(&catalogue, "Baltic_OpenSeaMap.mbtiles").layer,
+            "OpenSeaMap"
+        );
+        assert_eq!(role(&catalogue, "OpenSeaMap"), Role::Chart);
         let bland = file(&catalogue, "harbour-scan-2019.mbtiles");
         assert_eq!(bland.layer, DEFAULT_LAYER);
         assert_eq!(role(&catalogue, DEFAULT_LAYER), Role::Chart);
@@ -1251,6 +1302,50 @@ mod tests {
     }
 
     #[test]
+    fn maps_are_offered_after_the_satellites_unless_used_last() {
+        let c = photo_charts();
+        let zooms: Vec<(i32, i64, i64)> = (7..=17).map(|z| (z, 0, 0)).collect();
+        chart(
+            &c.dir,
+            "Azores_OSM.mbtiles",
+            &zooms,
+            &[("bounds", "-34,36,-22,41")],
+        );
+        let mut catalogue = Catalogue::load(&c.dir, &c.dir.join("charts.json"));
+        // Put the map first in the file order: kind still decides.
+        while catalogue.files()[0].file_name != "Azores_OSM.mbtiles" {
+            catalogue.move_file("Azores_OSM.mbtiles", true);
+        }
+        assert_eq!(
+            photo_layers(catalogue.photo_sources(AZORES, 9, None)),
+            vec!["Bing satellite", "Google satellite", "OpenStreetMap"]
+        );
+        assert_eq!(
+            photo_layers(catalogue.photo_sources(AZORES, 9, Some("OpenStreetMap"))),
+            vec!["OpenStreetMap", "Bing satellite", "Google satellite"]
+        );
+    }
+
+    #[test]
+    fn a_map_is_never_a_fallback() {
+        let c = charts();
+        chart(
+            &c.dir,
+            "World_OSM.mbtiles",
+            &[(7, 0, 0), (9, 0, 0)],
+            &whole_world(),
+        );
+        let catalogue = Catalogue::load(&c.dir, &c.dir.join("charts.json"));
+        let choice = catalogue.choose(Request {
+            layer: Some("Navionics"),
+            lock: None,
+            centre: (100.0, -30.0),
+            zoom: 9,
+        });
+        assert!(choice.file.is_none(), "the overview, not the map");
+    }
+
+    #[test]
     fn a_photo_is_offered_up_to_two_levels_past_its_deepest_and_not_three() {
         let c = photo_charts();
         assert_eq!(c.catalogue.photo_sources(AZORES, 19, None).len(), 2);
@@ -1498,12 +1593,38 @@ mod tests {
     }
 
     #[test]
-    fn a_role_belongs_to_the_layer_and_changes_for_all_its_files() {
+    fn a_kind_belongs_to_the_layer_and_cycles_chart_satellite_map() {
         let mut c = charts();
-        assert!(c.catalogue.toggle_role("Azores_Navionics.mbtiles"));
-        let again = reload(&c);
-        assert_eq!(again.role_of("Navionics"), Role::Imagery);
-        assert_eq!(again.role_of("Bing satellite"), Role::Imagery);
+        let file = "Azores_Navionics.mbtiles";
+        assert!(c.catalogue.cycle_role(file));
+        let mut again = reload(&c);
+        assert_eq!(again.role_of("Navionics"), Role::Satellite);
+        assert_eq!(again.role_of("Bing satellite"), Role::Satellite);
+        assert!(again.cycle_role(file));
+        assert_eq!(again.role_of("Navionics"), Role::Map);
+        assert!(again.cycle_role(file));
+        assert_eq!(again.role_of("Navionics"), Role::Chart);
+        assert!(!again.cycle_role("absent.mbtiles"));
+    }
+
+    #[test]
+    fn only_a_change_into_or_out_of_chart_asks_first() {
+        assert!(Role::Chart.needs_confirmation(Role::Satellite));
+        assert!(Role::Map.needs_confirmation(Role::Chart));
+        assert!(!Role::Satellite.needs_confirmation(Role::Map));
+        assert!(!Role::Chart.needs_confirmation(Role::Chart));
+    }
+
+    #[test]
+    fn settings_saved_with_the_old_imagery_role_read_as_satellite() {
+        let c = charts();
+        c.catalogue.save().unwrap();
+        let path = c.dir.join("charts.json");
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("\"satellite\""), "{saved}");
+        std::fs::write(&path, saved.replace("\"satellite\"", "\"imagery\"")).unwrap();
+        let again = Catalogue::load(&c.dir, &path);
+        assert_eq!(again.role_of("Bing satellite"), Role::Satellite);
     }
 
     #[test]
@@ -1524,19 +1645,21 @@ mod tests {
     }
 
     #[test]
-    fn cycling_the_layer_visits_each_layer_then_a_layer_of_its_own() {
+    fn cycling_the_layer_visits_each_layer_of_its_kind_then_a_layer_of_its_own() {
         let mut c = charts();
         let file = "GB_Navionics.mbtiles";
         let layer = |c: &Catalogue| c.file(file).unwrap().layer.clone();
         assert_eq!(layer(&c.catalogue), "Navionics");
         c.catalogue.cycle_layer(file);
-        assert_eq!(layer(&c.catalogue), "Bing satellite");
-        c.catalogue.cycle_layer(file);
-        assert_eq!(layer(&c.catalogue), "GB_Navionics", "a layer of its own");
+        assert_eq!(
+            layer(&c.catalogue),
+            "GB_Navionics",
+            "never into Bing satellite: a layer of its own"
+        );
         assert_eq!(
             c.catalogue.role_of("GB_Navionics"),
-            Role::Imagery,
-            "role carried"
+            Role::Chart,
+            "kind carried"
         );
         c.catalogue.cycle_layer(file);
         assert_eq!(layer(&c.catalogue), "Navionics", "round again");

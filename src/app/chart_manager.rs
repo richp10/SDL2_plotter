@@ -16,6 +16,10 @@ use crate::config::FontConfig;
 use crate::screen::{draw_text, TextAlign};
 
 const HEADER_HEIGHT: u32 = 48;
+/// The row of column names under the title.
+const COLUMN_HEADER_HEIGHT: u32 = 28;
+/// Where the first row starts.
+const ROWS_TOP: u32 = HEADER_HEIGHT + COLUMN_HEADER_HEIGHT;
 const FOOTER_HEIGHT: u32 = 36;
 const ROW_HEIGHT: u32 = 44;
 const BUTTON_WIDTH: u32 = 100;
@@ -34,7 +38,17 @@ const BACKGROUND: Color = Color::RGB(236, 240, 240);
 const ROW_SHADE: Color = Color::RGB(222, 228, 228);
 const LINE: Color = Color::RGB(150, 160, 160);
 const NEW_MARK: Color = Color::RGB(255, 214, 102);
-const PHOTO: Color = Color::RGB(190, 30, 30);
+const SATELLITE: Color = Color::RGB(190, 30, 30);
+const MAP: Color = Color::RGB(170, 105, 0);
+
+/// Kinds told apart at a glance: the two without soundings stand out.
+fn kind_colour(role: Role) -> Color {
+    match role {
+        Role::Chart => Color::BLACK,
+        Role::Satellite => SATELLITE,
+        Role::Map => MAP,
+    }
+}
 
 /// A cell of a row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +74,54 @@ const CELLS: [(Cell, u32); 8] = [
     (Cell::Where, WHERE),
 ];
 
+/// A column's name in the header row. Order spans both arrows, so the down
+/// arrow's own is empty.
+fn header(cell: Cell) -> &'static str {
+    match cell {
+        Cell::Up => "Order",
+        Cell::Down => "",
+        Cell::Name => "Name",
+        Cell::Layer => "Source",
+        Cell::Role => "Kind",
+        Cell::Zooms => "Zooms",
+        Cell::Shown => "Visible",
+        Cell::Where => "Locate",
+    }
+}
+
+/// What a tap on a Kind cell does.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum KindTap {
+    /// Change the layer's kind now.
+    Apply,
+    /// Say this and wait for a second tap on the same file's Kind.
+    Ask(String),
+}
+
+/// A tap on `file`'s Kind, with `waiting` the file whose change is already
+/// asked about. A change into or out of Chart changes what automatic
+/// switching uses, so it is asked about first.
+pub(super) fn kind_tap(catalogue: &Catalogue, file: &str, waiting: Option<&str>) -> KindTap {
+    let Some(chart) = catalogue.files().iter().find(|f| f.file_name == file) else {
+        return KindTap::Apply;
+    };
+    let from = catalogue.role_of(&chart.layer);
+    let to = from.next();
+    if !from.needs_confirmation(to) || waiting == Some(file) {
+        return KindTap::Apply;
+    }
+    let effect = if to == Role::Chart {
+        "It will be used for automatic switching."
+    } else {
+        "It will no longer be used for automatic switching."
+    };
+    KindTap::Ask(format!(
+        "Make {} a {}? {effect} Tap Kind again to confirm.",
+        chart.layer,
+        to.label()
+    ))
+}
+
 /// What a tap landed on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Hit {
@@ -83,7 +145,7 @@ impl Layout {
     }
 
     pub fn rows_per_page(&self) -> usize {
-        (self.height.saturating_sub(HEADER_HEIGHT + FOOTER_HEIGHT) / ROW_HEIGHT).max(1) as usize
+        (self.height.saturating_sub(ROWS_TOP + FOOTER_HEIGHT) / ROW_HEIGHT).max(1) as usize
     }
 
     fn name_width(&self) -> u32 {
@@ -93,7 +155,19 @@ impl Layout {
 
     /// Where `cell` of the row shown at `slot` (0 = top of the page) is.
     pub fn cell(&self, slot: usize, cell: Cell) -> Rect {
-        let y = (HEADER_HEIGHT + slot as u32 * ROW_HEIGHT) as i32;
+        let (x, w) = self.column(cell);
+        let y = (ROWS_TOP + slot as u32 * ROW_HEIGHT) as i32;
+        Rect::new(x, y, w, ROW_HEIGHT)
+    }
+
+    /// Where the name of `cell`'s column is written.
+    pub fn column_header(&self, cell: Cell) -> Rect {
+        let (x, w) = self.column(cell);
+        Rect::new(x, HEADER_HEIGHT as i32, w, COLUMN_HEADER_HEIGHT)
+    }
+
+    /// The left edge and width of `cell`'s column.
+    fn column(&self, cell: Cell) -> (i32, u32) {
         let mut x = MARGIN;
         for (c, w) in CELLS {
             let w = if c == Cell::Name {
@@ -102,7 +176,7 @@ impl Layout {
                 w
             };
             if c == cell {
-                return Rect::new(x, y, w, ROW_HEIGHT);
+                return (x, w);
             }
             x += w as i32;
         }
@@ -139,10 +213,10 @@ impl Layout {
         if self.previous_button().contains_point(point) {
             return Some(Hit::PreviousPage);
         }
-        if y < HEADER_HEIGHT as i32 {
+        if y < ROWS_TOP as i32 {
             return None;
         }
-        let slot = ((y - HEADER_HEIGHT as i32) / ROW_HEIGHT as i32) as usize;
+        let slot = ((y - ROWS_TOP as i32) / ROW_HEIGHT as i32) as usize;
         let index = first + slot;
         if slot >= self.rows_per_page() || index >= rows {
             return None;
@@ -160,7 +234,7 @@ pub(super) enum ChartEdit {
     Up,
     Down,
     NextLayer,
-    ToggleRole,
+    CycleRole,
     ToggleHidden,
     Review,
     Rename(String),
@@ -175,7 +249,7 @@ impl Session {
             ChartEdit::Up => catalogue.move_file(file, true),
             ChartEdit::Down => catalogue.move_file(file, false),
             ChartEdit::NextLayer => catalogue.cycle_layer(file),
-            ChartEdit::ToggleRole => catalogue.toggle_role(file),
+            ChartEdit::CycleRole => catalogue.cycle_role(file),
             ChartEdit::ToggleHidden => catalogue.toggle_hidden(file),
             ChartEdit::Review => catalogue.mark_reviewed(file),
             ChartEdit::Rename(name) => catalogue.rename(file, &name),
@@ -237,6 +311,9 @@ pub(super) struct ChartManager<'ttf> {
     first: usize,
     /// The file whose name is being typed, and the text so far.
     pub typing: Option<(String, String)>,
+    /// The file whose kind change waits for a second tap, and what the
+    /// title line asks.
+    pub confirm_kind: Option<(String, String)>,
 }
 
 impl<'ttf> ChartManager<'ttf> {
@@ -252,6 +329,7 @@ impl<'ttf> ChartManager<'ttf> {
             open: false,
             first: 0,
             typing: None,
+            confirm_kind: None,
         })
     }
 
@@ -262,11 +340,13 @@ impl<'ttf> ChartManager<'ttf> {
     pub fn open(&mut self) {
         self.open = true;
         self.typing = None;
+        self.confirm_kind = None;
     }
 
     pub fn close(&mut self) {
         self.open = false;
         self.typing = None;
+        self.confirm_kind = None;
     }
 
     pub fn hit(&self, x: i32, y: i32, rows: usize) -> Option<Hit> {
@@ -290,17 +370,46 @@ impl<'ttf> ChartManager<'ttf> {
             let _ = draw_text(canvas, &self.font, s, area, align, colour);
         };
 
-        let title = format!(
-            "Chart manager: {} files. Tap a cell to change it.",
-            files.len()
-        );
+        let (title, colour) = match &self.confirm_kind {
+            Some((_, prompt)) => (prompt.clone(), SATELLITE),
+            None => (
+                format!(
+                    "Chart manager: {} files. Tap a cell to change it.",
+                    files.len()
+                ),
+                Color::BLACK,
+            ),
+        };
+        let title_width = self.layout.previous_button().left() - MARGIN * 3;
         text(
             canvas,
             &title,
-            Rect::new(MARGIN * 2, 0, width / 2, HEADER_HEIGHT),
+            Rect::new(MARGIN * 2, 0, title_width.max(0) as u32, HEADER_HEIGHT),
             TextAlign::Left,
-            Color::BLACK,
+            colour,
         );
+        for (cell, _) in CELLS {
+            let area = match cell {
+                Cell::Up => self
+                    .layout
+                    .column_header(Cell::Up)
+                    .union(self.layout.column_header(Cell::Down)),
+                Cell::Down => continue,
+                _ => self.layout.column_header(cell),
+            };
+            let align = if cell == Cell::Name {
+                TextAlign::Left
+            } else {
+                TextAlign::Centered
+            };
+            let inset = Rect::new(
+                area.x() + 6,
+                area.y(),
+                area.width().saturating_sub(12),
+                area.height(),
+            );
+            text(canvas, header(cell), inset, align, LINE);
+        }
         for (rect, label) in [
             (self.layout.previous_button(), "Previous"),
             (self.layout.next_button(), "Next"),
@@ -342,22 +451,11 @@ impl<'ttf> ChartManager<'ttf> {
                 (Cell::Down, "▼".to_string(), Color::BLACK),
                 (Cell::Name, name, Color::BLACK),
                 (Cell::Layer, file.layer.clone(), Color::BLACK),
-                (
-                    Cell::Role,
-                    match role {
-                        Role::Chart => "Chart".to_string(),
-                        Role::Imagery => "Photo".to_string(),
-                    },
-                    if role == Role::Imagery {
-                        PHOTO
-                    } else {
-                        Color::BLACK
-                    },
-                ),
+                (Cell::Role, role.label().to_string(), kind_colour(role)),
                 (Cell::Zooms, zooms, Color::BLACK),
                 (
                     Cell::Shown,
-                    if file.hidden { "Hidden" } else { "Shown" }.to_string(),
+                    if file.hidden { "Hidden" } else { "Visible" }.to_string(),
                     Color::BLACK,
                 ),
                 (Cell::Where, "Where".to_string(), Color::BLACK),
@@ -409,7 +507,7 @@ mod tests {
     use super::*;
 
     fn layout() -> Layout {
-        // 1600x800: 16 rows a page.
+        // 1600x800: 15 rows a page under the column headers.
         Layout::new(1600, 800)
     }
 
@@ -420,7 +518,7 @@ mod tests {
     #[test]
     fn header_buttons_and_row_cells_are_told_apart() {
         let l = layout();
-        assert_eq!(l.rows_per_page(), 16);
+        assert_eq!(l.rows_per_page(), 15);
         let (x, y) = centre(l.close_button());
         assert_eq!(l.hit(x, y, 0, 3), Some(Hit::Close));
         let (x, y) = centre(l.next_button());
@@ -439,6 +537,60 @@ mod tests {
         let (x, y) = centre(l.cell(2, Cell::Name));
         assert_eq!(l.hit(x, y, 0, 2), None, "below the last row");
         assert_eq!(l.hit(5, 20, 0, 3), None, "the title");
+        let (x, y) = centre(l.column_header(Cell::Role));
+        assert_eq!(l.hit(x, y, 0, 3), None, "a column header");
+        assert!(l.column_header(Cell::Role).bottom() <= l.cell(0, Cell::Role).top());
+    }
+
+    #[test]
+    fn every_column_has_a_header_and_order_spans_both_arrows() {
+        let headers: Vec<&str> = CELLS.iter().map(|(c, _)| header(*c)).collect();
+        assert_eq!(
+            headers,
+            vec!["Order", "", "Name", "Source", "Kind", "Zooms", "Visible", "Locate"]
+        );
+    }
+
+    #[test]
+    fn a_kind_change_into_or_out_of_chart_asks_first_and_a_second_tap_applies() {
+        let fx = session_with_charts(&[
+            ("Ocean_Navionics.mbtiles", &[2]),
+            ("Isle_BingSat.mbtiles", &[2]),
+        ]);
+        let catalogue = &fx.session.catalogue;
+        match kind_tap(catalogue, "Ocean_Navionics.mbtiles", None) {
+            KindTap::Ask(prompt) => assert_eq!(
+                prompt,
+                "Make Navionics a Satellite? It will no longer be used for automatic \
+                 switching. Tap Kind again to confirm."
+            ),
+            KindTap::Apply => panic!("a chart stops being one: ask"),
+        }
+        assert_eq!(
+            kind_tap(
+                catalogue,
+                "Ocean_Navionics.mbtiles",
+                Some("Ocean_Navionics.mbtiles")
+            ),
+            KindTap::Apply
+        );
+        assert!(
+            matches!(
+                kind_tap(
+                    catalogue,
+                    "Ocean_Navionics.mbtiles",
+                    Some("Isle_BingSat.mbtiles")
+                ),
+                KindTap::Ask(_)
+            ),
+            "waiting on another file"
+        );
+        assert_eq!(
+            kind_tap(catalogue, "Isle_BingSat.mbtiles", None),
+            KindTap::Apply,
+            "satellite to map needs no confirmation"
+        );
+        fx.finish();
     }
 
     #[test]

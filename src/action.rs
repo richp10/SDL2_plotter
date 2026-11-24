@@ -13,6 +13,8 @@ pub enum AppAction {
     ToggleLock,
     /// Switch between the chosen chart layer and the last imagery layer.
     ToggleImagery,
+    /// Open the chart manager window (the shell's, not the session's).
+    OpenChartManager,
     FollowOn,
     FollowOff,
     ToggleGoto,
@@ -49,6 +51,7 @@ impl AppAction {
             Self::ToggleFollow => "ToggleFollow",
             Self::ToggleLock => "ToggleLock",
             Self::ToggleImagery => "ToggleImagery",
+            Self::OpenChartManager => "OpenChartManager",
             Self::FollowOn => "On",
             Self::FollowOff => "Off",
             Self::ToggleGoto => "ToggleGoto",

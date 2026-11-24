@@ -47,10 +47,25 @@ impl Bounds {
         in_longitude && (self.south..=self.north).contains(&lat)
     }
 
+    /// Width in degrees of longitude; coverage crossing the antimeridian
+    /// (`west > east`) wraps, whole-world coverage is 360.
+    pub fn width(&self) -> f64 {
+        if self.west <= self.east {
+            self.east - self.west
+        } else {
+            self.east - self.west + 360.0
+        }
+    }
+
+    /// The middle of the coverage, longitude wrapped into -180..180.
+    pub fn centre(&self) -> (f64, f64) {
+        let lon = (self.west + self.width() / 2.0 + 180.0).rem_euclid(360.0) - 180.0;
+        (lon, (self.south + self.north) / 2.0)
+    }
+
     /// Size in square degrees: only for comparing coverage.
     pub fn area(&self) -> f64 {
-        let width = (self.east - self.west).rem_euclid(360.0);
-        width * (self.north - self.south)
+        self.width() * (self.north - self.south)
     }
 }
 
@@ -230,7 +245,6 @@ impl Catalogue {
     }
 
     /// Every file present, in the user's order.
-    #[cfg(test)]
     pub fn files(&self) -> &[ChartFile] {
         &self.files
     }
@@ -305,6 +319,109 @@ impl Catalogue {
                 )
             })
             .collect()
+    }
+
+    // ----- what the chart manager changes; the caller saves -----
+
+    /// Renames the file as shown; blank names are refused. False when
+    /// nothing changed.
+    pub fn rename(&mut self, file: &str, name: &str) -> bool {
+        let name: String = name.trim().chars().take(MAX_NAME).collect();
+        if name.is_empty() {
+            return false;
+        }
+        self.edit(file, |f| f.name = name)
+    }
+
+    pub fn toggle_hidden(&mut self, file: &str) -> bool {
+        self.edit(file, |f| f.hidden = !f.hidden)
+    }
+
+    pub fn mark_reviewed(&mut self, file: &str) -> bool {
+        self.edit(file, |_| {})
+    }
+
+    /// Switches the role of the file's layer, for every file in it.
+    pub fn toggle_role(&mut self, file: &str) -> bool {
+        let Some(layer) = self.file(file).map(|f| f.layer.clone()) else {
+            return false;
+        };
+        if let Some(layer) = self.layers.iter_mut().find(|l| l.name == layer) {
+            layer.role = match layer.role {
+                Role::Chart => Role::Imagery,
+                Role::Imagery => Role::Chart,
+            };
+        }
+        self.edit(file, |_| {})
+    }
+
+    /// Moves the file one place earlier (`up`) or later in the order.
+    pub fn move_file(&mut self, file: &str, up: bool) -> bool {
+        let Some(i) = self.files.iter().position(|f| f.file_name == file) else {
+            return false;
+        };
+        let j = if up { i.checked_sub(1) } else { Some(i + 1) };
+        let Some(j) = j.filter(|&j| j < self.files.len()) else {
+            return false;
+        };
+        let (a, b) = (self.files[i].order, self.files[j].order);
+        self.files[i].order = b;
+        self.files[j].order = a;
+        if a == b {
+            // Equal orders (hand-edited): make the move visible anyway.
+            self.files[if up { i } else { j }].order = a.saturating_sub(1);
+        }
+        self.files.swap(i, j);
+        self.edit(file, |_| {})
+    }
+
+    /// Puts the file in the next layer, in catalogue order; after the last
+    /// one, in a layer of its own named after it, so any grouping can be
+    /// made with taps alone. A layer left with no file is dropped.
+    pub fn cycle_layer(&mut self, file: &str) -> bool {
+        let Some(current) = self.file(file).map(|f| (f.layer.clone(), f.name.clone())) else {
+            return false;
+        };
+        let (layer, name) = current;
+        let position = self.layers.iter().position(|l| l.name == layer);
+        let next = position
+            .and_then(|i| self.layers.get(i + 1))
+            .map(|l| l.name.clone());
+        let next = match next {
+            Some(next) => next,
+            None if !self.layers.iter().any(|l| l.name == name) => {
+                self.layers.push(Layer {
+                    name: name.clone(),
+                    role: self.role_of(&layer),
+                });
+                name
+            }
+            None => self.layers[0].name.clone(),
+        };
+        self.edit(file, |f| f.layer = next);
+        let missing_layers: Vec<String> = self.missing.values().map(|f| f.layer.clone()).collect();
+        let files = &self.files;
+        self.layers.retain(|l| {
+            files.iter().any(|f| f.layer == l.name) || missing_layers.contains(&l.name)
+        });
+        true
+    }
+
+    fn file(&self, file: &str) -> Option<&ChartFile> {
+        self.files.iter().find(|f| f.file_name == file)
+    }
+
+    /// Applies `change` to the file and marks it reviewed: any edit means
+    /// the navigator has looked at it.
+    fn edit(&mut self, file: &str, change: impl FnOnce(&mut ChartFile)) -> bool {
+        match self.files.iter_mut().find(|f| f.file_name == file) {
+            Some(f) => {
+                change(f);
+                f.reviewed = true;
+                true
+            }
+            None => false,
+        }
     }
 
     /// The layers with at least one visible file, in catalogue order: the
@@ -488,6 +605,9 @@ const SOURCES: [(&str, &str, Role); 7] = [
 
 /// Words that mark imagery from an unknown source.
 const IMAGERY_WORDS: [&str; 5] = ["sat", "imagery", "aerial", "ortho", "photo"];
+
+/// Longest display name kept, in characters.
+const MAX_NAME: usize = 64;
 
 /// The layer an imagery file of unknown source joins.
 const IMAGERY_LAYER: &str = "Imagery";
@@ -1246,6 +1366,87 @@ mod tests {
         assert_eq!(names(&c), vec!["Navionics"], "all its files hidden");
     }
 
+    // ----- what the chart manager changes -----
+
+    fn reload(c: &Charts) -> Catalogue {
+        c.catalogue.save().unwrap();
+        Catalogue::load(&c.dir, &c.dir.join("charts.json"))
+    }
+
+    #[test]
+    fn renaming_hiding_and_reviewing_are_saved_and_mark_the_file_reviewed() {
+        let mut c = charts();
+        assert!(c.catalogue.rename("GB_Navionics.mbtiles", "  Channel  "));
+        assert!(
+            !c.catalogue.rename("GB_Navionics.mbtiles", "   "),
+            "blank refused"
+        );
+        assert!(c.catalogue.toggle_hidden("Azores_BingSat.mbtiles"));
+        assert!(c.catalogue.mark_reviewed("Atlantic_Navionics.mbtiles"));
+        assert!(!c.catalogue.toggle_hidden("absent.mbtiles"));
+
+        let again = reload(&c);
+        let gb = again.file("GB_Navionics.mbtiles").unwrap();
+        assert_eq!(gb.name, "Channel");
+        assert!(gb.reviewed);
+        assert!(again.file("Azores_BingSat.mbtiles").unwrap().hidden);
+        assert!(again.file("Atlantic_Navionics.mbtiles").unwrap().reviewed);
+        assert!(!again.file("Azores_Navionics.mbtiles").unwrap().reviewed);
+    }
+
+    #[test]
+    fn a_role_belongs_to_the_layer_and_changes_for_all_its_files() {
+        let mut c = charts();
+        assert!(c.catalogue.toggle_role("Azores_Navionics.mbtiles"));
+        let again = reload(&c);
+        assert_eq!(again.role_of("Navionics"), Role::Imagery);
+        assert_eq!(again.role_of("Bing satellite"), Role::Imagery);
+    }
+
+    #[test]
+    fn files_move_up_and_down_and_stay_in_bounds() {
+        let mut c = charts();
+        let order = |c: &Catalogue| -> Vec<String> {
+            c.files().iter().map(|f| f.file_name.clone()).collect()
+        };
+        let before = order(&c.catalogue);
+        let last = before.last().unwrap().clone();
+        assert!(c.catalogue.move_file(&last, true));
+        assert_eq!(order(&c.catalogue)[before.len() - 2], last);
+        assert!(
+            !c.catalogue.move_file(&before[0].clone(), true),
+            "first stays first"
+        );
+        assert_eq!(order(&reload(&c)), order(&c.catalogue), "saved");
+    }
+
+    #[test]
+    fn cycling_the_layer_visits_each_layer_then_a_layer_of_its_own() {
+        let mut c = charts();
+        let file = "GB_Navionics.mbtiles";
+        let layer = |c: &Catalogue| c.file(file).unwrap().layer.clone();
+        assert_eq!(layer(&c.catalogue), "Navionics");
+        c.catalogue.cycle_layer(file);
+        assert_eq!(layer(&c.catalogue), "Bing satellite");
+        c.catalogue.cycle_layer(file);
+        assert_eq!(layer(&c.catalogue), "GB_Navionics", "a layer of its own");
+        assert_eq!(
+            c.catalogue.role_of("GB_Navionics"),
+            Role::Imagery,
+            "role carried"
+        );
+        c.catalogue.cycle_layer(file);
+        assert_eq!(layer(&c.catalogue), "Navionics", "round again");
+        assert!(
+            !c.catalogue
+                .layers()
+                .iter()
+                .any(|l| l.name == "GB_Navionics"),
+            "the emptied layer is dropped"
+        );
+        assert_eq!(reload(&c).file(file).unwrap().layer, "Navionics");
+    }
+
     #[test]
     fn coverage_across_the_antimeridian_is_understood() {
         let pacific = Bounds {
@@ -1258,5 +1459,16 @@ mod tests {
         assert!(pacific.contains((-175.0, -15.0)));
         assert!(!pacific.contains((0.0, -15.0)));
         assert!((pacific.area() - 200.0).abs() < 1e-9);
+        assert!(
+            (pacific.centre().0 - 180.0).abs() < 1e-9 || (pacific.centre().0 + 180.0).abs() < 1e-9
+        );
+        let world = Bounds {
+            west: -180.0,
+            south: -85.0,
+            east: 180.0,
+            north: 85.0,
+        };
+        assert!((world.area() - 360.0 * 170.0).abs() < 1e-9, "not zero");
+        assert_eq!(world.centre(), (0.0, 0.0));
     }
 }

@@ -42,6 +42,8 @@ pub enum Shape {
     Mark((f64, f64)),
     /// The measurement line between the two marks.
     MeasureLine((f64, f64), (f64, f64)),
+    /// A closed outline through positions: a chart's coverage.
+    Outline(Vec<(f64, f64)>),
     /// Free text anchored at a position, offset in pixels.
     Label {
         at: (f64, f64),
@@ -62,6 +64,7 @@ pub enum Draw {
     Waypoint(Point),
     Mark(Point),
     Line(Point, Point),
+    Outline(Vec<Point>),
     Text { at: Point, text: String },
 }
 
@@ -137,6 +140,13 @@ pub fn plan(view: &ChartView, shapes: &[Shape]) -> Vec<Draw> {
                 let at = view.to_pixel(*at);
                 if visible(at) {
                     draws.push(Draw::Mark(at));
+                }
+            }
+            Shape::Outline(points) => {
+                if points.len() >= 2 {
+                    draws.push(Draw::Outline(
+                        points.iter().map(|&p| view.to_pixel(p)).collect(),
+                    ));
                 }
             }
             Shape::MeasureLine(a, b) => {
@@ -261,6 +271,23 @@ mod tests {
         assert!(matches!(&draws[0], Draw::Route(points) if points.len() == 2));
         assert!(matches!(&draws[1], Draw::Track(points) if points[0] == Point::new(256, 128)));
         assert!(matches!(draws[2], Draw::Line(..)));
+    }
+
+    #[test]
+    fn an_outline_is_projected_whole() {
+        let draws = plan(
+            &view(),
+            &[Shape::Outline(vec![
+                (-1.0, 1.0),
+                (1.0, 1.0),
+                (1.0, -1.0),
+                (90.0, -1.0),
+            ])],
+        );
+        let Draw::Outline(points) = &draws[0] else {
+            panic!("{draws:?}");
+        };
+        assert_eq!(points.len(), 4, "the off-screen corner too");
     }
 
     #[test]

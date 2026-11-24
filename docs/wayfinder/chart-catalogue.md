@@ -27,11 +27,14 @@ renderer changes, release run), and CLAUDE.md describing the result.
 
 <!-- one line per closed ticket, appended as each is resolved -->
 
+- [C6 — Chart manager window](#c6--chart-manager-window) — a touch panel to rename, regroup, set roles, hide, reorder, confirm guesses and locate each file; edits save at once and rebuild the menus.
 - [C5 — Charts menu as layer switcher](#c5--charts-menu-as-layer-switcher) — one entry per layer with something to show, then Lock chart and Imagery on/off; files leave the menu.
 - [C4 — Lock, badge and indicators](#c4--lock-imagery-badge-and-indicators-on-screen) — L locks, I toggles imagery, the bottom bar names layer and file with overscale, fallback, more detail and lock, and a red photo badge (in the stream too) taps back to the chart.
 - [C3 — Two-file rendering](#c3--two-file-rendering) — the next best file of the layer is drawn beneath, cut and scaled into the chart's gaps and cached; no cost to warm frames.
 - [C2 — The switching rule](#c2--the-switching-rule) — `Catalogue::choose` picks the file per layer, centre and zoom with overscale, more-detail, fallback (never imagery) and zoom limit; the session switches files as you zoom and pan.
 - [C1 — Catalogue model and settings](#c1--catalogue-model-and-settingschartsjson) — `Catalogue::load` scans, caches real zooms and coverage, guesses layers and roles from names, keeps user choices in `settings/charts.json`, never fails; the menu shows display names.
+
+**Destination reached.** All six tickets are closed.
 
 ## Not yet specified
 
@@ -83,6 +86,7 @@ renderer changes, release run), and CLAUDE.md describing the result.
   "Imagery on/off" as `AppAction`s on `Session`. Decision 11.
 
 ### C6 — Chart manager window
-- type: task · status: open · blocked by: C1, C5
+- type: task · status: closed · blocked by: C1, C5
+- Resolution: `src/app/chart_manager.rs`. A full-screen panel opened by "Chart manager..." (first entry of the Charts menu) or key C, one row per file: ▲ ▼ order, name, layer, role (Chart/Photo), real zooms, Shown/Hidden, Where. Touch-first: a tap on the layer cycles through the layers and then a layer of the file's own (so any grouping is taps only; emptied layers dropped), the role toggles for the whole layer, shown toggles, ▲▼ reorder; an unreviewed row shows NEW on a yellow name cell and a tap confirms the guess; a tap on a reviewed name types a new one with the keyboard (as waypoint names are). Where closes the panel, turns follow off, centres the chart on the file's coverage at its first level in its layer and outlines the coverage (`overlay::Shape::Outline`, `Draw::Outline`, `Screen::show_outline` through `show_line_in`'s clip, new `appearance.coverage_color`, default orange) until the manager opens again. Every edit saves `settings/charts.json` at once and re-syncs; a chosen layer that leaves the switcher is cleared, so the best chart (never imagery) shows. Previous/Next and the wheel page through rows; Escape or Close closes and rebuilds the menus. The panel is chrome, drawn after the stream capture. Also fixed: `Bounds` wrapped whole-world coverage to zero width, which would have centred Where on 180 W and ranked a world chart as the most detailed on area; `Bounds::width`/`centre` now wrap only antimeridian crossings. Not verified by eye: an attempt to open the panel with a synthetic key press and capture the window was refused by the session's permission classifier, so the drawing is unchecked on screen; the layout, hit testing, edits, Where and the outline plan are tested (12 new tests).
 - Question: the full-screen touch panel editing names, layers, roles,
   show/hide and order, with the coverage outline. Decision 12.

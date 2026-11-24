@@ -49,16 +49,18 @@ pub struct Topbar<'ttf> {
 }
 
 impl MenuBar {
-    /// The menu bar. `layer_labels` head the Charts menu in the order of
-    /// `Catalogue::switchable_layers`, so entry `i` is `ChooseLayer(i)`; a
-    /// layer whose label matches another entry's is still a layer. The lock
-    /// and the imagery toggle follow.
+    /// The menu bar. The Charts menu opens with the chart manager, then
+    /// `layer_labels` in the order of `Catalogue::switchable_layers`, so
+    /// layer `i` is `ChooseLayer(i)`; a layer whose label matches another
+    /// entry's is still a layer. The lock and the imagery toggle follow.
     pub fn new(layer_labels: Vec<String>) -> Self {
-        let mut charts: Vec<Entry> = layer_labels
-            .into_iter()
-            .enumerate()
-            .map(|(index, label)| entry(&label, AppAction::ChooseLayer(index)))
-            .collect();
+        let mut charts = vec![entry("Chart manager...", AppAction::OpenChartManager)];
+        charts.extend(
+            layer_labels
+                .into_iter()
+                .enumerate()
+                .map(|(index, label)| entry(&label, AppAction::ChooseLayer(index))),
+        );
         charts.push(entry("Lock chart", AppAction::ToggleLock));
         charts.push(entry("Imagery on/off", AppAction::ToggleImagery));
         let menus = vec![
@@ -220,6 +222,11 @@ impl MenuBar {
 }
 
 impl<'ttf> Topbar<'ttf> {
+    /// Rebuilds the menus after the chart manager changed the layers.
+    pub fn set_layers(&mut self, layer_labels: Vec<String>) {
+        self.bar = MenuBar::new(layer_labels);
+    }
+
     pub fn new(
         ttf_context: &'ttf Sdl2TtfContext,
         width: u32,
@@ -347,17 +354,22 @@ mod tests {
         let mut bar = bar();
         bar.event(ITEM_WIDTH + 10, 10);
         assert_eq!(
-            bar.event(ITEM_WIDTH + 10, HEIGHT + ENTRY_HEIGHT + 5),
+            bar.event(ITEM_WIDTH + 10, HEIGHT + 2 * ENTRY_HEIGHT + 5),
             Some(AppAction::ChooseLayer(1))
         );
         bar.event(ITEM_WIDTH + 10, 10);
         assert_eq!(
-            bar.event(ITEM_WIDTH + 10, HEIGHT + 2 * ENTRY_HEIGHT + 5),
-            Some(AppAction::ToggleLock)
+            bar.event(ITEM_WIDTH + 10, HEIGHT + 5),
+            Some(AppAction::OpenChartManager)
         );
         bar.event(ITEM_WIDTH + 10, 10);
         assert_eq!(
             bar.event(ITEM_WIDTH + 10, HEIGHT + 3 * ENTRY_HEIGHT + 5),
+            Some(AppAction::ToggleLock)
+        );
+        bar.event(ITEM_WIDTH + 10, 10);
+        assert_eq!(
+            bar.event(ITEM_WIDTH + 10, HEIGHT + 4 * ENTRY_HEIGHT + 5),
             Some(AppAction::ToggleImagery)
         );
     }
@@ -394,12 +406,12 @@ mod tests {
         let mut bar = MenuBar::new(vec!["Exit".to_string(), "On".to_string()]);
         bar.event(ITEM_WIDTH + 10, 10); // open Charts
         assert_eq!(
-            bar.event(ITEM_WIDTH + 10, HEIGHT + 5),
+            bar.event(ITEM_WIDTH + 10, HEIGHT + ENTRY_HEIGHT + 5),
             Some(AppAction::ChooseLayer(0))
         );
         bar.event(ITEM_WIDTH + 10, 10);
         assert_eq!(
-            bar.event(ITEM_WIDTH + 10, HEIGHT + ENTRY_HEIGHT + 5),
+            bar.event(ITEM_WIDTH + 10, HEIGHT + 2 * ENTRY_HEIGHT + 5),
             Some(AppAction::ChooseLayer(1))
         );
     }

@@ -43,6 +43,8 @@ pub(crate) struct Session {
     unavailable: HashSet<String>,
     /// The last choice, as logged, so a change is logged once.
     last_choice: String,
+    /// Coverage outlined on the chart by the manager's "Where".
+    pub highlight: Option<crate::catalogue::Bounds>,
     pub confirmation: Confirmation,
     /// Where GPX exports are written.
     pub export_dir: PathBuf,
@@ -78,6 +80,7 @@ impl Session {
             default_chart,
             unavailable: HashSet::new(),
             last_choice: String::new(),
+            highlight: None,
             confirmation: Confirmation::default(),
             export_dir,
         };

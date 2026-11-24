@@ -48,6 +48,14 @@ impl Plotter<'_> {
         if self.session.state.display_waypoint {
             shapes.extend(self.session.waypoints.shapes());
         }
+        if let Some(b) = self.session.highlight {
+            shapes.push(crate::overlay::Shape::Outline(vec![
+                (b.west, b.north),
+                (b.east, b.north),
+                (b.east, b.south),
+                (b.west, b.south),
+            ]));
+        }
         let draws = crate::overlay::plan(&self.session.renderer.view(), &shapes);
         screen.paint(&draws).map_err(anyhow::Error::msg)?;
 
@@ -67,6 +75,10 @@ impl Plotter<'_> {
             self.confirm_dialog
                 .show(&mut screen.canvas, action)
                 .map_err(anyhow::Error::msg)?;
+        }
+        if self.chart_manager.is_open() {
+            self.chart_manager
+                .show(&mut screen.canvas, &self.session.catalogue);
         }
         screen.canvas.present();
 

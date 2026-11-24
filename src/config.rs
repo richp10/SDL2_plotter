@@ -78,6 +78,8 @@ pub struct AppearanceConfig {
     pub route_color: [u8; 4],
     pub track_color: [u8; 4],
     pub waypoint_color: [u8; 4],
+    /// The chart manager's "Where" outline.
+    pub coverage_color: [u8; 4],
     pub cog_color: [u8; 4],
     pub ais_color: [u8; 4],
     pub ais_outline_color: [u8; 4],
@@ -274,6 +276,7 @@ impl Default for AppearanceConfig {
             route_color: [255, 0, 0, 255],
             track_color: [255, 0, 0, 255],
             waypoint_color: [220, 30, 30, 255],
+            coverage_color: [255, 140, 0, 255],
             cog_color: [0, 0, 255, 255],
             ais_color: [255, 140, 0, 255],
             ais_outline_color: [0, 0, 0, 255],

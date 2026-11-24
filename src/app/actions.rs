@@ -19,6 +19,8 @@ impl Session {
                     Mode::Measurement => Mode::EditRoute,
                 };
             }
+            // The window belongs to the shell (`Plotter::execute_action`).
+            AppAction::OpenChartManager => {}
             AppAction::ToggleLock => {
                 self.state.lock = match self.state.lock.take() {
                     Some(_) => None,
@@ -233,7 +235,7 @@ impl Session {
 
     /// The navigator chose a layer: automatic switching stays in it, the
     /// lock is released, and the layer is remembered for its role.
-    fn choose_layer(&mut self, layer: Option<String>) {
+    pub(super) fn choose_layer(&mut self, layer: Option<String>) {
         self.state.lock = None;
         if let Some(layer) = &layer {
             match self.catalogue.role_of(layer) {

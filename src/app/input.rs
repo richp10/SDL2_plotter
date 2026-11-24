@@ -9,6 +9,7 @@ use sdl2::keyboard::Mod;
 use sdl2::rect::Point;
 use std::time::Instant;
 
+use super::chart_manager::{Cell, ChartEdit, Hit};
 use super::gesture::Gesture;
 use super::tools::{ClickRequest, Target};
 use super::{AppAction, Mouse, PendingWaypoint, Plotter};
@@ -69,6 +70,93 @@ impl Plotter<'_> {
         }
     }
 
+    /// Every event while the chart manager is open: taps on its cells,
+    /// the wheel for pages, typing a name, Escape to close.
+    pub(super) fn handle_chart_manager_event(&mut self, event: &Event) {
+        let rows = self.session.catalogue.files().len();
+        match event {
+            Event::MouseButtonDown {
+                mouse_btn: sdl2::mouse::MouseButton::Left,
+                x,
+                y,
+                ..
+            } => {
+                if let Some(hit) = self.chart_manager.hit(*x, *y, rows) {
+                    self.chart_manager_hit(hit);
+                }
+            }
+            Event::MouseWheel { y, .. } => self.chart_manager.page(-y.signum(), rows),
+            Event::TextInput { text, .. } => {
+                if let Some((_, buffer)) = self.chart_manager.typing.as_mut() {
+                    for c in text.chars().filter(|c| !c.is_control()) {
+                        if buffer.chars().count() < 64 {
+                            buffer.push(c);
+                        }
+                    }
+                }
+            }
+            Event::KeyDown {
+                keycode: Some(keycode),
+                repeat: false,
+                ..
+            } => match (*keycode, self.chart_manager.typing.is_some()) {
+                (sdl2::keyboard::Keycode::Return | sdl2::keyboard::Keycode::KpEnter, true) => {
+                    if let Some((file, name)) = self.chart_manager.typing.take() {
+                        self.text_input.stop();
+                        self.session.edit_chart(&file, ChartEdit::Rename(name));
+                    }
+                }
+                (sdl2::keyboard::Keycode::Backspace, true) => {
+                    if let Some((_, buffer)) = self.chart_manager.typing.as_mut() {
+                        buffer.pop();
+                    }
+                }
+                (sdl2::keyboard::Keycode::Escape, true) => {
+                    self.chart_manager.typing = None;
+                    self.text_input.stop();
+                }
+                (sdl2::keyboard::Keycode::Escape, false) => self.close_chart_manager(),
+                _ => {}
+            },
+            _ => return,
+        }
+        self.dirty = true;
+    }
+
+    fn chart_manager_hit(&mut self, hit: Hit) {
+        let rows = self.session.catalogue.files().len();
+        let (index, cell) = match hit {
+            Hit::Close => return self.close_chart_manager(),
+            Hit::NextPage => return self.chart_manager.page(1, rows),
+            Hit::PreviousPage => return self.chart_manager.page(-1, rows),
+            Hit::Row(index, cell) => (index, cell),
+        };
+        let Some(file) = self.session.catalogue.files().get(index) else {
+            return;
+        };
+        let (name, display, reviewed) = (file.file_name.clone(), file.name.clone(), file.reviewed);
+        let edit = match cell {
+            Cell::Up => ChartEdit::Up,
+            Cell::Down => ChartEdit::Down,
+            Cell::Layer => ChartEdit::NextLayer,
+            Cell::Role => ChartEdit::ToggleRole,
+            Cell::Shown => ChartEdit::ToggleHidden,
+            Cell::Zooms => return,
+            Cell::Name if !reviewed => ChartEdit::Review,
+            Cell::Name => {
+                self.chart_manager.typing = Some((name, display));
+                self.text_input.start();
+                return;
+            }
+            Cell::Where => {
+                self.close_chart_manager();
+                self.session.locate_chart(&name);
+                return;
+            }
+        };
+        self.session.edit_chart(&name, edit);
+    }
+
     pub(super) fn handle_keyboard_event(&mut self, event: &Event) {
         if self.pending_waypoint.is_some() {
             self.handle_pending_waypoint_event(event);
@@ -103,6 +191,7 @@ impl Plotter<'_> {
                 sdl2::keyboard::Keycode::F => Some(AppAction::ToggleFollow),
                 sdl2::keyboard::Keycode::L => Some(AppAction::ToggleLock),
                 sdl2::keyboard::Keycode::I => Some(AppAction::ToggleImagery),
+                sdl2::keyboard::Keycode::C => Some(AppAction::OpenChartManager),
                 sdl2::keyboard::Keycode::Tab => Some(AppAction::CycleMode),
                 sdl2::keyboard::Keycode::P => Some(AppAction::PreviousWaypoint),
                 sdl2::keyboard::Keycode::N => Some(AppAction::NextWaypoint),
@@ -126,6 +215,12 @@ impl Plotter<'_> {
         screen: &mut Screen<'_>,
         texture: &sdl2::render::Texture,
     ) -> Result<(), String> {
+        if let Event::Quit { .. } = event {
+            // Falls through to the normal handling below.
+        } else if self.chart_manager.is_open() {
+            self.handle_chart_manager_event(&event);
+            return Ok(());
+        }
         if self.session.confirmation.is_open() {
             match event {
                 Event::KeyDown {

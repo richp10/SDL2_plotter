@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::watch;
 
 mod actions;
+mod chart_manager;
 mod confirm_dialog;
 mod gesture;
 mod input;
@@ -47,6 +48,19 @@ enum Mouse {
     Move,
 }
 
+/// The Charts menu's layer entries: `Catalogue::switchable_layers`, imagery
+/// marked as a photo.
+fn layer_labels(catalogue: &Catalogue) -> Vec<String> {
+    catalogue
+        .switchable_layers()
+        .iter()
+        .map(|layer| match layer.role {
+            crate::catalogue::Role::Chart => layer.name.clone(),
+            crate::catalogue::Role::Imagery => format!("{} (photo)", layer.name),
+        })
+        .collect()
+}
+
 pub(crate) struct Plotter<'ttf> {
     /// Everything the actions act on; SDL-free and tested on its own.
     session: Session,
@@ -58,6 +72,7 @@ pub(crate) struct Plotter<'ttf> {
     topbar: topbar::Topbar<'ttf>,
     buttombar: buttombar::Buttombar<'ttf>,
     confirm_dialog: confirm_dialog::ConfirmDialog<'ttf>,
+    chart_manager: chart_manager::ChartManager<'ttf>,
     pending_waypoint: Option<PendingWaypoint>,
     text_input: sdl2::keyboard::TextInputUtil,
     mouse: Mouse,
@@ -98,14 +113,7 @@ impl<'ttf> Plotter<'ttf> {
         for line in catalogue.describe() {
             crate::diagnostics::record("INFO", line);
         }
-        let layer_labels: Vec<String> = catalogue
-            .switchable_layers()
-            .iter()
-            .map(|layer| match layer.role {
-                crate::catalogue::Role::Chart => layer.name.clone(),
-                crate::catalogue::Role::Imagery => format!("{} (photo)", layer.name),
-            })
-            .collect();
+        let layer_labels = layer_labels(&catalogue);
         let state = state::State::new(STATE_FILE, config.charts.default.clone())
             .map_err(anyhow::Error::msg)?;
         let renderer =
@@ -117,6 +125,9 @@ impl<'ttf> Plotter<'ttf> {
             .expect("failed to build buttombar bar");
         let confirm_dialog =
             confirm_dialog::ConfirmDialog::new(ttf_context, width, height, &config.fonts)
+                .map_err(anyhow::Error::msg)?;
+        let chart_manager =
+            chart_manager::ChartManager::new(ttf_context, width, height, &config.fonts)
                 .map_err(anyhow::Error::msg)?;
         let route = route::Route::new();
         let track = track::Track::with_checkpoint_interval(
@@ -153,6 +164,7 @@ impl<'ttf> Plotter<'ttf> {
             topbar,
             buttombar,
             confirm_dialog,
+            chart_manager,
             pending_waypoint: None,
             text_input,
             mouse: Mouse::Hand,
@@ -163,9 +175,27 @@ impl<'ttf> Plotter<'ttf> {
         })
     }
 
-    /// Runs an action on the session and schedules a redraw.
+    /// Runs an action on the session and schedules a redraw. Opening the
+    /// chart manager is the shell's: the window holds SDL state.
     fn execute_action(&mut self, action: AppAction) {
-        self.session.execute_action(action);
+        if action == AppAction::OpenChartManager {
+            self.chart_manager.open();
+            self.session.highlight = None;
+            self.topbar.close();
+        } else {
+            self.session.execute_action(action);
+        }
+        self.dirty = true;
+    }
+
+    /// Closes the chart manager and rebuilds the menus from its changes.
+    fn close_chart_manager(&mut self) {
+        if self.chart_manager.typing.is_some() {
+            self.text_input.stop();
+        }
+        self.chart_manager.close();
+        self.topbar
+            .set_layers(layer_labels(&self.session.catalogue));
         self.dirty = true;
     }
 

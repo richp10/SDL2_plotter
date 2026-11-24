@@ -307,6 +307,15 @@ impl Catalogue {
             .collect()
     }
 
+    /// The layers with at least one visible file, in catalogue order: the
+    /// layer switcher. Entry `i` of the Charts menu is entry `i` here.
+    pub fn switchable_layers(&self) -> Vec<&Layer> {
+        self.layers
+            .iter()
+            .filter(|layer| self.visible().any(|f| f.layer == layer.name))
+            .collect()
+    }
+
     /// The role of `layer`; an unknown layer is a chart.
     pub fn role_of(&self, layer: &str) -> Role {
         self.layers
@@ -1216,6 +1225,25 @@ mod tests {
             Some("GB_Navionics.mbtiles"),
             "outside a locked file the best file there fills in"
         );
+    }
+
+    #[test]
+    fn the_layer_switcher_lists_layers_with_something_to_show() {
+        let mut c = charts();
+        let names = |c: &Charts| -> Vec<String> {
+            c.catalogue
+                .switchable_layers()
+                .iter()
+                .map(|l| l.name.clone())
+                .collect()
+        };
+        assert_eq!(names(&c), vec!["Navionics", "Bing satellite"]);
+        c.catalogue
+            .files
+            .iter_mut()
+            .filter(|f| f.layer == "Bing satellite")
+            .for_each(|f| f.hidden = true);
+        assert_eq!(names(&c), vec!["Navionics"], "all its files hidden");
     }
 
     #[test]

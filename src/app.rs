@@ -98,16 +98,20 @@ impl<'ttf> Plotter<'ttf> {
         for line in catalogue.describe() {
             crate::diagnostics::record("INFO", line);
         }
-        let charts_name: Vec<String> = catalogue
-            .visible()
-            .map(|chart| chart.name.clone())
+        let layer_labels: Vec<String> = catalogue
+            .switchable_layers()
+            .iter()
+            .map(|layer| match layer.role {
+                crate::catalogue::Role::Chart => layer.name.clone(),
+                crate::catalogue::Role::Imagery => format!("{} (photo)", layer.name),
+            })
             .collect();
         let state = state::State::new(STATE_FILE, config.charts.default.clone())
             .map_err(anyhow::Error::msg)?;
         let renderer =
             MBTilesRenderer::new(&state.map, state.zoom, width, height, &config.rendering)?;
 
-        let topbar = topbar::Topbar::new(ttf_context, width, charts_name.clone(), &config.fonts)
+        let topbar = topbar::Topbar::new(ttf_context, width, layer_labels, &config.fonts)
             .map_err(anyhow::Error::msg)?;
         let buttombar = buttombar::Buttombar::new(ttf_context, width, height, &config.fonts)
             .expect("failed to build buttombar bar");

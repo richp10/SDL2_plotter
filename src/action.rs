@@ -25,7 +25,8 @@ pub enum AppAction {
     ExportTrackGpx,
     ClearWaypoints,
     ExportWaypointsGpx,
-    ChangeChart(usize),
+    /// Entry `i` of `Catalogue::switchable_layers`, the layer switcher.
+    ChooseLayer(usize),
     Pan(i32, i32),
     ZoomIn,
     ZoomOut,
@@ -60,7 +61,7 @@ impl AppAction {
             Self::ExportTrackGpx => "ExportTrackGpx",
             Self::ClearWaypoints => "ClearWaypoints",
             Self::ExportWaypointsGpx => "ExportWaypointsGpx",
-            Self::ChangeChart(_) => "ChangeChart",
+            Self::ChooseLayer(_) => "ChooseLayer",
             Self::Pan(_, _) => "Pan",
             Self::ZoomIn => "ZoomIn",
             Self::ZoomOut => "ZoomOut",

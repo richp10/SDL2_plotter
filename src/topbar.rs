@@ -49,15 +49,18 @@ pub struct Topbar<'ttf> {
 }
 
 impl MenuBar {
-    /// The menu bar. `chart_names` are the Charts entries, in the order of
-    /// the catalogue's visible files, so entry `i` is `ChangeChart(i)`; a chart
-    /// whose name matches another entry's label is still a chart.
-    pub fn new(chart_names: Vec<String>) -> Self {
-        let charts = chart_names
+    /// The menu bar. `layer_labels` head the Charts menu in the order of
+    /// `Catalogue::switchable_layers`, so entry `i` is `ChooseLayer(i)`; a
+    /// layer whose label matches another entry's is still a layer. The lock
+    /// and the imagery toggle follow.
+    pub fn new(layer_labels: Vec<String>) -> Self {
+        let mut charts: Vec<Entry> = layer_labels
             .into_iter()
             .enumerate()
-            .map(|(index, name)| entry(&name, AppAction::ChangeChart(index)))
+            .map(|(index, label)| entry(&label, AppAction::ChooseLayer(index)))
             .collect();
+        charts.push(entry("Lock chart", AppAction::ToggleLock));
+        charts.push(entry("Imagery on/off", AppAction::ToggleImagery));
         let menus = vec![
             Menu {
                 title: "App",
@@ -340,12 +343,22 @@ mod tests {
     }
 
     #[test]
-    fn chart_names_fill_the_charts_menu() {
+    fn layer_labels_head_the_charts_menu_then_lock_and_imagery() {
         let mut bar = bar();
         bar.event(ITEM_WIDTH + 10, 10);
         assert_eq!(
             bar.event(ITEM_WIDTH + 10, HEIGHT + ENTRY_HEIGHT + 5),
-            Some(AppAction::ChangeChart(1))
+            Some(AppAction::ChooseLayer(1))
+        );
+        bar.event(ITEM_WIDTH + 10, 10);
+        assert_eq!(
+            bar.event(ITEM_WIDTH + 10, HEIGHT + 2 * ENTRY_HEIGHT + 5),
+            Some(AppAction::ToggleLock)
+        );
+        bar.event(ITEM_WIDTH + 10, 10);
+        assert_eq!(
+            bar.event(ITEM_WIDTH + 10, HEIGHT + 3 * ENTRY_HEIGHT + 5),
+            Some(AppAction::ToggleImagery)
         );
     }
 
@@ -377,17 +390,17 @@ mod tests {
     }
 
     #[test]
-    fn a_chart_named_like_a_menu_entry_still_switches_chart() {
+    fn a_layer_named_like_a_menu_entry_still_switches_layer() {
         let mut bar = MenuBar::new(vec!["Exit".to_string(), "On".to_string()]);
         bar.event(ITEM_WIDTH + 10, 10); // open Charts
         assert_eq!(
             bar.event(ITEM_WIDTH + 10, HEIGHT + 5),
-            Some(AppAction::ChangeChart(0))
+            Some(AppAction::ChooseLayer(0))
         );
         bar.event(ITEM_WIDTH + 10, 10);
         assert_eq!(
             bar.event(ITEM_WIDTH + 10, HEIGHT + ENTRY_HEIGHT + 5),
-            Some(AppAction::ChangeChart(1))
+            Some(AppAction::ChooseLayer(1))
         );
     }
 

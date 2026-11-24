@@ -134,16 +134,20 @@ impl Session {
                     }
                 }
             }
-            AppAction::ChangeChart(index) => {
-                // Choosing a file chooses its layer; `sync_view` then shows
-                // the file of that layer that best fits the view.
+            AppAction::ChooseLayer(index) => {
+                // `sync_view` then shows the file of the layer that best
+                // fits the view.
                 self.anchor_on_visible_center();
-                let layer = self.catalogue.visible().nth(index).map(|f| f.layer.clone());
+                let layer = self
+                    .catalogue
+                    .switchable_layers()
+                    .get(index)
+                    .map(|l| l.name.clone());
                 match layer {
                     Some(layer) => self.choose_layer(Some(layer)),
                     None => crate::diagnostics::record(
                         "WARN",
-                        format!("Carte {index} absente du catalogue"),
+                        format!("Couche {index} absente du catalogue"),
                     ),
                 }
             }
@@ -356,7 +360,7 @@ mod tests {
         let before = visible_centre(&fx.session);
         assert!(before.0 < -5.0, "the drag moved the view: {before:?}");
 
-        fx.session.execute_action(AppAction::ChangeChart(0));
+        fx.session.execute_action(AppAction::ChooseLayer(0));
 
         assert_close(visible_centre(&fx.session), before);
         assert_eq!(fx.session.state.map_offset, (0, 0));
@@ -461,15 +465,15 @@ mod tests {
     }
 
     #[test]
-    fn choosing_a_chart_chooses_its_layer_and_an_unknown_entry_changes_nothing() {
+    fn choosing_a_layer_shows_its_best_file_and_an_unknown_entry_changes_nothing() {
         let mut fx =
             session_with_charts(&[("A_Navionics.mbtiles", &[2]), ("B_BingSat.mbtiles", &[2])]);
-        fx.session.execute_action(AppAction::ChangeChart(1));
+        fx.session.execute_action(AppAction::ChooseLayer(1));
         assert_eq!(fx.session.state.layer.as_deref(), Some("Bing satellite"));
         assert!(fx.session.state.map.ends_with("B_BingSat.mbtiles"));
         assert!(fx.session.renderer.path().ends_with("B_BingSat.mbtiles"));
 
-        fx.session.execute_action(AppAction::ChangeChart(7));
+        fx.session.execute_action(AppAction::ChooseLayer(7));
         assert_eq!(fx.session.state.layer.as_deref(), Some("Bing satellite"));
         fx.finish();
     }
@@ -611,10 +615,10 @@ mod tests {
     }
 
     #[test]
-    fn choosing_a_chart_releases_the_lock() {
+    fn choosing_a_layer_releases_the_lock() {
         let mut fx = ocean_and_coast();
         fx.session.execute_action(AppAction::ToggleLock);
-        fx.session.execute_action(AppAction::ChangeChart(0));
+        fx.session.execute_action(AppAction::ChooseLayer(0));
         assert_eq!(fx.session.state.lock, None);
         fx.finish();
     }

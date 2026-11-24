@@ -27,6 +27,7 @@ renderer changes, release run), and CLAUDE.md describing the result.
 
 <!-- one line per closed ticket, appended as each is resolved -->
 
+- [C5 — Charts menu as layer switcher](#c5--charts-menu-as-layer-switcher) — one entry per layer with something to show, then Lock chart and Imagery on/off; files leave the menu.
 - [C4 — Lock, badge and indicators](#c4--lock-imagery-badge-and-indicators-on-screen) — L locks, I toggles imagery, the bottom bar names layer and file with overscale, fallback, more detail and lock, and a red photo badge (in the stream too) taps back to the chart.
 - [C3 — Two-file rendering](#c3--two-file-rendering) — the next best file of the layer is drawn beneath, cut and scaled into the chart's gaps and cached; no cost to warm frames.
 - [C2 — The switching rule](#c2--the-switching-rule) — `Catalogue::choose` picks the file per layer, centre and zoom with overscale, more-detail, fallback (never imagery) and zoom limit; the session switches files as you zoom and pan.
@@ -76,7 +77,8 @@ renderer changes, release run), and CLAUDE.md describing the result.
   too), and the bottom-bar indicators wired to C2's output. Decisions 8–10.
 
 ### C5 — Charts menu as layer switcher
-- type: task · status: open · blocked by: C1
+- type: task · status: closed · blocked by: C1
+- Resolution: `AppAction::ChangeChart(i)` became `ChooseLayer(i)`, an index into `Catalogue::switchable_layers()` (layers with at least one visible file, catalogue order), which both the menu and the session read, so the two cannot disagree. The Charts menu lists the layers (imagery labelled "(photo)"), then "Lock chart" (`ToggleLock`) and "Imagery on/off" (`ToggleImagery`). With the owner's files the menu is five layer entries plus two, instead of twelve clipped file names. "Chart manager..." is added with the window in C6, so no entry leads nowhere. The menu is built at startup; a layer created or emptied in the manager needs it rebuilt (C6). Tests: the switcher omits a layer whose files are all hidden; the menu's lock and imagery entries; the session tests renamed.
 - Question: the menu lists layers, "Chart manager…", "Lock chart" and
   "Imagery on/off" as `AppAction`s on `Session`. Decision 11.
 

@@ -130,9 +130,11 @@ impl Session {
             }
             AppAction::ZoomIn => {
                 self.state.zoom = self.renderer.zoom_increase();
+                self.state.map = self.renderer.current_map().to_string();
             }
             AppAction::ZoomOut => {
                 self.state.zoom = self.renderer.zoom_decrease();
+                self.state.map = self.renderer.current_map().to_string();
             }
             AppAction::HideWaypoints => self.state.display_waypoint = false,
             AppAction::ShowWaypoints => self.state.display_waypoint = true,

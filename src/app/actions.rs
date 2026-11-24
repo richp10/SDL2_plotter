@@ -818,6 +818,30 @@ mod tests {
     }
 
     #[test]
+    fn the_charts_menu_marks_photo_layers_not_available_here() {
+        let mut fx = island();
+        assert_eq!(
+            fx.session.layer_labels(),
+            vec![
+                "Bing satellite (photo)",
+                "Google satellite (photo)",
+                "Navionics"
+            ]
+        );
+        fx.session.state.position = Some((-100.0, 20.0));
+        fx.session.sync_view();
+        assert_eq!(
+            fx.session.layer_labels(),
+            vec![
+                "Bing satellite (photo, not here)",
+                "Google satellite (photo, not here)",
+                "Navionics"
+            ]
+        );
+        fx.finish();
+    }
+
+    #[test]
     fn a_chart_that_fails_to_open_is_logged_once_and_the_current_one_stays() {
         let mut fx = session_with_charts(&[
             ("Ocean_Navionics.mbtiles", &[1, 2]),

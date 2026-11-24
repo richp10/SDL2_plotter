@@ -49,19 +49,6 @@ enum Mouse {
     Move,
 }
 
-/// The Charts menu's layer entries: `Catalogue::switchable_layers`, imagery
-/// marked as a photo.
-fn layer_labels(catalogue: &Catalogue) -> Vec<String> {
-    catalogue
-        .switchable_layers()
-        .iter()
-        .map(|layer| match layer.role {
-            crate::catalogue::Role::Chart => layer.name.clone(),
-            crate::catalogue::Role::Imagery => format!("{} (photo)", layer.name),
-        })
-        .collect()
-}
-
 pub(crate) struct Plotter<'ttf> {
     /// Everything the actions act on; SDL-free and tested on its own.
     session: Session,
@@ -117,13 +104,13 @@ impl<'ttf> Plotter<'ttf> {
         for line in catalogue.describe() {
             crate::diagnostics::record("INFO", line);
         }
-        let layer_labels = layer_labels(&catalogue);
         let state = state::State::new(STATE_FILE, config.charts.default.clone())
             .map_err(anyhow::Error::msg)?;
         let renderer =
             MBTilesRenderer::new(&state.map, state.zoom, width, height, &config.rendering)?;
 
-        let topbar = topbar::Topbar::new(ttf_context, width, layer_labels, &config.fonts)
+        // The layer entries need the session; they are set once it exists.
+        let topbar = topbar::Topbar::new(ttf_context, width, Vec::new(), &config.fonts)
             .map_err(anyhow::Error::msg)?;
         let buttombar = buttombar::Buttombar::new(ttf_context, width, height, &config.fonts)
             .expect("failed to build buttombar bar");
@@ -162,7 +149,7 @@ impl<'ttf> Plotter<'ttf> {
             PathBuf::from("export"),
         );
 
-        Ok(Self {
+        let mut plotter = Self {
             session,
             dirty: true,
             gestures: GestureRecognizer::new(LONG_CLICK, MOVE_TOLERANCE),
@@ -180,7 +167,9 @@ impl<'ttf> Plotter<'ttf> {
             track_rx,
             ais_rx,
             streamer,
-        })
+        };
+        plotter.topbar.set_layers(plotter.session.layer_labels());
+        Ok(plotter)
     }
 
     /// Runs an action on the session and schedules a redraw. Opening the
@@ -202,8 +191,7 @@ impl<'ttf> Plotter<'ttf> {
             self.text_input.stop();
         }
         self.chart_manager.close();
-        self.topbar
-            .set_layers(layer_labels(&self.session.catalogue));
+        self.topbar.set_layers(self.session.layer_labels());
         self.dirty = true;
     }
 

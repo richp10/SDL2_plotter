@@ -14,7 +14,7 @@ const BORDER_COLOR: Color = Color::RGB(120, 120, 120);
 const ITEM_WIDTH: u32 = 96; // largeur d'un titre dans la barre
 const MENU_WIDTH: u32 = 170; // largeur d'un menu déroulant
 const ENTRY_HEIGHT: u32 = 28; // hauteur d'une entrée du menu
-const HEIGHT: u32 = 32; // hauteur de la barre
+pub const HEIGHT: u32 = 32; // hauteur de la barre
 
 struct Entry {
     label: String,

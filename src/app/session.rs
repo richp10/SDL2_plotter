@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use super::confirm_dialog::Confirmation;
 use crate::ais::AisTarget;
 use crate::boat::BoatState;
-use crate::catalogue::{Catalogue, ChartFile, Choice, Request, Role};
+use crate::catalogue::{Bounds, Catalogue, ChartFile, Choice, Request, Role};
 use crate::mbtiles_renderer::MBTilesRenderer;
 use crate::mesure::Mesure;
 use crate::route::Route;
@@ -328,10 +328,22 @@ impl Session {
             || self.default_chart.clone(),
             |file| file.path.to_string_lossy().into_owned(),
         );
-        let beneath = choice
-            .beneath
-            .map(|file| file.path.to_string_lossy().into_owned());
-        let summary = describe_choice(&choice, &target);
+        let (_, zoom) = self.view_centre_and_zoom();
+        let screen = Bounds::of_screen(self.renderer.view().lonlat_bounds());
+        let fills: Vec<&ChartFile> = choice
+            .file
+            .map(|shown| self.catalogue.fills(shown, screen, zoom))
+            .unwrap_or_default();
+        let mut summary = describe_choice(&choice, &target);
+        if !fills.is_empty() {
+            let names: Vec<&str> = fills.iter().map(|f| f.name.as_str()).collect();
+            summary.push_str(&format!(", dessous: {}", names.join(", ")));
+        }
+        let fills: Vec<(String, Vec<i32>)> = fills
+            .iter()
+            .map(|f| (f.path.to_string_lossy().into_owned(), f.zooms.clone()))
+            .filter(|(path, _)| !self.unavailable.contains(path))
+            .collect();
         if summary != self.last_choice {
             crate::diagnostics::record("DEBUG", format!("Carte choisie: {summary}"));
             self.last_choice = summary;
@@ -346,10 +358,13 @@ impl Session {
                 Err(error) => self.mark_unavailable(target, error),
             }
         }
-        let beneath = beneath.filter(|path| !self.unavailable.contains(path));
-        if beneath.as_deref() != self.renderer.beneath_path() {
-            if let Err(error) = self.renderer.set_beneath(beneath.as_deref()) {
-                self.mark_unavailable(beneath.unwrap_or_default(), error);
+        let wanted: Vec<(&str, &[i32])> = fills
+            .iter()
+            .map(|(path, levels)| (path.as_str(), levels.as_slice()))
+            .collect();
+        if wanted.iter().map(|w| w.0).ne(self.renderer.fill_paths()) {
+            for (path, error) in self.renderer.set_fills(&wanted) {
+                self.mark_unavailable(path, error);
             }
         }
     }
@@ -422,9 +437,6 @@ fn describe_choice(choice: &Choice, target: &str) -> String {
     }
     if let Some(layer) = choice.fallback_from {
         line.push_str(&format!(", rien dans la couche {layer} ici"));
-    }
-    if let Some(file) = choice.beneath {
-        line.push_str(&format!(", dessous: {}", file.name));
     }
     if choice.outside_lock {
         line.push_str(", hors de la carte verrouillée");

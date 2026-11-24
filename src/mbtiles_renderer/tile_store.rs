@@ -178,6 +178,24 @@ impl TileStore {
     /// Opens the chart read-only and reads its metadata and zoom levels.
     /// `cache_size` is the number of decoded tiles kept (at least one).
     pub(super) fn open(mbtiles_path: &str, cache_size: usize) -> rusqlite::Result<Self> {
+        Self::open_with(mbtiles_path, cache_size, None)
+    }
+
+    /// Opens the chart with its levels as the catalogue already read them,
+    /// so nothing scans the tiles table (seconds on a big file).
+    pub(super) fn open_known(
+        mbtiles_path: &str,
+        cache_size: usize,
+        levels: &[i32],
+    ) -> rusqlite::Result<Self> {
+        Self::open_with(mbtiles_path, cache_size, Some(levels))
+    }
+
+    fn open_with(
+        mbtiles_path: &str,
+        cache_size: usize,
+        levels: Option<&[i32]>,
+    ) -> rusqlite::Result<Self> {
         let conn = Connection::open_with_flags(
             mbtiles_path,
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
@@ -197,8 +215,10 @@ impl TileStore {
 
         let parsed_min = metadata.get("minzoom").and_then(|v| v.parse::<i32>().ok());
         let parsed_max = metadata.get("maxzoom").and_then(|v| v.parse::<i32>().ok());
-        let (min_zoom, max_zoom) = match (parsed_min, parsed_max) {
-            (Some(min), Some(max)) => (min, max),
+        let known = levels.and_then(|l| Some((*l.first()?, *l.last()?)));
+        let (min_zoom, max_zoom) = match (parsed_min, parsed_max, known) {
+            (Some(min), Some(max), _) => (min, max),
+            (_, _, Some(range)) => range,
             _ => {
                 let (min_row, max_row): (Option<i64>, Option<i64>) = conn.query_row(
                     "SELECT MIN(zoom_level), MAX(zoom_level) FROM tiles",
@@ -209,10 +229,11 @@ impl TileStore {
             }
         };
 
-        let mut available_zooms = Vec::new();
-        if let Ok(mut stmt) =
-            conn.prepare("SELECT DISTINCT zoom_level FROM tiles ORDER BY zoom_level")
-        {
+        let mut available_zooms = levels.map(<[i32]>::to_vec).unwrap_or_default();
+        if let (None, Ok(mut stmt)) = (
+            levels,
+            conn.prepare("SELECT DISTINCT zoom_level FROM tiles ORDER BY zoom_level"),
+        ) {
             if let Ok(rows) = stmt.query_map([], |row| row.get::<_, i32>(0)) {
                 available_zooms = rows.flatten().collect();
             }

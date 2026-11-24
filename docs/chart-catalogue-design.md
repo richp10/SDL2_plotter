@@ -27,7 +27,9 @@ files, not just these.
 - **Real zoom range**: the zoom levels a file actually contains, read from its
   tiles, not its metadata.
 - **Active file**: the chart file currently drawn for the active layer;
-  **gap-fill file**: the less detailed file drawn beneath it.
+  **gap-fill files**: what is drawn where it has no tile: its own coarser
+  levels, then up to three files on screen (its own layer first, then other
+  chart layers), hatched. See `Catalogue::fills`.
 - **Lock**: freezes the active file against automatic switching.
 
 ## Decisions

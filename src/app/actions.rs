@@ -453,8 +453,8 @@ mod tests {
             .ends_with("Ocean_Navionics.mbtiles"));
 
         assert_eq!(
-            fx.session.renderer.beneath_path(),
-            None,
+            fx.session.renderer.fill_paths(),
+            Vec::<&str>::new(),
             "Coast starts deeper"
         );
         fx.session.execute_action(AppAction::ZoomIn);
@@ -463,7 +463,8 @@ mod tests {
         assert!(
             fx.session
                 .renderer
-                .beneath_path()
+                .fill_paths()
+                .first()
                 .is_some_and(|p| p.ends_with("Ocean_Navionics.mbtiles")),
             "the ocean chart fills in beyond the coast chart"
         );

@@ -95,6 +95,40 @@ impl ChartView {
         Some((lon, lat))
     }
 
+    /// What the screen shows, as `(west, south, east, north)` in degrees,
+    /// every corner of the (possibly rotated) screen inside. West is greater
+    /// than east when the screen crosses the antimeridian; a screen wider
+    /// than the world spans -180..180; latitude stops at the Mercator edge.
+    pub fn lonlat_bounds(self) -> (f64, f64, f64, f64) {
+        let scale = world_scale(self.display_zoom);
+        let (half_w, half_h) = (self.width as f64 / 2.0, self.height as f64 / 2.0);
+        let corners = [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)]
+            .map(|(sx, sy)| screen_to_world_delta(sx * half_w, sy * half_h, self.rotation));
+        let extent = |pick: fn(&(f64, f64)) -> f64| {
+            corners
+                .iter()
+                .map(pick)
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
+                    (lo.min(v), hi.max(v))
+                })
+        };
+        let (left, right) = extent(|c| c.0);
+        let (top, bottom) = extent(|c| c.1);
+        let latitude = |dy: f64| {
+            let y = (self.center_world.1 + dy).clamp(0.0, scale);
+            world_to_lonlat(0.0, y, self.display_zoom).1
+        };
+        let (north, south) = (latitude(top), latitude(bottom));
+        if right - left >= scale {
+            return (-180.0, south, 180.0, north);
+        }
+        let longitude = |dx: f64| {
+            let lon = world_to_lonlat(self.center_world.0 + dx, 0.0, self.display_zoom).0;
+            (lon + 180.0).rem_euclid(360.0) - 180.0
+        };
+        (longitude(left), south, longitude(right), north)
+    }
+
     /// The position that would sit at the screen centre after dragging the
     /// chart by `(dx, dy)` pixels: the point now `(dx, dy)` left and above
     /// the centre.
@@ -159,6 +193,32 @@ mod tests {
     use super::*;
 
     const BREST: (f64, f64) = (-4.4861, 48.3904);
+
+    #[test]
+    fn the_screen_bounds_hold_every_corner() {
+        // Zoom 2 is 1024 px around the world: 512 px is 180 degrees. Half
+        // of 256 px up is world y 384, 3/8 of the way down: 40.98 N.
+        let (west, south, east, north) =
+            ChartView::centred_on((0.0, 0.0), 2.0, 0.0, 512, 256).lonlat_bounds();
+        assert_close((west, east), (-90.0, 90.0));
+        assert!((north - 40.979_898).abs() < 1e-4, "{north}");
+        assert!((south + 40.979_898).abs() < 1e-4, "{south}");
+
+        let (west, _, east, _) =
+            ChartView::centred_on((180.0, 0.0), 2.0, 0.0, 512, 256).lonlat_bounds();
+        assert_close((west, east), (90.0, -90.0));
+
+        // Turned a quarter, the 256 px height lies across: 90 degrees.
+        let (west, _, east, _) =
+            ChartView::centred_on((0.0, 0.0), 2.0, std::f64::consts::FRAC_PI_2, 512, 256)
+                .lonlat_bounds();
+        assert_close((west, east), (-45.0, 45.0));
+
+        let (west, south, east, north) =
+            ChartView::centred_on((0.0, 0.0), 1.0, 0.0, 1600, 800).lonlat_bounds();
+        assert_eq!((west, east), (-180.0, 180.0), "wider than the world");
+        assert!(north > 85.0 && south < -85.0);
+    }
 
     fn assert_close(actual: (f64, f64), expected: (f64, f64)) {
         assert!(

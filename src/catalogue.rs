@@ -94,6 +94,33 @@ impl Bounds {
         (lon, (self.south + self.north) / 2.0)
     }
 
+    /// Whether the two share any ground, either one possibly crossing the
+    /// antimeridian.
+    pub fn intersects(&self, other: &Bounds) -> bool {
+        // Each as one or two spans of longitude that do not wrap.
+        let spans = |b: &Bounds| {
+            if b.west <= b.east {
+                [(b.west, b.east), (f64::NAN, f64::NAN)]
+            } else {
+                [(b.west, 180.0), (-180.0, b.east)]
+            }
+        };
+        let longitude = spans(self)
+            .iter()
+            .any(|a| spans(other).iter().any(|b| a.0 <= b.1 && b.0 <= a.1));
+        longitude && self.south <= other.north && other.south <= self.north
+    }
+
+    /// The bounds of a screen, as `ChartView::lonlat_bounds` gives them.
+    pub fn of_screen((west, south, east, north): (f64, f64, f64, f64)) -> Self {
+        Bounds {
+            west,
+            south,
+            east,
+            north,
+        }
+    }
+
     /// Size in square degrees: only for comparing coverage.
     pub fn area(&self) -> f64 {
         self.width() * (self.north - self.south)
@@ -539,17 +566,36 @@ impl Catalogue {
                 .filter_map(|f| f.zooms.last().copied())
                 .chain(file.map(top))
                 .max(),
-            beneath: file.and_then(|shown| {
-                covering
-                    .iter()
-                    .copied()
-                    .filter(|f| {
-                        f.file_name != shown.file_name
-                            && f.zooms.first().is_some_and(|&min| min <= zoom)
-                    })
-                    .min_by(|a, b| detail_order(a, b))
-            }),
         }
+    }
+
+    /// The files drawn where `shown` has no tile on `screen`, best first and
+    /// at most `MAX_FILLS`: the other files of its layer, then, for a chart,
+    /// the files of the other chart layers. Each covers part of the screen
+    /// and has a level at or above `zoom`, so it can draw there. A chart
+    /// never fills a satellite or map, nor they a chart.
+    pub fn fills(&self, shown: &ChartFile, screen: Bounds, zoom: i32) -> Vec<&ChartFile> {
+        let usable = |f: &&ChartFile| {
+            f.file_name != shown.file_name
+                && f.bounds.intersects(&screen)
+                && f.zooms.first().is_some_and(|&min| min <= zoom)
+        };
+        let mut same: Vec<&ChartFile> = self
+            .visible()
+            .filter(|f| f.layer == shown.layer)
+            .filter(usable)
+            .collect();
+        same.sort_by(|a, b| detail_order(a, b));
+        let mut others: Vec<&ChartFile> = if self.role_of(&shown.layer) == Role::Chart {
+            self.visible()
+                .filter(|f| f.layer != shown.layer && self.role_of(&f.layer) == Role::Chart)
+                .filter(usable)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        others.sort_by(|a, b| detail_order(a, b));
+        same.into_iter().chain(others).take(MAX_FILLS).collect()
     }
 
     /// The photo sources available at `centre` and `zoom`: for each
@@ -660,10 +706,12 @@ pub struct Choice<'a> {
     pub outside_lock: bool,
     /// The deepest zoom worth zooming in to here, if any file fits.
     pub zoom_limit: Option<i32>,
-    /// The next best file of the same layer, drawn beneath `file` so that
-    /// beyond its edge (or outside a locked file) the screen is never blank.
-    pub beneath: Option<&'a ChartFile>,
 }
+
+/// How many other files `Catalogue::fills` offers: each is an open file and
+/// a cache of scaled tiles, and a gap rarely needs more than the next scale
+/// down and one other source.
+pub const MAX_FILLS: usize = 3;
 
 /// Known sources by a word in the file or chart name: the layer a file joins
 /// and that layer's role. Checked in order; the first match wins.
@@ -1506,43 +1554,100 @@ mod tests {
         );
     }
 
+    /// `charts()` plus a C-Map chart of the eastern Atlantic and Europe
+    /// (z5-10), a source of its own.
+    fn charts_with_cmap() -> Charts {
+        let mut c = charts();
+        let zooms: Vec<(i32, i64, i64)> = (5..=10).map(|z| (z, 0, 0)).collect();
+        chart(
+            &c.dir,
+            "Europe_CMap.mbtiles",
+            &zooms,
+            &[("bounds", "-30,30,10,60")],
+        );
+        c.catalogue = Catalogue::load(&c.dir, &c.dir.join("charts.json"));
+        c
+    }
+
+    fn screen(west: f64, south: f64, east: f64, north: f64) -> Bounds {
+        Bounds {
+            west,
+            south,
+            east,
+            north,
+        }
+    }
+
     #[test]
-    fn the_next_best_file_of_the_layer_is_drawn_beneath() {
-        let c = charts();
-        let beneath = |request| {
+    fn gaps_are_filled_from_the_same_source_first_then_the_other_charts() {
+        let c = charts_with_cmap();
+        let fills = |shown: &str, on: Bounds, zoom: i32| -> Vec<String> {
             c.catalogue
-                .choose(request)
-                .beneath
+                .fills(file(&c.catalogue, shown), on, zoom)
+                .iter()
                 .map(|f| f.file_name.clone())
+                .collect()
         };
+        let azores = screen(-29.0, 38.0, -27.0, 39.0);
         assert_eq!(
-            beneath(navionics(AZORES, 9)).as_deref(),
-            Some("Atlantic_Navionics.mbtiles")
+            fills("Azores_Navionics.mbtiles", azores, 9),
+            vec!["Atlantic_Navionics.mbtiles", "Europe_CMap.mbtiles"],
+            "Navionics, then C-Map; never the satellite"
+        );
+        // The edge of the GB chart: Atlantic and C-Map cover the screen's
+        // west side though neither file is under its centre's east.
+        let channel = screen(-10.0, 48.0, -2.0, 52.0);
+        assert_eq!(
+            fills("GB_Navionics.mbtiles", channel, 11),
+            vec!["Atlantic_Navionics.mbtiles", "Europe_CMap.mbtiles"],
+            "overscaled is better than blank"
         );
         assert_eq!(
-            beneath(navionics(AZORES, 14)).as_deref(),
-            Some("Atlantic_Navionics.mbtiles"),
-            "overscaled beneath is better than blank"
+            fills("Atlantic_Navionics.mbtiles", channel, 8),
+            vec!["Europe_CMap.mbtiles"],
+            "GB starts at 10: it cannot draw at 8"
         );
-        assert_eq!(
-            beneath(navionics(MID_ATLANTIC, 9)),
-            None,
-            "nothing else here"
+        assert!(
+            fills(
+                "Atlantic_Navionics.mbtiles",
+                screen(-60.0, 10.0, -50.0, 20.0),
+                9
+            )
+            .is_empty(),
+            "nothing else on this screen"
         );
-        let bing = Request {
-            layer: Some("Bing satellite"),
-            ..navionics(AZORES, 9)
-        };
-        assert_eq!(beneath(bing), None, "imagery never mixes with a chart");
-        let locked_outside = Request {
-            lock: Some("Atlantic_Navionics.mbtiles"),
-            ..navionics((0.0, 57.0), 12)
-        };
-        assert_eq!(
-            beneath(locked_outside).as_deref(),
-            Some("GB_Navionics.mbtiles"),
-            "outside a locked file the best file there fills in"
+        assert!(
+            fills("Azores_BingSat.mbtiles", azores, 9).is_empty(),
+            "a chart never fills a photo"
         );
+    }
+
+    #[test]
+    fn no_more_than_three_files_fill_the_gaps() {
+        let c = charts_with_cmap();
+        for name in ["Biscay_Noaa.mbtiles", "Iberia_Noaa.mbtiles"] {
+            let zooms: Vec<(i32, i64, i64)> = (5..=10).map(|z| (z, 0, 0)).collect();
+            chart(&c.dir, name, &zooms, &[("bounds", "-30,30,10,60")]);
+        }
+        let catalogue = Catalogue::load(&c.dir, &c.dir.join("charts.json"));
+        let gb = file(&catalogue, "GB_Navionics.mbtiles");
+        let fills = catalogue.fills(gb, screen(-10.0, 48.0, -2.0, 52.0), 10);
+        assert_eq!(fills.len(), MAX_FILLS);
+        assert_eq!(fills[0].file_name, "Atlantic_Navionics.mbtiles");
+    }
+
+    #[test]
+    fn coverage_overlaps_a_screen_across_the_antimeridian() {
+        let fiji = screen(177.0, -19.0, -178.0, -16.0);
+        assert!(fiji.intersects(&screen(179.0, -18.0, 179.5, -17.0)));
+        assert!(fiji.intersects(&screen(-179.0, -18.0, -178.5, -17.0)));
+        assert!(screen(170.0, -20.0, 179.0, -10.0).intersects(&fiji));
+        assert!(!fiji.intersects(&screen(0.0, -18.0, 10.0, -17.0)));
+        assert!(
+            !fiji.intersects(&screen(178.0, 0.0, 179.0, 10.0)),
+            "north of it"
+        );
+        assert!(screen(-180.0, -85.0, 180.0, 85.0).intersects(&fiji));
     }
 
     #[test]

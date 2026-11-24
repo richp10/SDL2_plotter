@@ -29,17 +29,34 @@ use projection::{
 pub use thumbnail::Thumbnails;
 #[cfg(test)]
 pub(crate) use tile_store::test_support;
-use tile_store::{TileKey, TileStore};
+use tile_store::{Tile, TileKey, TileStore};
 pub use view::ChartView;
 
 const ZOOM_ANIMATION_DURATION: Duration = Duration::from_millis(240);
 const ROTATION_MARGIN: u32 = 4;
 const MAP_BACKGROUND: Rgba<u8> = Rgba([245, 245, 245, 255]);
 
-struct Beneath {
+/// Diagonal lines over every filled area, one pixel wide every
+/// `HATCH_SPACING` pixels (a divisor of the tile size, so lines run on
+/// across tiles), the pixel moved `HATCH_STRENGTH` of the way to `HATCH_INK`.
+const HATCH_SPACING: u32 = 16;
+const HATCH_STRENGTH: f32 = 0.35;
+const HATCH_INK: [f32; 3] = [40.0, 40.0, 60.0];
+
+/// A file drawn where the chart has no tile, and its squares already cut
+/// and scaled to the chart's grid.
+struct Fill {
     path: String,
     store: TileStore,
-    scaled: LruCache<TileKey, Option<Arc<RgbaImage>>>,
+    scaled: Scaled,
+}
+
+/// Squares cut from a coarser level and scaled up to whole tiles, hatched;
+/// `None` remembered too, so a hole is not looked up again.
+type Scaled = LruCache<TileKey, Option<Arc<Tile>>>;
+
+fn scaled_cache(size: usize) -> Scaled {
+    LruCache::new(NonZeroUsize::new(size.max(1)).unwrap())
 }
 
 pub struct MBTilesRenderer {
@@ -54,10 +71,12 @@ pub struct MBTilesRenderer {
     rendering_config: RenderingConfig,
     /// The chart file being drawn.
     path: String,
-    /// The less detailed file drawn where `store` has no tile (or a
-    /// transparent one), and its tiles already cut and scaled to the main
-    /// file's grid. See `beneath_tile`.
-    beneath: Option<Beneath>,
+    /// Where `store` has no tile at a level, its own coarser levels cut and
+    /// scaled. See `fill_stack`.
+    own_fill: Scaled,
+    /// The other files drawn where the chart has no tile (or a transparent
+    /// one), best first. See `fill_stack`.
+    fills: Vec<Fill>,
     /// What the screen is looking at, as the application states it.
     view: View,
     /// `view` projected to world pixels at the current `display_zoom` and
@@ -103,7 +122,8 @@ impl MBTilesRenderer {
             rotation: 0.0,
             rendering_config: config.clone(),
             path: mbtiles_path.to_string(),
-            beneath: None,
+            own_fill: scaled_cache(config.tile_cache_size),
+            fills: Vec::new(),
             view: View {
                 lon: 0.0,
                 lat: 0.0,
@@ -291,27 +311,35 @@ impl MBTilesRenderer {
         &self.path
     }
 
-    /// Draws `path` beneath the chart wherever the chart has no tile, or
-    /// nothing beneath with `None`. Opening the same file again is free; a
-    /// file that fails to open leaves nothing beneath.
-    pub fn set_beneath(&mut self, path: Option<&str>) -> rusqlite::Result<()> {
-        if path == self.beneath_path() {
-            return Ok(());
+    /// The files to draw, best first, where the chart (and its own coarser
+    /// levels) has nothing: each a path and the levels the catalogue read
+    /// from it. A file already open stays open with its cut squares; one
+    /// that fails to open is left out and returned with its error.
+    pub fn set_fills(&mut self, files: &[(&str, &[i32])]) -> Vec<(String, rusqlite::Error)> {
+        let mut old = std::mem::take(&mut self.fills);
+        let mut errors = Vec::new();
+        // A coarse tile covers many fine ones: a few decoded are plenty.
+        let cache = (self.rendering_config.tile_cache_size / 4).max(16);
+        for &(path, levels) in files {
+            if let Some(i) = old.iter().position(|f| f.path == path) {
+                self.fills.push(old.swap_remove(i));
+                continue;
+            }
+            match TileStore::open_known(path, cache, levels) {
+                Ok(store) => self.fills.push(Fill {
+                    path: path.to_string(),
+                    store,
+                    scaled: scaled_cache(self.rendering_config.tile_cache_size),
+                }),
+                Err(error) => errors.push((path.to_string(), error)),
+            }
         }
-        self.beneath = None;
-        if let Some(path) = path {
-            let cache = self.rendering_config.tile_cache_size;
-            self.beneath = Some(Beneath {
-                path: path.to_string(),
-                store: TileStore::open(path, cache)?,
-                scaled: LruCache::new(NonZeroUsize::new(cache.max(1)).unwrap()),
-            });
-        }
-        Ok(())
+        errors
     }
 
-    pub fn beneath_path(&self) -> Option<&str> {
-        self.beneath.as_ref().map(|b| b.path.as_str())
+    /// The files drawn where the chart has no tile, best first.
+    pub fn fill_paths(&self) -> Vec<&str> {
+        self.fills.iter().map(|f| f.path.as_str()).collect()
     }
 
     pub fn advance_zoom_animation(&mut self) -> bool {
@@ -359,12 +387,12 @@ impl MBTilesRenderer {
         new_renderer.zoom = self.zoom;
         new_renderer.display_zoom = self.display_zoom;
         new_renderer.zoom_animation = self.zoom_animation;
-        // The file beneath stays until the caller says otherwise; its cut
-        // tiles were scaled for the old file's levels.
-        new_renderer.beneath = self.beneath.take().map(|mut beneath| {
-            beneath.scaled.clear();
-            beneath
-        });
+        // The fills stay until the caller says otherwise; their cut squares
+        // were scaled for the old file's levels.
+        new_renderer.fills = std::mem::take(&mut self.fills);
+        for fill in &mut new_renderer.fills {
+            fill.scaled.clear();
+        }
         new_renderer.set_rotation(self.rotation);
         new_renderer.look_at(self.view.lon, self.view.lat, self.view.offset);
 
@@ -495,10 +523,17 @@ impl MBTilesRenderer {
 
                 let px = (tx as f64 * tile_size - origin_x).round() as i64;
                 let py = (ty as f64 * tile_size - origin_y).round() as i64;
-                let tile = self.store.tile((zoom, wrapped_x, ty));
+                let key = (zoom, wrapped_x, ty);
+                let tile = self.store.tile(key);
                 if tile.as_ref().is_none_or(|t| !t.opaque) {
-                    if let Some(under) = self.beneath_tile((zoom, wrapped_x, ty)) {
-                        imageops::replace(&mut canvas, under.as_ref(), px, py);
+                    // Bottom of the stack first: the one opaque square, if
+                    // any, then whatever lets it show through.
+                    for under in self.fill_stack(key, tile.is_none()).iter().rev() {
+                        if under.opaque {
+                            imageops::replace(&mut canvas, &under.image, px, py);
+                        } else {
+                            imageops::overlay(&mut canvas, &under.image, px, py);
+                        }
                     }
                 }
                 if let Some(tile) = tile {
@@ -516,40 +551,85 @@ impl MBTilesRenderer {
         canvas
     }
 
-    /// The square of the file beneath that lies under main tile `key`, cut
-    /// from its closest level at or above the main level and scaled up to a
-    /// whole tile. Cached, so each square is cut once.
-    fn beneath_tile(&mut self, key: TileKey) -> Option<Arc<RgbaImage>> {
-        let beneath = self.beneath.as_mut()?;
-        if let Some(scaled) = beneath.scaled.get(&key) {
-            return scaled.clone();
+    /// What shows where the chart's tile `key` is `missing` or transparent,
+    /// best first, down to the first opaque square: the chart's own coarser
+    /// level (only for a missing tile: a transparent one is deliberate),
+    /// then each fill in turn.
+    fn fill_stack(&mut self, key: TileKey, missing: bool) -> Vec<Arc<Tile>> {
+        let mut stack = Vec::new();
+        if missing {
+            let own = cut_square(&mut self.store, &mut self.own_fill, key, key.0 - 1);
+            if let Some(square) = own {
+                let opaque = square.opaque;
+                stack.push(square);
+                if opaque {
+                    return stack;
+                }
+            }
         }
-        let (zoom, x, y) = key;
-        let level = beneath
-            .store
-            .available_zooms()
-            .iter()
-            .copied()
-            .filter(|&z| z <= zoom)
-            .max();
-        let scaled = level.and_then(|level| {
-            let d = (zoom - level).min(30);
-            let tile = beneath.store.tile((level, x >> d, y >> d))?;
-            let size = TILE_SIZE;
-            let part = (size >> d.min(8)).max(1);
-            let mask = (1i64 << d) - 1;
-            let offset = |v: i64| (((v & mask) * size as i64) >> d) as u32;
-            let piece =
-                imageops::crop_imm(&tile.image, offset(x), offset(y), part, part).to_image();
-            Some(Arc::new(imageops::resize(
-                &piece,
-                size,
-                size,
-                imageops::FilterType::Nearest,
-            )))
-        });
-        beneath.scaled.put(key, scaled.clone());
-        scaled
+        for fill in &mut self.fills {
+            if let Some(square) = cut_square(&mut fill.store, &mut fill.scaled, key, key.0) {
+                let opaque = square.opaque;
+                stack.push(square);
+                if opaque {
+                    break;
+                }
+            }
+        }
+        stack
+    }
+}
+
+/// The square of `store` under tile `key`, cut from its deepest level at
+/// or above `deepest` and scaled up to a whole tile, then hatched. Cached
+/// in `scaled`, so each square is cut once.
+fn cut_square(
+    store: &mut TileStore,
+    scaled: &mut Scaled,
+    key: TileKey,
+    deepest: i32,
+) -> Option<Arc<Tile>> {
+    if let Some(square) = scaled.get(&key) {
+        return square.clone();
+    }
+    let (zoom, x, y) = key;
+    let level = store
+        .available_zooms()
+        .iter()
+        .copied()
+        .filter(|&z| z <= deepest)
+        .max();
+    let square = level.and_then(|level| {
+        let d = (zoom - level).min(30);
+        let tile = store.tile((level, x >> d, y >> d))?;
+        let size = TILE_SIZE;
+        let part = (size >> d.min(8)).max(1);
+        let mask = (1i64 << d) - 1;
+        let offset = |v: i64| (((v & mask) * size as i64) >> d) as u32;
+        let piece = imageops::crop_imm(&tile.image, offset(x), offset(y), part, part).to_image();
+        let mut image = imageops::resize(&piece, size, size, imageops::FilterType::Nearest);
+        for (px, py, pixel) in image.enumerate_pixels_mut() {
+            if (px + py) % HATCH_SPACING == 0 {
+                hatch_pixel(pixel);
+            }
+        }
+        Some(Arc::new(Tile {
+            image,
+            opaque: tile.opaque,
+        }))
+    });
+    scaled.put(key, square.clone());
+    square
+}
+
+/// One pixel of the hatch over a filled area; nothing where it is clear.
+fn hatch_pixel(pixel: &mut Rgba<u8>) {
+    if pixel.0[3] == 0 {
+        return;
+    }
+    for (channel, ink) in pixel.0.iter_mut().zip(HATCH_INK) {
+        let value = *channel as f32;
+        *channel = (value + (ink - value) * HATCH_STRENGTH).round() as u8;
     }
 }
 
@@ -731,16 +811,47 @@ mod tests {
         ]
     }
 
-    #[test]
-    fn where_the_chart_has_no_tile_the_file_beneath_fills_in() {
-        // The chart has only column 1 at zoom 2 (90 W..0, west of centre);
-        // the file beneath covers the whole world at zoom 1.
-        let chart = fixture_chart_with(&[2], Rgba([200, 0, 0, 255]));
+    /// The colours of the 32 pixels starting `dx` right of the centre.
+    fn row_right_of_centre(renderer: &mut MBTilesRenderer, dx: i64) -> Vec<[u8; 4]> {
+        (dx..dx + 32)
+            .map(|x| pixel_right_of_centre(renderer, x))
+            .collect()
+    }
+
+    /// Every pixel is `colour` or `colour` hatched, and there are both.
+    fn filled_with(row: &[[u8; 4]], colour: [u8; 4]) -> bool {
+        let hatched = hatch(colour);
+        assert_ne!(hatched, colour);
+        row.iter().all(|&p| p == colour || p == hatched)
+            && row.contains(&colour)
+            && row.contains(&hatched)
+    }
+
+    fn hatch(colour: [u8; 4]) -> [u8; 4] {
+        let mut pixel = Rgba(colour);
+        hatch_pixel(&mut pixel);
+        pixel.0
+    }
+
+    /// A chart with only column 1 at zoom 2 (90 W..0, west of the centre).
+    fn western_quarter(zooms: &[i32], colour: Rgba<u8>) -> std::path::PathBuf {
+        let chart = fixture_chart_with(zooms, colour);
         Connection::open(&chart)
             .unwrap()
-            .execute("DELETE FROM tiles WHERE tile_column != 1", [])
+            .execute(
+                "DELETE FROM tiles WHERE zoom_level = 2 AND tile_column != 1",
+                [],
+            )
             .unwrap();
-        let under = fixture_chart_with(&[1], Rgba([0, 0, 200, 255]));
+        chart
+    }
+
+    #[test]
+    fn where_the_chart_has_no_tile_the_files_beneath_fill_in_hatched() {
+        let chart = western_quarter(&[2], Rgba([200, 0, 0, 255]));
+        // Also only the western quarter: no help east of the centre.
+        let first = western_quarter(&[2], Rgba([0, 200, 0, 255]));
+        let world = fixture_chart_with(&[1], Rgba([0, 0, 200, 255]));
         let mut renderer = renderer_for(&chart, 2);
         renderer.look_at(0.0, 0.0, (0, 0));
         let red = [200, 0, 0, 255];
@@ -750,26 +861,52 @@ mod tests {
         assert_eq!(pixel_right_of_centre(&mut renderer, -50), red);
         assert_eq!(pixel_right_of_centre(&mut renderer, 50), background);
 
-        renderer.set_beneath(Some(under.to_str().unwrap())).unwrap();
-        assert_eq!(renderer.beneath_path(), under.to_str());
+        let (first_path, world_path) = (first.to_str().unwrap(), world.to_str().unwrap());
+        let errors = renderer.set_fills(&[(first_path, &[2]), (world_path, &[1])]);
+        assert!(errors.is_empty());
+        assert_eq!(renderer.fill_paths(), vec![first_path, world_path]);
         assert_eq!(
             pixel_right_of_centre(&mut renderer, -50),
             red,
-            "the chart wins"
+            "the chart wins, unmarked"
         );
-        assert_eq!(
-            pixel_right_of_centre(&mut renderer, 50),
-            blue,
-            "the gap is filled"
+        assert!(
+            filled_with(&row_right_of_centre(&mut renderer, 50), blue),
+            "the first file with a tile there fills the gap, hatched"
         );
 
-        renderer.set_beneath(None).unwrap();
+        renderer.set_fills(&[]);
         assert_eq!(pixel_right_of_centre(&mut renderer, 50), background);
-        assert!(renderer.set_beneath(Some("missing.mbtiles")).is_err());
-        assert_eq!(renderer.beneath_path(), None);
+        let errors = renderer.set_fills(&[("missing.mbtiles", &[1]), (world_path, &[1])]);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].0, "missing.mbtiles");
+        assert_eq!(
+            renderer.fill_paths(),
+            vec![world_path],
+            "the others still open"
+        );
+        drop(renderer);
+        for path in [chart, first, world] {
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_hole_in_the_chart_is_filled_from_its_own_coarser_level_first() {
+        let red = Rgba([200, 0, 0, 255]);
+        let chart = western_quarter(&[1, 2], red);
+        let world = fixture_chart_with(&[1], Rgba([0, 0, 200, 255]));
+        let mut renderer = renderer_for(&chart, 2);
+        renderer.look_at(0.0, 0.0, (0, 0));
+        renderer.set_fills(&[(world.to_str().unwrap(), &[1])]);
+        assert_eq!(pixel_right_of_centre(&mut renderer, -50), red.0);
+        assert!(
+            filled_with(&row_right_of_centre(&mut renderer, 50), red.0),
+            "its own level 1, before any other file"
+        );
         drop(renderer);
         std::fs::remove_file(chart).unwrap();
-        std::fs::remove_file(under).unwrap();
+        std::fs::remove_file(world).unwrap();
     }
 
     /// Regression: a file whose first level is far deeper than the zoom
@@ -947,9 +1084,13 @@ mod tests {
             .tiles_center()
             .unwrap();
         let lon = 11.25;
+        let levels = TileStore::open(beneath, 1)
+            .unwrap()
+            .available_zooms()
+            .to_vec();
         let open = || {
             let mut renderer = MBTilesRenderer::new(chart, 8, 1600, 800, &config).unwrap();
-            renderer.set_beneath(Some(beneath)).unwrap();
+            assert!(renderer.set_fills(&[(beneath, &levels)]).is_empty());
             renderer.look_at(lon, lat, (0, 0));
             renderer
         };

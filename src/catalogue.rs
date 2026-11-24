@@ -517,6 +517,40 @@ impl Catalogue {
         }
     }
 
+    /// The photo sources available at `centre` and `zoom`: for each imagery
+    /// layer, the file `choose` would show, kept only if it is at most
+    /// `MAX_PHOTO_OVERSCALE` levels past its deepest. The layer named
+    /// `preferred` first, then the others in the order their first visible
+    /// file comes in the catalogue.
+    #[cfg(test)]
+    pub fn photo_sources(
+        &self,
+        centre: (f64, f64),
+        zoom: i32,
+        preferred: Option<&str>,
+    ) -> Vec<&ChartFile> {
+        let mut layers: Vec<&str> = Vec::new();
+        for file in self.visible() {
+            let layer = file.layer.as_str();
+            if !layers.contains(&layer) && self.role_of(layer) == Role::Imagery {
+                layers.push(layer);
+            }
+        }
+        if let Some(i) = layers.iter().position(|&l| Some(l) == preferred) {
+            let first = layers.remove(i);
+            layers.insert(0, first);
+        }
+        layers
+            .into_iter()
+            .filter_map(|layer| self.best_in(layer, centre, zoom))
+            .filter(|f| {
+                f.zooms
+                    .last()
+                    .is_some_and(|&top| zoom - top <= MAX_PHOTO_OVERSCALE)
+            })
+            .collect()
+    }
+
     /// The visible files of `layer` whose coverage contains `centre`.
     fn covering(&self, layer: &str, centre: (f64, f64)) -> Vec<&ChartFile> {
         self.visible()
@@ -602,6 +636,11 @@ const SOURCES: [(&str, &str, Role); 7] = [
     ("arcgis", "ArcGIS satellite", Role::Imagery),
     ("esri", "Esri satellite", Role::Imagery),
 ];
+
+/// How many levels past its deepest a photo is still offered: beyond that it
+/// is too blurred to be worth a tap.
+#[cfg(test)]
+pub const MAX_PHOTO_OVERSCALE: i32 = 2;
 
 /// Words that mark imagery from an unknown source.
 const IMAGERY_WORDS: [&str; 5] = ["sat", "imagery", "aerial", "ortho", "photo"];
@@ -1167,6 +1206,67 @@ mod tests {
     const AZORES: (f64, f64) = (-28.0, 38.5);
     const MID_ATLANTIC: (f64, f64) = (-40.0, 30.0);
     const CORNWALL: (f64, f64) = (-5.0, 50.2);
+
+    // ----- photo sources available here -----
+
+    /// `charts()` plus Google imagery of the Azores (z7-17).
+    fn photo_charts() -> Charts {
+        let mut c = charts();
+        let zooms: Vec<(i32, i64, i64)> = (7..=17).map(|z| (z, 0, 0)).collect();
+        chart(
+            &c.dir,
+            "Azores_GoogleSat.mbtiles",
+            &zooms,
+            &[("bounds", "-34,36,-22,41")],
+        );
+        c.catalogue = Catalogue::load(&c.dir, &c.dir.join("charts.json"));
+        c
+    }
+
+    fn photo_layers(files: Vec<&ChartFile>) -> Vec<String> {
+        files.iter().map(|f| f.layer.clone()).collect()
+    }
+
+    #[test]
+    fn photo_sources_are_the_imagery_layers_covering_the_centre() {
+        let c = photo_charts();
+        assert_eq!(
+            photo_layers(c.catalogue.photo_sources(AZORES, 9, None)),
+            vec!["Bing satellite", "Google satellite"]
+        );
+        assert_eq!(
+            photo_layers(
+                c.catalogue
+                    .photo_sources(AZORES, 9, Some("Google satellite"))
+            ),
+            vec!["Google satellite", "Bing satellite"]
+        );
+        assert!(
+            c.catalogue.photo_sources(MID_ATLANTIC, 9, None).is_empty(),
+            "no photo there"
+        );
+    }
+
+    #[test]
+    fn a_photo_is_offered_up_to_two_levels_past_its_deepest_and_not_three() {
+        let c = photo_charts();
+        assert_eq!(c.catalogue.photo_sources(AZORES, 19, None).len(), 2);
+        assert!(c.catalogue.photo_sources(AZORES, 20, None).is_empty());
+    }
+
+    #[test]
+    fn hidden_photo_files_are_never_offered() {
+        let mut c = photo_charts();
+        c.catalogue
+            .files
+            .iter_mut()
+            .filter(|f| f.layer == "Bing satellite")
+            .for_each(|f| f.hidden = true);
+        assert_eq!(
+            photo_layers(c.catalogue.photo_sources(AZORES, 9, None)),
+            vec!["Google satellite"]
+        );
+    }
 
     fn navionics(centre: (f64, f64), zoom: i32) -> Request<'static> {
         Request {

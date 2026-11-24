@@ -471,10 +471,7 @@ mod tests {
             fx.session.state.layer, None,
             "its only file hidden, the layer left the switcher"
         );
-        assert!(
-            !fx.session.chart_status().imagery,
-            "never a photo by fallback"
-        );
+        assert!(!fx.session.showing_photo(), "never a photo by fallback");
         fx.finish();
     }
 

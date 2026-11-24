@@ -67,10 +67,7 @@ impl Plotter<'_> {
             .night_layer(NIGHT_OPACITY)
             .map_err(anyhow::Error::msg)?;
         let chart = self.session.chart_status();
-        self.display_buttombar(screen, &chart.text);
-        if chart.imagery {
-            self.buttombar.show_photo_badge(&mut screen.canvas);
-        }
+        self.display_buttombar(screen, &chart);
         if let Some(streamer) = &self.streamer {
             streamer
                 .capture(&screen.canvas)

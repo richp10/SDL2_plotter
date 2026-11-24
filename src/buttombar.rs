@@ -9,11 +9,6 @@ const COLOR: Color = gfx_color(200, 220, 220, 220);
 
 const HEIGHT: u32 = 32;
 
-const PHOTO_BADGE_TEXT: &str = "PHOTO - not a chart (tap for chart)";
-const PHOTO_BADGE_WIDTH: u32 = 420;
-const PHOTO_BADGE_HEIGHT: u32 = 40;
-const PHOTO_BADGE_COLOR: Color = Color::RGB(190, 30, 30);
-
 pub struct Buttombar<'ttf> {
     font: Font<'ttf, 'static>,
     width: u32,
@@ -66,35 +61,6 @@ impl<'ttf> Buttombar<'ttf> {
         }
         let _ = self.show_message_right(canvas, message2);
         canvas.set_viewport(None);
-    }
-
-    /// Where the photo badge sits: top centre, under the menu bar.
-    pub fn photo_badge_area(&self) -> Rect {
-        let width = PHOTO_BADGE_WIDTH.min(self.width);
-        Rect::new(
-            (self.width as i32 - width as i32) / 2,
-            HEIGHT as i32 + 12,
-            width,
-            PHOTO_BADGE_HEIGHT,
-        )
-    }
-
-    /// The badge that says the chart area is a photo. Drawn before the
-    /// stream is captured, because a viewer must know it too.
-    pub fn show_photo_badge(&mut self, canvas: &mut WindowCanvas) {
-        let area = self.photo_badge_area();
-        canvas.set_draw_color(PHOTO_BADGE_COLOR);
-        let _ = canvas.fill_rect(area);
-        canvas.set_draw_color(Color::WHITE);
-        let _ = canvas.draw_rect(area);
-        let _ = crate::screen::draw_text(
-            canvas,
-            &self.font,
-            PHOTO_BADGE_TEXT,
-            area,
-            crate::screen::TextAlign::Centered,
-            Color::WHITE,
-        );
     }
 
     fn show_message_left(&mut self, canvas: &mut WindowCanvas, texte: &str) -> Result<(), String> {

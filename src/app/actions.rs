@@ -32,7 +32,6 @@ impl Session {
                 None if self.showing_photo() => self.choose_layer(self.state.chart_layer.clone()),
                 None => crate::diagnostics::record("INFO", "Aucune photo ici"),
             },
-            AppAction::BackToChart => self.choose_layer(self.state.chart_layer.clone()),
             AppAction::ToggleFollow => {
                 self.state.follow = !self.state.follow;
                 self.center_map_on_visible_center();
@@ -621,18 +620,18 @@ mod tests {
             .ends_with("Ocean_Navionics.mbtiles"));
         let status = fx.session.chart_status();
         assert!(
-            status.text.starts_with("Navionics: Ocean_Navionics"),
+            status.starts_with("Navionics: Ocean_Navionics"),
             "{}",
-            status.text
+            status
         );
-        assert!(status.text.contains("OVERSCALE ×2"), "{}", status.text);
+        assert!(status.contains("OVERSCALE ×2"), "{}", status);
         assert!(
-            status.text.contains("More detail: Coast_Navionics"),
+            status.contains("More detail: Coast_Navionics"),
             "{}",
-            status.text
+            status
         );
-        assert!(status.text.contains("LOCKED"), "{}", status.text);
-        assert!(!status.imagery);
+        assert!(status.contains("LOCKED"), "{}", status);
+        assert!(!fx.session.showing_photo());
 
         fx.session.execute_action(AppAction::ToggleLock);
         assert_eq!(fx.session.state.lock, None);
@@ -642,7 +641,7 @@ mod tests {
             .path()
             .ends_with("Coast_Navionics.mbtiles"));
         let status = fx.session.chart_status();
-        assert!(!status.text.contains("LOCKED") && !status.text.contains("OVERSCALE"));
+        assert!(!status.contains("LOCKED") && !status.contains("OVERSCALE"));
         fx.finish();
     }
 
@@ -656,25 +655,21 @@ mod tests {
     }
 
     #[test]
-    fn a_photo_is_switched_on_and_off_by_hand_and_badged_while_shown() {
+    fn a_photo_is_switched_on_and_off_by_hand() {
         let mut fx = session_with_charts(&[
             ("Ocean_Navionics.mbtiles", &[1, 2, 3]),
             ("Isle_BingSat.mbtiles", &[1, 2, 3]),
         ]);
         fx.session.state.layer = Some("Navionics".into());
         fx.session.sync_view();
-        assert!(!fx.session.chart_status().imagery);
+        assert!(!fx.session.showing_photo());
 
         fx.session.execute_action(AppAction::NextPhoto);
         assert_eq!(fx.session.state.layer.as_deref(), Some("Bing satellite"));
         assert!(fx.session.renderer.path().ends_with("Isle_BingSat.mbtiles"));
         let status = fx.session.chart_status();
-        assert!(status.imagery);
-        assert!(
-            status.text.starts_with("Bing satellite: "),
-            "{}",
-            status.text
-        );
+        assert!(fx.session.showing_photo());
+        assert!(status.starts_with("Bing satellite: "), "{}", status);
 
         fx.session.execute_action(AppAction::NextPhoto);
         assert_eq!(fx.session.state.layer.as_deref(), Some("Navionics"));
@@ -683,7 +678,7 @@ mod tests {
             .renderer
             .path()
             .ends_with("Ocean_Navionics.mbtiles"));
-        assert!(!fx.session.chart_status().imagery);
+        assert!(!fx.session.showing_photo());
         fx.finish();
     }
 
@@ -773,7 +768,7 @@ mod tests {
         let mut fx = island();
         fx.session.execute_action(AppAction::NextPhoto);
         fx.session.execute_action(AppAction::NextPhoto);
-        fx.session.execute_action(AppAction::BackToChart);
+        fx.session.execute_action(AppAction::NextPhoto);
         let button = fx.session.photo_button().unwrap();
         assert!(ends(&button.preview, "Isle_GoogleSat.mbtiles"));
         fx.finish();
@@ -819,17 +814,6 @@ mod tests {
         fx.session.execute_action(AppAction::NextPhoto);
         assert_eq!(fx.session.state.lock, None);
         assert!(fx.session.renderer.path().ends_with("Isle_BingSat.mbtiles"));
-        fx.finish();
-    }
-
-    #[test]
-    fn back_to_chart_returns_from_any_source() {
-        let mut fx = island();
-        fx.session.execute_action(AppAction::NextPhoto);
-        fx.session.execute_action(AppAction::NextPhoto);
-        assert_eq!(fx.session.state.layer.as_deref(), Some("Google satellite"));
-        fx.session.execute_action(AppAction::BackToChart);
-        assert_eq!(fx.session.state.layer.as_deref(), Some("Navionics"));
         fx.finish();
     }
 

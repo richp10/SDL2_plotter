@@ -29,8 +29,9 @@ from the screen whether a photo of this spot exists.
 3. **A tap** (or the I key, or the menu) moves one step: chart, then each
    available source, then chart again. The source used last comes first,
    then the rest in the chart manager's file order. While a photo shows, a
-   "k/n" label in the button's corner says which source is on. The red
-   PHOTO badge still returns to the chart in one tap.
+   "k/n" label in the button's corner says which source is on. (The red
+   PHOTO badge was removed after trying it, 2026-11-24: the photo is
+   obviously not a chart and the button is the way back.)
 4. **Leaving coverage.** When the shown photo's layer no longer covers the
    screen centre, the app drops back to the chart layer for good; the photo
    never reappears without a tap.
@@ -39,7 +40,7 @@ from the screen whether a photo of this spot exists.
    "(not here)", worked out when the menu opens; they can still be chosen.
    The menu's imagery entry becomes "Next photo".
 7. **Stream.** The button is drawn after the stream capture, like the menus;
-   the PHOTO badge stays in the stream.
+   the bottom bar, with the layer name, is in the stream.
 8. **Night mode.** The button is dimmed with the same overlay and opacity as
    the chart. (Night mode currently passes opacity 0 everywhere; the button
    follows the same value.)

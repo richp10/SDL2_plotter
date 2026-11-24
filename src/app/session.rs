@@ -286,9 +286,8 @@ impl Session {
         })
     }
 
-    /// What the bottom bar says about the chart shown, and whether it is a
-    /// photo (the badge shows, in the stream too).
-    pub fn chart_status(&self) -> ChartStatus {
+    /// What the bottom bar says about the chart shown.
+    pub fn chart_status(&self) -> String {
         let choice = self.chart_choice();
         let mut text = match choice.file {
             Some(file) => format!("{}: {}", file.layer, file.name),
@@ -310,12 +309,7 @@ impl Session {
                 " · LOCKED"
             });
         }
-        ChartStatus {
-            text,
-            imagery: choice
-                .file
-                .is_some_and(|f| self.catalogue.role_of(&f.layer) == Role::Imagery),
-        }
+        text
     }
 
     /// The deepest zoom worth zooming in to at the view centre.
@@ -427,14 +421,6 @@ impl Preview {
             levels: file.zooms.clone(),
         }
     }
-}
-
-/// The chart part of the bottom bar.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ChartStatus {
-    pub text: String,
-    /// The file shown is imagery, not a chart.
-    pub imagery: bool,
 }
 
 /// One line for the log: the file and every indication that goes with it.

@@ -14,7 +14,6 @@ pub enum AppAction {
     /// One step of chart, each photo source available here, chart again.
     NextPhoto,
     /// From a photo straight back to the chosen chart layer.
-    BackToChart,
     /// Open the chart manager window (the shell's, not the session's).
     OpenChartManager,
     FollowOn,
@@ -53,7 +52,6 @@ impl AppAction {
             Self::ToggleFollow => "ToggleFollow",
             Self::ToggleLock => "ToggleLock",
             Self::NextPhoto => "NextPhoto",
-            Self::BackToChart => "BackToChart",
             Self::OpenChartManager => "OpenChartManager",
             Self::FollowOn => "On",
             Self::FollowOff => "Off",

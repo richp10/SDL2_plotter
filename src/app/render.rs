@@ -123,11 +123,14 @@ impl Plotter<'_> {
     }
 
     pub(super) fn mouse(&mut self, screen: &mut Screen<'_>) {
-        match self.mouse {
-            super::Mouse::Arrow => screen.cursor_arrow.set(),
-            super::Mouse::Cross => screen.cursor_cross.set(),
-            super::Mouse::Hand => screen.cursor_hand.set(),
-            super::Mouse::Move => screen.cursor_size.set(),
+        let cursor = match self.mouse {
+            super::Mouse::Arrow => &screen.cursor_arrow,
+            super::Mouse::Cross => &screen.cursor_cross,
+            super::Mouse::Hand => &screen.cursor_hand,
+            super::Mouse::Move => &screen.cursor_size,
+        };
+        if let Some(cursor) = cursor {
+            cursor.set();
         }
     }
 

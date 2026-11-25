@@ -91,6 +91,7 @@ async fn run() -> anyhow::Result<()> {
         screen.screen_height,
         &config,
         streamer,
+        app::Files::default(),
     )?;
     diagnostics::record("INFO", "Application initialisée");
     plotter.main_loop(

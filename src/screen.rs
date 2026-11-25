@@ -91,10 +91,12 @@ pub struct Screen<'ttf> {
     pub canvas: WindowCanvas,
     pub screen_width: u32,
     pub screen_height: u32,
-    pub cursor_hand: Cursor,
-    pub cursor_cross: Cursor,
-    pub cursor_arrow: Cursor,
-    pub cursor_size: Cursor,
+    /// The pointer shapes, when the system has them (a kiosk display or
+    /// SDL's dummy driver may not): `None` keeps the default pointer.
+    pub cursor_hand: Option<Cursor>,
+    pub cursor_cross: Option<Cursor>,
+    pub cursor_arrow: Option<Cursor>,
+    pub cursor_size: Option<Cursor>,
     appearance: AppearanceConfig,
 }
 
@@ -146,16 +148,39 @@ impl<'ttf> Screen<'ttf> {
             true => (display_mode.w as u32, display_mode.h as u32),
         };
 
+        // No renderer flag: SDL tries its hardware renderers first and falls
+        // back to software, so a machine with no working GPU driver still
+        // draws the chart.
         let canvas = window
             .into_canvas()
-            .accelerated()
             .build()
-            .map_err(|e| format!("Impossible de créer le canvas accéléré : {e}"))?;
-        let cursor_hand = Cursor::from_system(SystemCursor::Hand)?;
-        let cursor_cross = Cursor::from_system(SystemCursor::Crosshair)?;
-        let cursor_arrow = Cursor::from_system(SystemCursor::Arrow)?;
-        let cursor_size = Cursor::from_system(SystemCursor::SizeAll)?;
-        cursor_hand.set();
+            .map_err(|e| format!("Impossible de créer le canvas : {e}"))?;
+        let renderer = canvas.info();
+        crate::diagnostics::record(
+            if renderer.flags & sdl2::sys::SDL_RendererFlags::SDL_RENDERER_ACCELERATED as u32 != 0 {
+                "INFO"
+            } else {
+                "WARN"
+            },
+            format!("Rendu SDL: {} (flags {:#x})", renderer.name, renderer.flags),
+        );
+        let cursor = |shape| match Cursor::from_system(shape) {
+            Ok(cursor) => Some(cursor),
+            Err(error) => {
+                crate::diagnostics::record(
+                    "WARN",
+                    format!("Curseur {shape:?} indisponible, curseur par défaut: {error}"),
+                );
+                None
+            }
+        };
+        let cursor_hand = cursor(SystemCursor::Hand);
+        let cursor_cross = cursor(SystemCursor::Crosshair);
+        let cursor_arrow = cursor(SystemCursor::Arrow);
+        let cursor_size = cursor(SystemCursor::SizeAll);
+        if let Some(hand) = &cursor_hand {
+            hand.set();
+        }
         Ok(Screen {
             font,
             canvas,

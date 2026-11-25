@@ -1,5 +1,3 @@
-const DEFAULT_ROUTE: &str = "default/route.json";
-
 use crate::geo_data::{GeoFile, GeoPoint};
 use crate::gps;
 use crate::mbtiles_renderer::ChartView;
@@ -20,10 +18,6 @@ pub struct Route {
 }
 
 impl Route {
-    pub fn new() -> Self {
-        Self::load(Path::new(DEFAULT_ROUTE))
-    }
-
     /// Loads the route saved at `json_path`. A missing file is an empty
     /// route, a damaged one is set aside, and a legacy `.gpx` beside it is
     /// migrated once (see `geo_data::GeoFile`). `save` writes back to the
@@ -42,9 +36,14 @@ impl Route {
         })
     }
 
+    /// A route the tests never save; its path is in the temp directory so
+    /// a save by mistake cannot reach `default/`.
     #[cfg(test)]
     fn from_points(track: Vec<(f64, f64)>) -> Self {
-        Self::from_points_at(track, Path::new(DEFAULT_ROUTE))
+        Self::from_points_at(
+            track,
+            &std::env::temp_dir().join("plotter-route-not-saved.json"),
+        )
     }
 
     /// A route over `track` that `save` will write to `path`.

@@ -30,10 +30,7 @@ use gesture::GestureRecognizer;
 use session::Session;
 use tools::Target;
 
-const STATE_FILE: &str = "default/state.json";
-const DEFAULT_TRACK_PATH: &str = "default/track.json";
 /// What the user decided about each chart file; see `catalogue`.
-const CHART_SETTINGS: &str = "settings/charts.json";
 const LONG_CLICK: Duration = Duration::from_millis(500);
 const MOVE_TOLERANCE: i32 = 5;
 const DIAGNOSTICS_INTERVAL: Duration = Duration::from_secs(10);
@@ -63,6 +60,8 @@ pub(crate) struct Plotter<'ttf> {
     drag_redrawn: Instant,
     /// The size the window changed to, applied before the next frame.
     resized: Option<(u32, u32)>,
+    /// Where the state is saved when the loop ends.
+    state_file: PathBuf,
     /// SDL reported that the render device or its targets were reset.
     device_reset: bool,
     /// Errors from each step of the main loop, logged without flooding the
@@ -87,6 +86,33 @@ pub(crate) struct Plotter<'ttf> {
     boat_closed: bool,
     ais_closed: bool,
     streamer: Option<crate::stream::Streamer>,
+}
+
+/// Every file the plotter reads and writes, apart from the config and the
+/// charts. `Files::default()` is the app's own layout under the working
+/// directory; a test puts them all in a temp directory.
+pub(crate) struct Files {
+    pub state: PathBuf,
+    pub track: PathBuf,
+    pub route: PathBuf,
+    pub waypoints: PathBuf,
+    /// The catalogue's cache and the chart manager's decisions.
+    pub chart_settings: PathBuf,
+    /// Where GPX exports are written.
+    pub export: PathBuf,
+}
+
+impl Default for Files {
+    fn default() -> Self {
+        Self {
+            state: "default/state.json".into(),
+            track: "default/track.json".into(),
+            route: "default/route.json".into(),
+            waypoints: "default/waypoints.json".into(),
+            chart_settings: "settings/charts.json".into(),
+            export: "export".into(),
+        }
+    }
 }
 
 /// Counters for the loop statistics logged every `DIAGNOSTICS_INTERVAL`.
@@ -139,6 +165,7 @@ impl<'ttf> Plotter<'ttf> {
         height: u32,
         config: &AppConfig,
         streamer: Option<crate::stream::Streamer>,
+        files: Files,
     ) -> anyhow::Result<Self> {
         let text_input = sdl_context
             .video()
@@ -169,14 +196,11 @@ impl<'ttf> Plotter<'ttf> {
             }
         }
 
-        let catalogue = Catalogue::load(
-            Path::new(&config.charts.directory),
-            Path::new(CHART_SETTINGS),
-        );
+        let catalogue = Catalogue::load(Path::new(&config.charts.directory), &files.chart_settings);
         for line in catalogue.describe() {
             crate::diagnostics::record("INFO", line);
         }
-        let state = state::State::new(STATE_FILE, config.charts.default.clone())
+        let state = state::State::new(&files.state, config.charts.default.clone())
             .map_err(anyhow::Error::msg)?;
         let renderer =
             MBTilesRenderer::new(&state.map, state.zoom, width, height, &config.rendering)?;
@@ -193,9 +217,9 @@ impl<'ttf> Plotter<'ttf> {
                 .map_err(anyhow::Error::msg)?;
         let photo_button = photo_button::PhotoButtonView::new(ttf_context, height, &config.fonts)
             .map_err(anyhow::Error::msg)?;
-        let route = route::Route::new();
+        let route = route::Route::load(&files.route);
         let track = track::Track::with_checkpoint_interval(
-            Path::new(DEFAULT_TRACK_PATH),
+            &files.track,
             Duration::from_secs(config.track.checkpoint_interval_seconds),
         );
         crate::diagnostics::record(
@@ -203,10 +227,10 @@ impl<'ttf> Plotter<'ttf> {
             format!(
                 "Trace initialisée: {} points dans {}",
                 track.point_count(),
-                DEFAULT_TRACK_PATH
+                files.track.display()
             ),
         );
-        let waypoints = waypoints::Waypoints::new();
+        let waypoints = waypoints::Waypoints::load(&files.waypoints);
 
         let session = Session::new(
             renderer,
@@ -217,7 +241,7 @@ impl<'ttf> Plotter<'ttf> {
             waypoints,
             catalogue,
             config.charts.default.clone(),
-            PathBuf::from("export"),
+            files.export.clone(),
         );
 
         Ok(Self {
@@ -227,6 +251,7 @@ impl<'ttf> Plotter<'ttf> {
             grab: None,
             drag_redrawn: Instant::now(),
             resized: None,
+            state_file: files.state,
             device_reset: false,
             render_errors: crate::diagnostics::Repeated::default(),
             capture_errors: crate::diagnostics::Repeated::default(),
@@ -506,7 +531,7 @@ impl<'ttf> Plotter<'ttf> {
 
         crate::diagnostics::record("INFO", "Arrêt demandé, sauvegarde finale de la trace");
         self.session.track.close();
-        if let Err(error) = self.session.state.save(STATE_FILE) {
+        if let Err(error) = self.session.state.save(&self.state_file) {
             crate::diagnostics::record("ERROR", format!("Erreur sauvegarde état: {error}"));
         }
         crate::diagnostics::record("INFO", "Boucle SDL terminée");
@@ -518,6 +543,90 @@ impl<'ttf> Plotter<'ttf> {
 mod tests {
     use super::session::valid_boat_position;
     use crate::boat::BoatState;
+
+    /// The real `Plotter` on SDL's dummy video driver (no display needed),
+    /// every file in a temp directory. One test, because SDL is set up
+    /// once per process.
+    #[tokio::test]
+    async fn the_main_loop_survives_a_failing_resize_and_retries_it() {
+        use super::session::test_support::{session, Fixture};
+        sdl2::hint::set("SDL_VIDEODRIVER", "dummy");
+        let Fixture {
+            dir,
+            chart,
+            session,
+        } = session(&[2]);
+        drop(session);
+
+        let mut config = crate::config::AppConfig::default();
+        config.input.source = crate::config::InputSource::Nmea2k;
+        config.charts.directory = dir.join("charts").to_string_lossy().into_owned();
+        config.charts.default = chart.to_string_lossy().into_owned();
+        config.window.width = 640;
+        config.window.height = 480;
+        let files = super::Files {
+            state: dir.join("state.json"),
+            track: dir.join("track.json"),
+            route: dir.join("route.json"),
+            waypoints: dir.join("waypoints.json"),
+            chart_settings: dir.join("charts.json"),
+            export: dir.join("export"),
+        };
+
+        let mut sdl = crate::screen::MoteurSdl::init().unwrap();
+        let mut screen = crate::screen::Screen::new(
+            &sdl.ttf_context,
+            &sdl.context,
+            &config.window,
+            &config.fonts,
+            &config.appearance,
+        )
+        .unwrap();
+        let texture_creator = screen.canvas.texture_creator();
+        let mut texture = super::chart_texture(&texture_creator, 640, 480).unwrap();
+        let mut plotter = super::Plotter::new(
+            &sdl.context,
+            &sdl.ttf_context,
+            640,
+            480,
+            &config,
+            None,
+            files,
+        )
+        .unwrap();
+        let mut stats = super::LoopStats::new();
+        let mut step = |plotter: &mut super::Plotter, screen: &mut crate::screen::Screen| {
+            plotter.iteration(
+                &mut stats,
+                &mut sdl.event_pump,
+                screen,
+                &texture_creator,
+                &mut texture,
+            )
+        };
+
+        step(&mut plotter, &mut screen);
+        assert!(plotter.session.running);
+        assert!(!plotter.dirty, "the first frame was drawn");
+
+        // No texture can be this big: the resize fails.
+        let huge = (200_000, 200_000);
+        plotter.resized = Some(huge);
+        step(&mut plotter, &mut screen);
+        assert!(plotter.session.running, "the loop goes on");
+        assert_eq!(plotter.resized, Some(huge), "tried again next iteration");
+        assert_eq!(screen.screen_width, 640, "the old size stays");
+
+        // A size that works is applied.
+        plotter.resized = Some((800, 600));
+        step(&mut plotter, &mut screen);
+        assert_eq!(plotter.resized, None);
+        assert_eq!((screen.screen_width, screen.screen_height), (800, 600));
+
+        drop(plotter);
+        drop(screen);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn accepts_received_positions_within_gps_bounds() {

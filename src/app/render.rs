@@ -172,7 +172,9 @@ impl Plotter<'_> {
         } else {
             ""
         };
-        message_right += if self.session.state.course_up {
+        message_right += if self.session.state.heading_up {
+            " / Heading Up"
+        } else if self.session.state.course_up {
             " / Course Up"
         } else {
             " / North Up"

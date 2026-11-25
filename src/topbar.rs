@@ -116,6 +116,7 @@ impl MenuBar {
                 entries: vec![
                     entry("North Up", AppAction::SetCourseUp(false)),
                     entry("Course Up", AppAction::SetCourseUp(true)),
+                    entry("Heading Up", AppAction::SetHeadingUp),
                 ],
             },
             Menu {

@@ -393,13 +393,15 @@ impl Session {
         } else {
             saved
         };
-        let rotation = if self.state.course_up
-            && self.boat.position_valid
-            && self.boat.course_over_ground.is_finite()
-        {
-            self.boat.course_over_ground
-        } else {
-            0.0
+        // Heading up or course up only with a valid fix (and a heading);
+        // otherwise north up.
+        let heading = self.boat.heading.filter(|h| h.is_finite());
+        let rotation = match (self.boat.position_valid, heading) {
+            (true, Some(heading)) if self.state.heading_up => heading,
+            (true, _) if self.state.course_up && self.boat.course_over_ground.is_finite() => {
+                self.boat.course_over_ground
+            }
+            _ => 0.0,
         };
         self.renderer.set_rotation(rotation);
         self.renderer.look_at(lon, lat, self.state.map_offset);

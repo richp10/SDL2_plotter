@@ -39,7 +39,10 @@ pub enum AppAction {
     HideTrack,
     ShowAis,
     HideAis,
+    /// Course up (true) or north up (false); either ends heading up.
     SetCourseUp(bool),
+    /// The chart turns to the boat's heading; north up while there is none.
+    SetHeadingUp,
 }
 
 impl AppAction {
@@ -75,6 +78,7 @@ impl AppAction {
             Self::ShowAis => "ShowAis",
             Self::HideAis => "HideAis",
             Self::SetCourseUp(_) => "SetCourseUp",
+            Self::SetHeadingUp => "SetHeadingUp",
         }
     }
 }

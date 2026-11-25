@@ -152,7 +152,14 @@ impl Session {
             AppAction::ShowTrack => self.state.display_track = true,
             AppAction::HideAis => self.state.display_ais = false,
             AppAction::ShowAis => self.state.display_ais = true,
-            AppAction::SetCourseUp(enabled) => self.state.course_up = enabled,
+            AppAction::SetCourseUp(enabled) => {
+                self.state.course_up = enabled;
+                self.state.heading_up = false;
+            }
+            AppAction::SetHeadingUp => {
+                self.state.heading_up = true;
+                self.state.course_up = false;
+            }
         }
 
         self.sync_view();
@@ -358,6 +365,42 @@ mod tests {
         fx.session.execute_action(AppAction::Pan(30, -10));
         fx.session.execute_action(AppAction::Pan(5, 5));
         assert_eq!(fx.session.state.map_offset, (35, -5));
+        fx.finish();
+    }
+
+    #[test]
+    fn heading_up_turns_the_chart_to_the_heading_and_north_up_without_one() {
+        let mut fx = session(&[2]);
+        fx.session.boat = crate::boat::BoatState {
+            course_over_ground: 0.5,
+            heading: Some(1.2),
+            heading_at: Some(std::time::Instant::now()),
+            ..valid_boat()
+        };
+        // A screen angle of 0 means the chart is turned to that course.
+        let up = |fx: &super::super::session::test_support::Fixture, course: f64| {
+            fx.session.renderer.view().course_to_screen(course).abs() < 1e-9
+        };
+        fx.session.execute_action(AppAction::SetHeadingUp);
+        assert!(fx.session.state.heading_up && !fx.session.state.course_up);
+        assert!(up(&fx, 1.2), "heading up");
+
+        fx.session.execute_action(AppAction::SetCourseUp(true));
+        assert!(!fx.session.state.heading_up && fx.session.state.course_up);
+        assert!(up(&fx, 0.5), "course up");
+
+        fx.session.execute_action(AppAction::SetHeadingUp);
+        fx.session.boat.heading = None;
+        fx.session.sync_view();
+        assert!(up(&fx, 0.0), "no heading: north up");
+
+        fx.session.boat.heading = Some(1.2);
+        fx.session.boat.position_valid = false;
+        fx.session.sync_view();
+        assert!(up(&fx, 0.0), "no fix: north up");
+
+        fx.session.execute_action(AppAction::SetCourseUp(false));
+        assert!(!fx.session.state.heading_up && !fx.session.state.course_up);
         fx.finish();
     }
 

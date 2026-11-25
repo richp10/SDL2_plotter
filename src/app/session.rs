@@ -116,20 +116,23 @@ impl Session {
     /// with a valid fix; an invalid fix is kept (the marker hides) but never
     /// followed. Logs when the fix becomes valid or invalid.
     pub fn on_boat(&mut self, boat: BoatState) {
-        if self.boat.position_valid != boat.position_valid {
-            crate::diagnostics::record(
-                "INFO",
-                if boat.position_valid {
-                    "Position du bateau reçue; marqueur activé"
-                } else {
-                    "Position du bateau invalide; marqueur masqué"
-                },
-            );
-        }
+        log_fix_change(self.boat.position_valid, boat.position_valid);
         self.boat = boat;
         if self.state.follow && valid_boat_position(&boat) {
             self.state.position = Some((boat.longitude, boat.latitude));
         }
+    }
+
+    /// Applies the fix and heading timeouts (`BoatState::expired`) to the
+    /// boat. Returns true when the fix or the heading was lost, so the
+    /// frame is redrawn.
+    pub fn expire_boat(&mut self, now: Instant) -> bool {
+        let expired = self.boat.expired(now);
+        let changed = expired.position_valid != self.boat.position_valid
+            || expired.heading.is_some() != self.boat.heading.is_some();
+        log_fix_change(self.boat.position_valid, expired.position_valid);
+        self.boat = expired;
+        changed
     }
 
     /// The AIS list as the Signal K task last published it.
@@ -555,6 +558,20 @@ pub(in crate::app) mod test_support {
     }
 }
 
+/// Logs when the boat's fix is gained or lost.
+fn log_fix_change(was_valid: bool, is_valid: bool) {
+    if was_valid != is_valid {
+        crate::diagnostics::record(
+            "INFO",
+            if is_valid {
+                "Position du bateau reçue; marqueur activé"
+            } else {
+                "Position du bateau invalide; marqueur grisé"
+            },
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::test_support::session;
@@ -569,7 +586,30 @@ mod tests {
             position_valid: true,
             speed_over_ground: 5.0,
             course_over_ground: 1.0,
+            heading: None,
+            fixed_at: Some(Instant::now()),
+            heading_at: None,
         }
+    }
+
+    #[test]
+    fn the_boat_goes_grey_once_when_its_fix_is_stale() {
+        let mut fx = session(&[2]);
+        let now = Instant::now();
+        let mut boat = boat_at(10.0, 20.0);
+        boat.fixed_at = Some(now);
+        fx.session.on_boat(boat);
+        assert!(!fx.session.expire_boat(now + Duration::from_secs(5)));
+        assert!(
+            fx.session.expire_boat(now + Duration::from_secs(10)),
+            "changed: redraw"
+        );
+        assert!(!fx.session.boat.position_valid);
+        assert!(
+            !fx.session.expire_boat(now + Duration::from_secs(11)),
+            "already grey"
+        );
+        fx.finish();
     }
 
     #[test]

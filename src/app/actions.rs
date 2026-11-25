@@ -292,6 +292,9 @@ mod tests {
             position_valid: true,
             speed_over_ground: 4.0,
             course_over_ground: 0.0,
+            heading: None,
+            fixed_at: Some(std::time::Instant::now()),
+            heading_at: None,
         }
     }
 

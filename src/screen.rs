@@ -187,10 +187,18 @@ impl<'ttf> Screen<'ttf> {
                 Draw::Track(points) => {
                     let _ = self.show_track(points);
                 }
-                Draw::Boat { at, course } => {
-                    self.show_boat(at.x, at.y)?;
+                Draw::Boat {
+                    at,
+                    course,
+                    heading,
+                    fix,
+                } => {
+                    self.show_boat(at.x, at.y, *fix)?;
                     if let Some(course) = course {
                         self.show_cog(*course, *at)?;
+                    }
+                    if let Some(heading) = heading {
+                        self.show_heading(*heading, *at)?;
                     }
                 }
                 Draw::Ais { at, course } => self.show_ais_target(at.x, at.y, *course)?,
@@ -234,6 +242,27 @@ impl<'ttf> Screen<'ttf> {
             by,
             self.appearance.cog_width,
             configured_color(self.appearance.cog_color),
+        )?;
+        Ok(())
+    }
+
+    /// The heading line: from the boat to its outer circle.
+    fn show_heading(&mut self, mut radians: f64, pos: Point) -> Result<(), String> {
+        radians -= std::f64::consts::PI / 2.0;
+        let length = f64::from(self.appearance.boat_circle_radius);
+        let x1 = pos.x as f64 + radians.cos() * length;
+        let y1 = pos.y as f64 + radians.sin() * length;
+        let end = Point::new(x1.round() as i32, y1.round() as i32);
+        let Some(((ax, ay), (bx, by))) = self.clip().segment_i16(pos, end) else {
+            return Ok(());
+        };
+        self.canvas.thick_line(
+            ax,
+            ay,
+            bx,
+            by,
+            2,
+            configured_color(self.appearance.boat_color),
         )?;
         Ok(())
     }
@@ -312,11 +341,15 @@ impl<'ttf> Screen<'ttf> {
         )
     }
 
-    fn show_boat(&mut self, x: i32, y: i32) -> Result<(), String> {
+    fn show_boat(&mut self, x: i32, y: i32, fix: bool) -> Result<(), String> {
         if !self.clip().contains(f64::from(x), f64::from(y)) {
             return Ok(());
         }
-        let boat_color = configured_color(self.appearance.boat_color);
+        let boat_color = configured_color(if fix {
+            self.appearance.boat_color
+        } else {
+            self.appearance.boat_no_fix_color
+        });
         self.canvas.set_blend_mode(BlendMode::Blend);
         self.canvas.set_draw_color(boat_color);
         draw_filled_circle(

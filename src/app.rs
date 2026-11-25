@@ -331,6 +331,9 @@ impl<'ttf> Plotter<'ttf> {
                 self.session.on_boat(boat);
                 self.dirty = true;
             }
+            if self.session.expire_boat(now) {
+                self.dirty = true;
+            }
 
             self.fire_long_press();
 

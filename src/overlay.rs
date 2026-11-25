@@ -23,10 +23,13 @@ pub enum Shape {
     /// The boat's track, in normalised Mercator coordinates (0..1) as the
     /// track stores them.
     Track(Vec<(f64, f64)>),
-    /// Own boat; `course` is a true course in radians, shown when moving.
+    /// Own boat; `course` and `heading` are true, in radians. `fix` is
+    /// false while the position is only the last one known.
     Boat {
         at: (f64, f64),
         course: Option<f64>,
+        heading: Option<f64>,
+        fix: bool,
     },
     /// An AIS target with its label; `course` is a true course in radians.
     Ais {
@@ -59,13 +62,24 @@ pub enum Draw {
     Route(Vec<Point>),
     Handles(Vec<Point>),
     Track(Vec<Point>),
-    Boat { at: Point, course: Option<f64> },
-    Ais { at: Point, course: Option<f64> },
+    Boat {
+        at: Point,
+        course: Option<f64>,
+        heading: Option<f64>,
+        fix: bool,
+    },
+    Ais {
+        at: Point,
+        course: Option<f64>,
+    },
     Waypoint(Point),
     Mark(Point),
     Line(Point, Point),
     Outline(Vec<Point>),
-    Text { at: Point, text: String },
+    Text {
+        at: Point,
+        text: String,
+    },
 }
 
 /// Projects and culls `shapes` for `view`. Polylines are kept whole (the
@@ -102,12 +116,21 @@ pub fn plan(view: &ChartView, shapes: &[Shape]) -> Vec<Draw> {
                     ));
                 }
             }
-            Shape::Boat { at, course } => {
+            Shape::Boat {
+                at,
+                course,
+                heading,
+                fix,
+            } => {
                 let at = view.to_pixel(*at);
                 if visible(at) {
                     draws.push(Draw::Boat {
                         at,
                         course: course.map(|c| view.course_to_screen(c)),
+                        heading: heading
+                            .filter(|h| h.is_finite())
+                            .map(|h| view.course_to_screen(h)),
+                        fix: *fix,
                     });
                 }
             }
@@ -183,10 +206,14 @@ mod tests {
                 Shape::Boat {
                     at: (0.0, 0.0),
                     course: None,
+                    heading: None,
+                    fix: true,
                 },
                 Shape::Boat {
                     at: (90.0, 0.0),
                     course: None,
+                    heading: None,
+                    fix: true,
                 },
                 Shape::Mark((1.0, 1.0)),
                 Shape::Mark((-120.0, 0.0)),
@@ -197,10 +224,56 @@ mod tests {
             draws[0],
             Draw::Boat {
                 at: Point::new(256, 128),
-                course: None
+                course: None,
+                heading: None,
+                fix: true
             }
         );
         assert!(matches!(draws[1], Draw::Mark(_)));
+    }
+
+    #[test]
+    fn a_boat_without_a_fix_is_drawn_with_no_vectors() {
+        let draws = plan(
+            &view(),
+            &[Shape::Boat {
+                at: (0.0, 0.0),
+                course: None,
+                heading: None,
+                fix: false,
+            }],
+        );
+        assert_eq!(
+            draws,
+            vec![Draw::Boat {
+                at: Point::new(256, 128),
+                course: None,
+                heading: None,
+                fix: false
+            }]
+        );
+    }
+
+    #[test]
+    fn the_heading_is_rotated_like_the_course() {
+        let rotated = ChartView::centred_on((0.0, 0.0), 4.0, 1.0, 512, 256);
+        let draws = plan(
+            &rotated,
+            &[Shape::Boat {
+                at: (0.0, 0.0),
+                course: None,
+                heading: Some(std::f64::consts::FRAC_PI_2),
+                fix: true,
+            }],
+        );
+        let Draw::Boat {
+            heading: Some(heading),
+            ..
+        } = &draws[0]
+        else {
+            panic!("{draws:?}");
+        };
+        assert!((heading - rotated.course_to_screen(std::f64::consts::FRAC_PI_2)).abs() < 1e-12);
     }
 
     #[test]
@@ -245,6 +318,8 @@ mod tests {
             &[Shape::Boat {
                 at: (0.0, 0.0),
                 course: Some(std::f64::consts::FRAC_PI_2),
+                heading: None,
+                fix: true,
             }],
         );
         let Draw::Boat {

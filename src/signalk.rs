@@ -398,6 +398,9 @@ pub async fn signalk_task(
                     position_valid: signalk.data.position_valid,
                     course_over_ground: signalk.data.cog,
                     speed_over_ground: signalk.data.sog,
+                    heading: None,
+                    fixed_at: signalk.data.position_valid.then(Instant::now),
+                    heading_at: None,
                 });
             }
             if summary.self_position {

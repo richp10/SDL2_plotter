@@ -373,35 +373,6 @@ impl MBTilesRenderer {
         self.reproject();
     }
 
-    /// Moves to the next available zoom level. At the chart's maximum zoom
-    /// nothing changes: the tile cache and view are kept as they are.
-    pub fn zoom_increase(&mut self) -> i32 {
-        let zooms = self.store.available_zooms();
-        if let Some(i) = zooms.iter().position(|&z| z == self.zoom) {
-            if let Some(&next) = zooms.get(i + 1) {
-                self.set_zoom(next);
-            }
-        }
-        self.zoom
-    }
-
-    pub fn zoom_decrease(&mut self) -> i32 {
-        let zooms = self.store.available_zooms();
-        if let Some(i) = zooms.iter().position(|&z| z == self.zoom) {
-            if let Some(&prev) = i.checked_sub(1).and_then(|j| zooms.get(j)) {
-                self.set_zoom(prev);
-            } else {
-                crate::diagnostics::record(
-                    "DEBUG",
-                    "Zoom minimal atteint, retour à la carte par défaut",
-                );
-                let fallback_map = self.default_map.clone();
-                let _ = self.change_map(&fallback_map);
-            }
-        }
-        self.zoom
-    }
-
     pub fn change_map(&mut self, mbtiles_path: &str) -> rusqlite::Result<()> {
         // On construit le nouveau renderer d'abord : si ça échoue, self n'est pas touché.
         // Le cache est neuf (donc vide), les métadonnées et les zooms sont rechargés,

@@ -2,6 +2,8 @@ use std::time::{Duration, Instant};
 
 use crate::overlay::Shape;
 
+/// Below this speed over ground the COG vector is not drawn: 1.0 m/s,
+/// about 1.9 kn. Under it, GPS course is mostly noise.
 const MINIMUM_SPEED: f64 = 1.0;
 
 /// No position for this long: the fix is lost.

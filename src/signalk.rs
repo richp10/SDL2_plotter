@@ -14,6 +14,11 @@ use crate::ais::AisTarget;
 use crate::boat::BoatState;
 use crate::config::{SignalKConfig, SignalKPaths};
 use crate::feed::LiveFeed;
+/// A ping is sent after this long with no message.
+const PING_INTERVAL: Duration = Duration::from_secs(10);
+/// No message for this long (no pong to two pings): reconnect.
+const SILENCE_TIMEOUT: Duration = Duration::from_secs(30);
+
 pub type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 /// What one Signal K delta message changed, so the task only forwards the
@@ -37,6 +42,11 @@ pub struct SignalKClient {
     self_context: Option<String>,
     url: String,
     paths: SignalKPaths,
+    /// With no message for this long, a ping is sent.
+    ping_interval: Duration,
+    /// With no message (pong included) for this long, the connection is
+    /// taken as dead and the task reconnects.
+    silence_timeout: Duration,
 }
 
 impl SignalKClient {
@@ -53,6 +63,8 @@ impl SignalKClient {
             self_context: None,
             url: config.url,
             paths: config.paths,
+            ping_interval: PING_INTERVAL,
+            silence_timeout: SILENCE_TIMEOUT,
         }
     }
 
@@ -62,11 +74,48 @@ impl SignalKClient {
         let (write, read) = ws_stream.split();
         self.write = write;
         self.read = read;
+        // The server may have changed: read its hello and `self` again.
+        if !self.check_connect().await {
+            crate::diagnostics::record(
+                "WARN",
+                "La vérification SignalK après reconnexion n'a pas abouti",
+            );
+        }
     }
 
-    /// Lit le prochain message et met a jour `self.data` si c'est du SignalK delta
+    /// Lit le prochain message et met a jour `self.data` si c'est du SignalK delta.
+    /// `None` when the connection ended: closed, an error, or silent for
+    /// `silence_timeout` (a ping goes out after each `ping_interval` with no
+    /// message, so a live server always answers).
     pub async fn next_update(&mut self) -> Option<DeltaSummary> {
-        while let Some(msg) = self.read.next().await {
+        let mut last_heard = Instant::now();
+        loop {
+            let msg = match tokio::time::timeout(self.ping_interval, self.read.next()).await {
+                Ok(Some(msg)) => msg,
+                Ok(None) => return None,
+                Err(_) => {
+                    if last_heard.elapsed() >= self.silence_timeout {
+                        crate::diagnostics::record(
+                            "WARN",
+                            format!(
+                                "SignalK silencieux depuis {}s; reconnexion",
+                                self.silence_timeout.as_secs()
+                            ),
+                        );
+                        return None;
+                    }
+                    if self
+                        .write
+                        .send(Message::Ping(Default::default()))
+                        .await
+                        .is_err()
+                    {
+                        return None;
+                    }
+                    continue;
+                }
+            };
+            last_heard = Instant::now();
             match msg {
                 Ok(Message::Text(text)) => {
                     if let Ok(json) = serde_json::from_str::<serde_json::Value>(text.as_str()) {
@@ -82,12 +131,15 @@ impl SignalKClient {
                 _ => continue,
             }
         }
-        None
     }
 
     /// verifie que le premier message du sereveur est bien reçu
+    /// Waits at most `silence_timeout` for it.
     pub async fn check_connect(&mut self) -> bool {
-        let msg = self.read.next().await;
+        let Ok(msg) = tokio::time::timeout(self.silence_timeout, self.read.next()).await else {
+            crate::diagnostics::record("WARN", "Pas de message d'accueil SignalK");
+            return false;
+        };
         match msg {
             Some(Ok(Message::Text(text))) => {
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(text.as_str()) {
@@ -244,12 +296,12 @@ fn apply_delta(
                         }
                     }
                 } else if path == paths.course_over_ground {
-                    if let Some(cog) = val.as_f64() {
-                        data.course_over_ground = cog;
+                    if let Some(cog) = val.as_f64().filter(|c| c.is_finite()) {
+                        data.course_over_ground = cog.rem_euclid(std::f64::consts::TAU);
                         summary.self_changed = true;
                     }
                 } else if path == paths.speed_over_ground {
-                    if let Some(sog) = val.as_f64() {
+                    if let Some(sog) = val.as_f64().filter(|s| s.is_finite() && *s >= 0.0) {
                         data.speed_over_ground = sog;
                         summary.self_changed = true;
                     }
@@ -573,6 +625,126 @@ mod tests {
         let summary = apply_delta(&mut data, &mut targets, &paths, None, &unrelated, now);
         assert!(!summary.self_position);
         assert!(!summary.ais_changed);
+    }
+
+    #[test]
+    fn own_speed_must_be_finite_and_not_negative_and_course_is_normalised() {
+        let paths = SignalKPaths::default();
+        let mut boat = BoatState::default();
+        let mut targets = HashMap::new();
+        let now = Instant::now();
+        let delta = |path: &str, value: f64| {
+            json!({"context": "vessels.self", "updates": [{"values": [
+                {"path": path, "value": value}
+            ]}]})
+        };
+        let sog = "navigation.speedOverGroundLastMinute";
+        let cog = "navigation.courseOverGroundLastMinute";
+        apply_delta(&mut boat, &mut targets, &paths, None, &delta(sog, 2.5), now);
+        let summary = apply_delta(
+            &mut boat,
+            &mut targets,
+            &paths,
+            None,
+            &delta(sog, -1.0),
+            now,
+        );
+        assert!(!summary.self_changed);
+        assert_eq!(boat.speed_over_ground, 2.5, "a negative speed is ignored");
+        apply_delta(&mut boat, &mut targets, &paths, None, &delta(cog, 7.0), now);
+        assert!((boat.course_over_ground - (7.0 - std::f64::consts::TAU)).abs() < 1e-12);
+        apply_delta(
+            &mut boat,
+            &mut targets,
+            &paths,
+            None,
+            &delta(cog, -0.5),
+            now,
+        );
+        assert!((boat.course_over_ground - (std::f64::consts::TAU - 0.5)).abs() < 1e-12);
+    }
+
+    /// A local Signal K server for one connection: sends `hello` with
+    /// `self_context`, then runs `then` on the socket.
+    async fn serve_once<F, Fut>(listener: &tokio::net::TcpListener, self_context: &str, then: F)
+    where
+        F: FnOnce(WebSocketStream<TcpStream>) -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+        let hello = json!({"name": "signalk-server", "self": self_context}).to_string();
+        ws.send(Message::Text(hello.into())).await.unwrap();
+        then(ws).await;
+    }
+
+    fn local_config(address: std::net::SocketAddr) -> SignalKConfig {
+        SignalKConfig {
+            url: format!("ws://{address}"),
+            paths: SignalKPaths::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_connection_that_goes_silent_ends_so_the_task_reconnects() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        // The server never reads, so it never answers a ping.
+        let server = tokio::spawn(async move {
+            serve_once(&listener, "vessels.urn:a", |ws| async move {
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                drop(ws);
+            })
+            .await;
+        });
+        let mut client = SignalKClient::connect(local_config(address)).await;
+        client.ping_interval = Duration::from_millis(100);
+        client.silence_timeout = Duration::from_millis(400);
+        assert!(client.check_connect().await);
+        let started = Instant::now();
+        assert_eq!(client.next_update().await, None);
+        assert!(started.elapsed() < Duration::from_secs(3));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_quiet_connection_that_answers_pings_stays_open() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        // Reading makes the server answer pings, but it sends no data.
+        let server = tokio::spawn(async move {
+            serve_once(&listener, "vessels.urn:a", |mut ws| async move {
+                while ws.next().await.is_some() {}
+            })
+            .await;
+        });
+        let mut client = SignalKClient::connect(local_config(address)).await;
+        client.ping_interval = Duration::from_millis(100);
+        client.silence_timeout = Duration::from_millis(400);
+        assert!(client.check_connect().await);
+        let waited = tokio::time::timeout(Duration::from_millis(1200), client.next_update()).await;
+        assert!(waited.is_err(), "still connected: {waited:?}");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn the_hello_is_read_again_after_a_reconnect() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            serve_once(&listener, "vessels.urn:first", |ws| async move { drop(ws) }).await;
+            serve_once(&listener, "vessels.urn:second", |mut ws| async move {
+                while ws.next().await.is_some() {}
+            })
+            .await;
+        });
+        let mut client = SignalKClient::connect(local_config(address)).await;
+        assert!(client.check_connect().await);
+        assert_eq!(client.self_context.as_deref(), Some("vessels.urn:first"));
+        assert_eq!(client.next_update().await, None, "the first server closed");
+        client.reconnect().await;
+        assert_eq!(client.self_context.as_deref(), Some("vessels.urn:second"));
+        server.abort();
     }
 
     #[test]

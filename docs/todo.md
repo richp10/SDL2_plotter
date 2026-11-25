@@ -25,16 +25,6 @@ From the NMEA 0183 work (2026-11-25). See `docs/nmea0183-input-design.md`.
   IP (Yacht Devices RAW, Actisense W2K-1). `nmea2k` now logs an ERROR.
   Research: `docs/nmea0183-input-research-2026-11-25.md` section 6.
 
-## Signal K gaps (found before the NMEA 0183 work)
-
-- **No reconnect when the connection goes quiet.** A WebSocket that dies
-  without a Close (Wi-Fi lost) is never reconnected. The marker goes grey
-  after 10 s, but no new data comes. The NMEA 0183 TCP client has a 30 s
-  read timeout; Signal K has none.
-- **The hello is not read after a reconnect,** so `self_context` from the
-  first server stays in use.
-- **Own SOG is not range-checked:** a negative value is accepted.
-
 ## Other
 
 - **Flaky test:** `stream::tests::submitted_pixels_are_encoded_off_the_calling_thread`

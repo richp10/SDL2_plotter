@@ -65,6 +65,8 @@ pub struct MBTilesRenderer {
     render_width: u32,
     render_height: u32,
     zoom: i32,
+    current_map: String,
+    previous_chart: Option<(String, i32)>,
     display_zoom: f64,
     zoom_animation: Option<(f64, Instant)>,
     rotation: f64,
@@ -119,6 +121,8 @@ impl MBTilesRenderer {
             render_width,
             render_height,
             zoom,
+            current_map: mbtiles_path.to_string(),
+            previous_chart: None,
             display_zoom: zoom as f64,
             zoom_animation: None,
             rotation: 0.0,
@@ -373,6 +377,55 @@ impl MBTilesRenderer {
         self.reproject();
     }
 
+    /// Moves to the next available zoom level. At the chart's maximum zoom
+    /// nothing changes: the tile cache and view are kept as they are.
+    pub fn zoom_increase(&mut self) -> i32 {
+        if self.current_map == self.default_map {
+            if let Some((chart, zoom)) = self.previous_chart.take() {
+                if self.change_map(&chart).is_ok() {
+                    self.set_zoom(zoom);
+                    return zoom;
+                } else {
+                    self.previous_chart = Some((chart, zoom));
+                }
+            }
+        }
+
+        let zooms = self.store.available_zooms();
+        if let Some(i) = zooms.iter().position(|&z| z == self.zoom) {
+            if let Some(&next) = zooms.get(i + 1) {
+                self.set_zoom(next);
+            }
+        }
+        self.zoom
+    }
+
+    pub fn zoom_decrease(&mut self) -> i32 {
+        let zooms = self.store.available_zooms();
+        if let Some(i) = zooms.iter().position(|&z| z == self.zoom) {
+            if let Some(&prev) = i.checked_sub(1).and_then(|j| zooms.get(j)) {
+                self.set_zoom(prev);
+            } else {
+                crate::diagnostics::record(
+                    "DEBUG",
+                    "Zoom minimal atteint, retour à la carte par défaut",
+                );
+                let fallback_map = self.default_map.clone();
+                if self.current_map != fallback_map {
+                    let previous = (self.current_map.clone(), self.zoom);
+                    if self.change_map(&fallback_map).is_ok() {
+                        self.previous_chart = Some(previous);
+                    }
+                }
+            }
+        }
+        self.zoom
+    }
+
+    pub fn current_map(&self) -> &str {
+        &self.current_map
+    }
+
     pub fn change_map(&mut self, mbtiles_path: &str) -> rusqlite::Result<()> {
         // On construit le nouveau renderer d'abord : si ça échoue, self n'est pas touché.
         // Le cache est neuf (donc vide), les métadonnées et les zooms sont rechargés,
@@ -398,6 +451,8 @@ impl MBTilesRenderer {
         }
         new_renderer.set_rotation(self.rotation);
         new_renderer.look_at(self.view.lon, self.view.lat, self.view.offset);
+        new_renderer.previous_chart = None;
+        new_renderer.current_map = mbtiles_path.to_string();
 
         *self = new_renderer;
         Ok(())
@@ -768,6 +823,28 @@ mod tests {
         assert!(renderer.zoom_animation.is_none());
         drop(renderer);
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn zooming_out_to_world_map_and_back_restores_the_detail_chart() {
+        let detailed_path = fixture_chart(&[2, 3]);
+        let world_path = fixture_chart(&[0, 1]);
+        let detailed = detailed_path.to_str().unwrap();
+        let world = world_path.to_str().unwrap();
+        let mut renderer =
+            MBTilesRenderer::new(detailed, 2, 512, 256, &RenderingConfig::default(), world)
+                .unwrap();
+
+        assert_eq!(renderer.zoom_decrease(), 1);
+        assert_eq!(renderer.current_map(), world);
+
+        assert_eq!(renderer.zoom_increase(), 2);
+        assert_eq!(renderer.current_map(), detailed);
+        assert_eq!(renderer.zoom, 2);
+
+        drop(renderer);
+        std::fs::remove_file(detailed_path).unwrap();
+        std::fs::remove_file(world_path).unwrap();
     }
 
     fn renderer_for(path: &std::path::Path, zoom: i32) -> MBTilesRenderer {

@@ -70,13 +70,41 @@ impl CentreButtonView {
         };
         let ring = (SIZE / 4) as i16;
         let tick = (SIZE / 8) as i16;
-        canvas.circle(x, y, ring, symbol)?;
-        canvas.circle(x, y, ring - 1, symbol)?;
-        canvas.thick_line(x - ring - tick, y, x - ring + tick / 2, y, 2, symbol)?;
-        canvas.thick_line(x + ring - tick / 2, y, x + ring + tick, y, 2, symbol)?;
-        canvas.thick_line(x, y - ring - tick, x, y - ring + tick / 2, 2, symbol)?;
-        canvas.thick_line(x, y + ring - tick / 2, x, y + ring + tick, 2, symbol)?;
-        canvas.filled_circle(x, y, 3, symbol)?;
+        canvas.circle(x, y, ring, crate::screen::gfx(symbol))?;
+        canvas.circle(x, y, ring - 1, crate::screen::gfx(symbol))?;
+        canvas.thick_line(
+            x - ring - tick,
+            y,
+            x - ring + tick / 2,
+            y,
+            2,
+            crate::screen::gfx(symbol),
+        )?;
+        canvas.thick_line(
+            x + ring - tick / 2,
+            y,
+            x + ring + tick,
+            y,
+            2,
+            crate::screen::gfx(symbol),
+        )?;
+        canvas.thick_line(
+            x,
+            y - ring - tick,
+            x,
+            y - ring + tick / 2,
+            2,
+            crate::screen::gfx(symbol),
+        )?;
+        canvas.thick_line(
+            x,
+            y + ring - tick / 2,
+            x,
+            y + ring + tick,
+            2,
+            crate::screen::gfx(symbol),
+        )?;
+        canvas.filled_circle(x, y, 3, crate::screen::gfx(symbol))?;
         Ok(())
     }
 }

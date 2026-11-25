@@ -649,6 +649,26 @@ mod tests {
         assert!(!plotter.dirty, "the frame with the window was drawn");
         assert!(plotter.session.selected_ais_target().is_some());
 
+        // SDL2_gfx shapes get the colour asked for: a blue disc reads back
+        // blue (the sdl2 crate's own Color packing came out as 255, 255, 0
+        // with alpha 0 on a little-endian machine).
+        {
+            use sdl2::gfx::primitives::DrawRenderer;
+            let blue = sdl2::pixels::Color::RGB(0, 0, 255);
+            screen
+                .canvas
+                .filled_circle(30, 30, 8, crate::screen::gfx(blue))
+                .unwrap();
+            let pixel = screen
+                .canvas
+                .read_pixels(
+                    Some(sdl2::rect::Rect::new(30, 30, 1, 1)),
+                    sdl2::pixels::PixelFormatEnum::RGB24,
+                )
+                .unwrap();
+            assert_eq!(pixel, vec![0, 0, 255], "SDL2_gfx colour channels");
+        }
+
         drop(plotter);
         drop(screen);
         let _ = std::fs::remove_dir_all(&dir);

@@ -427,7 +427,7 @@ impl Default for AppearanceConfig {
             cog_length: 250.0,
             cog_width: 4,
             ais_course_length: 28,
-            ais_course_width: 3,
+            ais_course_width: 2,
             ais_size: 7,
             ais_outline_size: 9,
             boat_color: [255, 0, 0, 255],

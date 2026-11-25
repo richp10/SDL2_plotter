@@ -51,7 +51,7 @@ route_width = 3
 cog_length = 250.0
 cog_width = 4
 ais_course_length = 28
-ais_course_width = 3
+ais_course_width = 2
 ais_size = 7
 ais_outline_size = 9
 # Colors use [red, green, blue, alpha], with values from 0 to 255.

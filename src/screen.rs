@@ -277,7 +277,7 @@ impl<'ttf> Screen<'ttf> {
             bx,
             by,
             self.appearance.cog_width,
-            configured_color(self.appearance.cog_color),
+            gfx(configured_color(self.appearance.cog_color)),
         )?;
         Ok(())
     }
@@ -298,7 +298,7 @@ impl<'ttf> Screen<'ttf> {
             bx,
             by,
             2,
-            configured_color(self.appearance.boat_color),
+            gfx(configured_color(self.appearance.boat_color)),
         )?;
         Ok(())
     }
@@ -315,7 +315,7 @@ impl<'ttf> Screen<'ttf> {
                 bx,
                 by,
                 self.appearance.route_width,
-                configured_color(self.appearance.route_color),
+                gfx(configured_color(self.appearance.route_color)),
             );
         }
         self.canvas
@@ -328,7 +328,7 @@ impl<'ttf> Screen<'ttf> {
                 x,
                 y,
                 self.appearance.route_point_size,
-                configured_color(self.appearance.route_color),
+                gfx(configured_color(self.appearance.route_color)),
             );
         }
     }
@@ -402,8 +402,8 @@ impl<'ttf> Screen<'ttf> {
             xs.zip(ys)
         });
         if let Some((xs, ys)) = hull {
-            self.canvas.filled_polygon(&xs, &ys, boat_color)?;
-            self.canvas.polygon(&xs, &ys, outline)?;
+            self.canvas.filled_polygon(&xs, &ys, gfx(boat_color))?;
+            self.outline(&xs, &ys, outline)?;
         } else {
             draw_filled_circle(
                 &mut self.canvas,
@@ -419,6 +419,17 @@ impl<'ttf> Screen<'ttf> {
                 i32::from(self.appearance.boat_size),
                 outline,
             )?;
+        }
+        Ok(())
+    }
+
+    /// A closed 2 px outline through the corners `xs`, `ys`, so a hull
+    /// stands out on any chart colour.
+    fn outline(&mut self, xs: &[i16], ys: &[i16], colour: Color) -> Result<(), String> {
+        for i in 0..xs.len() {
+            let j = (i + 1) % xs.len();
+            self.canvas
+                .thick_line(xs[i], ys[i], xs[j], ys[j], 2, gfx(colour))?;
         }
         Ok(())
     }
@@ -470,7 +481,7 @@ impl<'ttf> Screen<'ttf> {
                     bx,
                     by,
                     self.appearance.ais_course_width,
-                    colour,
+                    gfx(colour),
                 );
             }
         }
@@ -484,13 +495,13 @@ impl<'ttf> Screen<'ttf> {
             xs.zip(ys)
         });
         if let Some((xs, ys)) = hull {
-            self.canvas.filled_polygon(&xs, &ys, colour)?;
-            self.canvas.polygon(&xs, &ys, outline)?;
+            self.canvas.filled_polygon(&xs, &ys, gfx(colour))?;
+            self.outline(&xs, &ys, outline)?;
         } else {
             self.canvas
-                .filled_circle(x16, y16, self.appearance.ais_size, colour)?;
+                .filled_circle(x16, y16, self.appearance.ais_size, gfx(colour))?;
             self.canvas
-                .circle(x16, y16, self.appearance.ais_outline_size, outline)?;
+                .circle(x16, y16, self.appearance.ais_outline_size, gfx(outline))?;
         }
         if let Some(mark) = style.mark {
             let left = x16.saturating_sub(half_length as i16 + 8);
@@ -506,13 +517,13 @@ impl<'ttf> Screen<'ttf> {
         let black = Color::RGB(0, 0, 0);
         let white = Color::RGB(255, 255, 255);
         let ball = |canvas: &mut WindowCanvas, cy: i16| -> Result<(), String> {
-            canvas.filled_circle(x, cy, R + 1, white)?;
-            canvas.filled_circle(x, cy, R, black)
+            canvas.filled_circle(x, cy, R + 1, gfx(white))?;
+            canvas.filled_circle(x, cy, R, gfx(black))
         };
         let shape = |canvas: &mut WindowCanvas, xs: &[i16], ys: &[i16]| -> Result<(), String> {
-            canvas.polygon(xs, ys, white)?;
-            canvas.filled_polygon(xs, ys, black)?;
-            canvas.polygon(xs, ys, white)
+            canvas.polygon(xs, ys, gfx(white))?;
+            canvas.filled_polygon(xs, ys, gfx(black))?;
+            canvas.polygon(xs, ys, gfx(white))
         };
         let step = 2 * R + 2;
         match mark {
@@ -565,9 +576,9 @@ impl<'ttf> Screen<'ttf> {
         };
         let color = configured_color(self.appearance.waypoint_color);
         self.canvas
-            .filled_trigon(x - 5, y - 9, x + 5, y - 9, x, y, color)?;
-        self.canvas.filled_circle(x, y - 11, 6, color)?;
-        self.canvas.filled_circle(x, y - 11, 2, Color::WHITE)
+            .filled_trigon(x - 5, y - 9, x + 5, y - 9, x, y, gfx(color))?;
+        self.canvas.filled_circle(x, y - 11, 6, gfx(color))?;
+        self.canvas.filled_circle(x, y - 11, 2, gfx(Color::WHITE))
     }
 
     /// The boat's track as a polyline through `pts` (screen pixels).
@@ -669,6 +680,17 @@ impl<'ttf> Screen<'ttf> {
         }
         Ok(())
     }
+}
+
+/// A colour as SDL2_gfx reads it. Its `*Color` functions take a `Uint32`
+/// but read its bytes in memory order as red, green, blue, alpha. The sdl2
+/// crate packs `Color` as the number 0xRRGGBBAA, which on a little-endian
+/// machine (the PC and the Pi) arrives with red and alpha, green and blue
+/// swapped: black and teal came out fully transparent. Every SDL2_gfx call
+/// takes its colour through this.
+pub fn gfx(color: Color) -> u32 {
+    let (red, green, blue, alpha) = color.rgba();
+    u32::from_ne_bytes([red, green, blue, alpha])
 }
 
 fn configured_color([red, green, blue, alpha]: [u8; 4]) -> Color {

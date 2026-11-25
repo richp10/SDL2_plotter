@@ -128,8 +128,12 @@ pub struct FontConfig {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct AppearanceConfig {
+    /// The round marker's radius, when no direction is known.
     pub boat_size: i16,
+    /// The heading line's length.
     pub boat_circle_radius: i16,
+    /// The hull: centre to bow, in pixels.
+    pub boat_hull_size: i16,
     pub mark_size: i16,
     pub route_point_size: i16,
     pub route_width: u8,
@@ -271,6 +275,7 @@ impl AppConfig {
         let appearance_sizes = [
             self.appearance.boat_size,
             self.appearance.boat_circle_radius,
+            self.appearance.boat_hull_size,
             self.appearance.mark_size,
             self.appearance.route_point_size,
             self.appearance.ais_course_length,
@@ -390,8 +395,9 @@ impl Default for FontConfig {
 impl Default for AppearanceConfig {
     fn default() -> Self {
         Self {
-            boat_size: 6,
+            boat_size: 9,
             boat_circle_radius: 50,
+            boat_hull_size: 27,
             mark_size: 6,
             route_point_size: 6,
             route_width: 3,

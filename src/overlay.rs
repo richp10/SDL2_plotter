@@ -23,10 +23,13 @@ pub enum Shape {
     /// The boat's track, in normalised Mercator coordinates (0..1) as the
     /// track stores them.
     Track(Vec<(f64, f64)>),
-    /// Own boat; `course` and `heading` are true, in radians. `fix` is
-    /// false while the position is only the last one known.
+    /// Own boat; `bow`, `course` and `heading` are true, in radians. `bow`
+    /// is where the hull points (`None`: no direction known, a round
+    /// marker). `fix` is false while the position is only the last one
+    /// known.
     Boat {
         at: (f64, f64),
+        bow: Option<f64>,
         course: Option<f64>,
         heading: Option<f64>,
         fix: bool,
@@ -66,6 +69,7 @@ pub enum Draw {
     Track(Vec<Point>),
     Boat {
         at: Point,
+        bow: Option<f64>,
         course: Option<f64>,
         heading: Option<f64>,
         fix: bool,
@@ -121,6 +125,7 @@ pub fn plan(view: &ChartView, shapes: &[Shape]) -> Vec<Draw> {
             }
             Shape::Boat {
                 at,
+                bow,
                 course,
                 heading,
                 fix,
@@ -129,6 +134,9 @@ pub fn plan(view: &ChartView, shapes: &[Shape]) -> Vec<Draw> {
                 if visible(at) {
                     draws.push(Draw::Boat {
                         at,
+                        bow: bow
+                            .filter(|b| b.is_finite())
+                            .map(|b| view.course_to_screen(b)),
                         course: course.map(|c| view.course_to_screen(c)),
                         heading: heading
                             .filter(|h| h.is_finite())
@@ -239,12 +247,14 @@ mod tests {
             &[
                 Shape::Boat {
                     at: (0.0, 0.0),
+                    bow: None,
                     course: None,
                     heading: None,
                     fix: true,
                 },
                 Shape::Boat {
                     at: (90.0, 0.0),
+                    bow: None,
                     course: None,
                     heading: None,
                     fix: true,
@@ -258,6 +268,7 @@ mod tests {
             draws[0],
             Draw::Boat {
                 at: Point::new(256, 128),
+                bow: None,
                 course: None,
                 heading: None,
                 fix: true
@@ -305,6 +316,7 @@ mod tests {
             &view(),
             &[Shape::Boat {
                 at: (0.0, 0.0),
+                bow: None,
                 course: None,
                 heading: None,
                 fix: false,
@@ -314,6 +326,7 @@ mod tests {
             draws,
             vec![Draw::Boat {
                 at: Point::new(256, 128),
+                bow: None,
                 course: None,
                 heading: None,
                 fix: false
@@ -328,6 +341,7 @@ mod tests {
             &rotated,
             &[Shape::Boat {
                 at: (0.0, 0.0),
+                bow: Some(std::f64::consts::FRAC_PI_2),
                 course: None,
                 heading: Some(std::f64::consts::FRAC_PI_2),
                 fix: true,
@@ -385,6 +399,7 @@ mod tests {
             &rotated,
             &[Shape::Boat {
                 at: (0.0, 0.0),
+                bow: None,
                 course: Some(std::f64::consts::FRAC_PI_2),
                 heading: None,
                 fix: true,

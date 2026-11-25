@@ -39,8 +39,9 @@ ui_size = 16
 
 [appearance]
 # Sizes and line widths are in pixels.
-boat_size = 6
-boat_circle_radius = 50
+boat_size = 9                 # round marker radius, when no direction is known
+boat_circle_radius = 50       # heading line length
+boat_hull_size = 27           # hull, centre to bow
 mark_size = 6
 route_point_size = 6
 route_width = 3

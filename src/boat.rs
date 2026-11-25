@@ -48,8 +48,12 @@ impl BoatState {
     pub fn shape(&self) -> Option<Shape> {
         self.fixed_at?;
         let fix = self.position_valid;
+        let moving = self.speed_over_ground > MINIMUM_SPEED;
         Some(Shape::Boat {
             at: (self.longitude, self.latitude),
+            // The hull points along the heading, else the course while
+            // moving; it keeps that direction when the fix is lost.
+            bow: self.heading.or(moving.then_some(self.course_over_ground)),
             course: (fix && self.speed_over_ground > MINIMUM_SPEED)
                 .then_some(self.course_over_ground),
             heading: self.heading.filter(|_| fix),
@@ -190,6 +194,7 @@ mod tests {
             boat.shape(),
             Some(Shape::Boat {
                 at: (-4.5, 48.4),
+                bow: Some(0.5),
                 course: Some(1.0),
                 heading: Some(0.5),
                 fix: true
@@ -215,10 +220,27 @@ mod tests {
             boat.shape(),
             Some(Shape::Boat {
                 at: (-4.5, 48.4),
+                bow: Some(0.5),
                 course: None,
                 heading: None,
                 fix: false
             })
+        );
+    }
+
+    #[test]
+    fn the_hull_points_along_the_heading_else_the_course_when_moving() {
+        let mut boat = fixed(Instant::now());
+        assert!(matches!(boat.shape(), Some(Shape::Boat { bow: Some(b), .. }) if b == 0.5));
+        boat.heading = None;
+        assert!(
+            matches!(boat.shape(), Some(Shape::Boat { bow: Some(b), .. }) if b == 1.0),
+            "no heading: the course"
+        );
+        boat.speed_over_ground = 0.2;
+        assert!(
+            matches!(boat.shape(), Some(Shape::Boat { bow: None, .. })),
+            "stopped with no heading: no direction known"
         );
     }
 

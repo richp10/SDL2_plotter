@@ -214,11 +214,12 @@ impl<'ttf> Screen<'ttf> {
                 }
                 Draw::Boat {
                     at,
+                    bow,
                     course,
                     heading,
                     fix,
                 } => {
-                    self.show_boat(at.x, at.y, *fix)?;
+                    self.show_boat(at.x, at.y, *bow, *fix)?;
                     if let Some(course) = course {
                         self.show_cog(*course, *at)?;
                     }
@@ -370,7 +371,9 @@ impl<'ttf> Screen<'ttf> {
         )
     }
 
-    fn show_boat(&mut self, x: i32, y: i32, fix: bool) -> Result<(), String> {
+    /// The own boat: a hull along `bow` (a screen angle), or a round
+    /// marker when no direction is known; grey without a fix.
+    fn show_boat(&mut self, x: i32, y: i32, bow: Option<f64>, fix: bool) -> Result<(), String> {
         if !self.clip().contains(f64::from(x), f64::from(y)) {
             return Ok(());
         }
@@ -379,22 +382,37 @@ impl<'ttf> Screen<'ttf> {
         } else {
             self.appearance.boat_no_fix_color
         });
+        let outline = configured_color(self.appearance.ais_outline_color);
         self.canvas.set_blend_mode(BlendMode::Blend);
-        self.canvas.set_draw_color(boat_color);
-        draw_filled_circle(
-            &mut self.canvas,
-            x,
-            y,
-            i32::from(self.appearance.boat_size),
-            boat_color,
-        )?;
-        draw_circle(
-            &mut self.canvas,
-            x,
-            y,
-            i32::from(self.appearance.boat_circle_radius),
-            boat_color,
-        )?;
+        let hull = bow.and_then(|angle| {
+            let corners = crate::overlay::ais_hull(
+                Point::new(x, y),
+                angle,
+                f64::from(self.appearance.boat_hull_size),
+            );
+            let xs: Option<Vec<i16>> = corners.iter().map(|p| i16::try_from(p.x).ok()).collect();
+            let ys: Option<Vec<i16>> = corners.iter().map(|p| i16::try_from(p.y).ok()).collect();
+            xs.zip(ys)
+        });
+        if let Some((xs, ys)) = hull {
+            self.canvas.filled_polygon(&xs, &ys, boat_color)?;
+            self.canvas.polygon(&xs, &ys, outline)?;
+        } else {
+            draw_filled_circle(
+                &mut self.canvas,
+                x,
+                y,
+                i32::from(self.appearance.boat_size),
+                boat_color,
+            )?;
+            draw_circle(
+                &mut self.canvas,
+                x,
+                y,
+                i32::from(self.appearance.boat_size),
+                outline,
+            )?;
+        }
         Ok(())
     }
 

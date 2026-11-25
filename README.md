@@ -150,8 +150,9 @@ Symbol sizes are expressed in pixels. Colors use `[red, green, blue, alpha]`, wi
 
 ```toml
 [appearance]
-boat_size = 6
-boat_circle_radius = 50
+boat_size = 9                 # round marker radius, when no direction is known
+boat_circle_radius = 50       # heading line length
+boat_hull_size = 27           # own-boat hull, centre to bow
 boat_color = [255, 0, 0, 255]
 boat_no_fix_color = [128, 128, 128, 255]   # no position for 10 s
 mark_size = 6

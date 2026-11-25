@@ -60,6 +60,11 @@ pub struct AisTarget {
     pub nav_status: Option<u8>,
     /// A class B transponder (small craft).
     pub class_b: bool,
+    pub call_sign: Option<String>,
+    pub destination: Option<String>,
+    pub length_m: Option<u16>,
+    pub beam_m: Option<u16>,
+    pub draught_m: Option<f64>,
     last_update: Instant,
 }
 
@@ -75,6 +80,11 @@ impl AisTarget {
             ship_type: None,
             nav_status: None,
             class_b: false,
+            call_sign: None,
+            destination: None,
+            length_m: None,
+            beam_m: None,
+            draught_m: None,
             last_update: Instant::now(),
         }
     }

@@ -296,20 +296,20 @@ impl Decoder {
         else {
             return Update::default();
         };
-        let (mmsi, report, name, ship_type, class_b) = match message {
-            aivdm::Message::Position(report) => (
-                report.mmsi,
-                Some(report.clone()),
-                report.name,
-                report.ship_type,
-                report.class_b,
-            ),
+        let (mmsi, report, data, class_b) = match message {
+            aivdm::Message::Position(report) => {
+                let data = aivdm::StaticData {
+                    name: report.name.clone(),
+                    ship_type: report.ship_type,
+                    ..aivdm::StaticData::default()
+                };
+                (report.mmsi, Some(report.clone()), data, report.class_b)
+            }
             aivdm::Message::Static {
                 mmsi,
-                name,
-                ship_type,
+                data,
                 class_b,
-            } => (mmsi, None, name, ship_type, class_b),
+            } => (mmsi, None, data, class_b),
         };
         let context = format!("vessels.urn:mrn:imo:mmsi:{mmsi}");
         let target = self
@@ -325,12 +325,19 @@ impl Decoder {
             target.heading = report.heading;
             target.nav_status = report.nav_status;
         }
-        if name.is_some() {
-            target.name = name;
-        }
-        if ship_type.is_some() {
-            target.ship_type = ship_type;
-        }
+        // A static report carries part of the data; keep the rest.
+        let keep = |new: Option<String>, old: &mut Option<String>| {
+            if new.is_some() {
+                *old = new;
+            }
+        };
+        keep(data.name, &mut target.name);
+        keep(data.call_sign, &mut target.call_sign);
+        keep(data.destination, &mut target.destination);
+        target.ship_type = data.ship_type.or(target.ship_type);
+        target.length_m = data.length_m.or(target.length_m);
+        target.beam_m = data.beam_m.or(target.beam_m);
+        target.draught_m = data.draught_m.or(target.draught_m);
         target.class_b = class_b;
         target.update_received();
         Update {
@@ -938,6 +945,22 @@ mod tests {
         assert_eq!(
             (b.class_b, b.ship_type, b.nav_status),
             (true, Some(36), None)
+        );
+    }
+
+    #[test]
+    fn a_target_keeps_its_static_data() {
+        let mut d = Decoder::new();
+        let (first, second) =
+            "53M@=r@0000048<C7;=<D61=0U8U@000000000166@D556tfN;C3kQ3kP00000000000000".split_at(60);
+        d.apply(&bang(&format!("AIVDM,2,1,3,A,{first},0")), Instant::now());
+        d.apply(&bang(&format!("AIVDM,2,2,3,A,{second},2")), Instant::now());
+        let t = &d.ais_targets()[0];
+        assert_eq!(t.call_sign.as_deref(), Some("ABCD123"));
+        assert_eq!(t.destination.as_deref(), Some("LONDON"));
+        assert_eq!(
+            (t.length_m, t.beam_m, t.draught_m),
+            (Some(70), Some(10), Some(4.5))
         );
     }
 

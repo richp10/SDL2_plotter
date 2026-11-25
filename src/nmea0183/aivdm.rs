@@ -15,15 +15,29 @@ const METRES_PER_SECOND_PER_KNOT: f64 = 1852.0 / 3600.0;
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum Message {
     Position(PositionReport),
-    /// A static report: the vessel's name and ship type, either or both.
+    /// A static report: whatever of `StaticData` it carries.
     Static {
         mmsi: u32,
-        name: Option<String>,
-        /// AIS ship type, 1 to 99 (0, "not available", is `None`).
-        ship_type: Option<u8>,
+        data: StaticData,
         /// Class B (type 24); class A (type 5) otherwise.
         class_b: bool,
     },
+}
+
+/// What a static report says about a vessel. "Not available" (an empty
+/// text, a zero) is `None`.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(super) struct StaticData {
+    pub name: Option<String>,
+    /// AIS ship type, 1 to 99.
+    pub ship_type: Option<u8>,
+    pub call_sign: Option<String>,
+    pub destination: Option<String>,
+    /// Bow to stern, from the AIS antenna offsets.
+    pub length_m: Option<u16>,
+    /// Port to starboard.
+    pub beam_m: Option<u16>,
+    pub draught_m: Option<f64>,
 }
 
 /// A position report. Every value the transmitter marks "not available"
@@ -157,14 +171,13 @@ const CLASS_B_EXTENDED: Layout = Layout {
 /// does not read, or a static report with neither name nor ship type.
 pub(super) fn decode(payload: &str, fill: u8) -> Option<Message> {
     let bits = Bits::new(payload, fill)?;
-    let static_report = |name: Option<String>, ship_type: Option<u8>, class_b| {
-        if name.is_none() && ship_type.is_none() {
+    let static_report = |data: StaticData, class_b| {
+        if data == StaticData::default() {
             return None;
         }
         Some(Message::Static {
             mmsi: bits.mmsi()?,
-            name,
-            ship_type,
+            data,
             class_b,
         })
     };
@@ -172,10 +185,45 @@ pub(super) fn decode(payload: &str, fill: u8) -> Option<Message> {
         1..=3 => bits.position(&CLASS_A),
         18 => bits.position(&CLASS_B),
         19 => bits.position(&CLASS_B_EXTENDED),
-        5 => static_report(bits.name(112), bits.ship_type(232), false),
+        5 => {
+            let (length_m, beam_m) = bits.dimensions(240);
+            static_report(
+                StaticData {
+                    name: bits.name(112),
+                    ship_type: bits.ship_type(232),
+                    call_sign: bits.text(70, 7),
+                    destination: bits.text(302, 20),
+                    length_m,
+                    beam_m,
+                    draught_m: bits
+                        .uint(294, 8)
+                        .filter(|d| *d > 0)
+                        .map(|d| d as f64 / 10.0),
+                },
+                false,
+            )
+        }
         24 => match bits.uint(38, 2)? {
-            0 => static_report(bits.name(40), None, true),
-            1 => static_report(None, bits.ship_type(40), true),
+            0 => static_report(
+                StaticData {
+                    name: bits.name(40),
+                    ..StaticData::default()
+                },
+                true,
+            ),
+            1 => {
+                let (length_m, beam_m) = bits.dimensions(132);
+                static_report(
+                    StaticData {
+                        ship_type: bits.ship_type(40),
+                        call_sign: bits.text(90, 7),
+                        length_m,
+                        beam_m,
+                        ..StaticData::default()
+                    },
+                    true,
+                )
+            }
             _ => None,
         },
         _ => None,
@@ -231,14 +279,29 @@ impl Bits {
 
     /// Twenty 6-bit characters, trimmed of `@` padding and spaces.
     fn name(&self, start: usize) -> Option<String> {
-        let name: String = (0..20)
+        self.text(start, 20)
+    }
+
+    /// `chars` 6-bit characters, trimmed of `@` padding and spaces; `None`
+    /// when nothing is left.
+    fn text(&self, start: usize, chars: usize) -> Option<String> {
+        let text: String = (0..chars)
             .map(|i| {
                 self.uint(start + 6 * i, 6)
                     .map(|v| char::from(if v < 32 { v as u8 + 64 } else { v as u8 }))
             })
             .collect::<Option<String>>()?;
-        let name = name.trim_end_matches(['@', ' ']).trim().to_string();
-        (!name.is_empty()).then_some(name)
+        let text = text.trim_end_matches(['@', ' ']).trim().to_string();
+        (!text.is_empty()).then_some(text)
+    }
+
+    /// Length and beam from the antenna offsets at `start` (to bow 9 bits,
+    /// to stern 9, to port 6, to starboard 6); zero is not available.
+    fn dimensions(&self, start: usize) -> (Option<u16>, Option<u16>) {
+        let part = |offset, width| self.uint(start + offset, width).unwrap_or(0) as u16;
+        let length = part(0, 9) + part(9, 9);
+        let beam = part(18, 6) + part(24, 6);
+        ((length > 0).then_some(length), (beam > 0).then_some(beam))
     }
 
     fn position(&self, layout: &Layout) -> Option<Message> {
@@ -376,8 +439,10 @@ mod tests {
             one(TYPE_24A, 0),
             Some(Message::Static {
                 mmsi: 232002002,
-                name: Some("NORDIC STAR".into()),
-                ship_type: None,
+                data: StaticData {
+                    name: Some("NORDIC STAR".into()),
+                    ..StaticData::default()
+                },
                 class_b: true,
             })
         );
@@ -385,20 +450,33 @@ mod tests {
             one(TYPE_24B, 0),
             Some(Message::Static {
                 mmsi: 232002002,
-                name: None,
-                ship_type: Some(36),
+                data: StaticData {
+                    ship_type: Some(36),
+                    call_sign: Some("WXYZ789".into()),
+                    length_m: Some(12),
+                    beam_m: Some(4),
+                    ..StaticData::default()
+                },
                 class_b: true,
             }),
-            "part B: the type"
+            "part B: type, call sign and size (pyais: bow 8, stern 4, port 2, starboard 2)"
         );
         assert_eq!(
             one(TYPE_5, 2),
             Some(Message::Static {
                 mmsi: 232001001,
-                name: Some("SEA SPIRIT".into()),
-                ship_type: Some(70),
+                data: StaticData {
+                    name: Some("SEA SPIRIT".into()),
+                    ship_type: Some(70),
+                    call_sign: Some("ABCD123".into()),
+                    destination: Some("LONDON".into()),
+                    length_m: Some(70),
+                    beam_m: Some(10),
+                    draught_m: Some(4.5),
+                },
                 class_b: false,
-            })
+            }),
+            "pyais: bow 50, stern 20, port 5, starboard 5, draught 4.5, LONDON"
         );
     }
 

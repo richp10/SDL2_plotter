@@ -91,12 +91,11 @@ impl Decoder {
             }
             Some("HDG") if self.hdt_is_fresh(now) => Update::default(),
             Some("HDG") => {
-                let variation =
-                    signed(field(&fields, 4), field(&fields, 5), 'E', 'W').or(self.variation);
+                let variation = offset(field(&fields, 4), field(&fields, 5)).or(self.variation);
                 // Deviation is optional; when it is given it must be valid.
                 let deviation = match field(&fields, 2) {
                     None => Some(0.0),
-                    deviation => signed(deviation, field(&fields, 3), 'E', 'W'),
+                    deviation => offset(deviation, field(&fields, 3)),
                 };
                 let heading = field(&fields, 1)
                     .and_then(degrees)
@@ -110,7 +109,7 @@ impl Decoder {
     }
 
     fn rmc(&mut self, fields: &[&str], now: Instant) -> Update {
-        if let Some(variation) = signed(field(fields, 10), field(fields, 11), 'E', 'W') {
+        if let Some(variation) = offset(field(fields, 10), field(fields, 11)) {
             self.variation = Some(variation);
         }
         let mode_ok = !matches!(field(fields, 12), Some("N" | "E"));
@@ -214,6 +213,12 @@ fn signed(
         c if c == negative => Some(-value),
         _ => None,
     }
+}
+
+/// A magnetic variation or deviation in degrees, east positive, at most
+/// 180 either way.
+fn offset(value: Option<&str>, letter: Option<&str>) -> Option<f64> {
+    signed(value, letter, 'E', 'W').filter(|degrees| degrees.abs() <= 180.0)
 }
 
 /// `ddmm.mmmm` (or `dddmm.mmmm` with `degree_digits` 3) and its hemisphere
@@ -466,6 +471,21 @@ mod tests {
         assert!((d.boat().heading.unwrap() - 97.0_f64.to_radians()).abs() < 1e-9);
         d.apply(&sentence("HCHDG,100.0,2.0,W,5.0,W"), Instant::now());
         assert!((d.boat().heading.unwrap() - 93.0_f64.to_radians()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_variation_or_deviation_beyond_180_degrees_is_ignored() {
+        let mut d = Decoder::new();
+        let u = d.apply(&sentence("HCHDG,100.0,,,200.0,W"), Instant::now());
+        assert_eq!(u, Update::default());
+        let u = d.apply(&sentence("HCHDG,100.0,190.0,E,5.0,W"), Instant::now());
+        assert_eq!(u, Update::default());
+        d.apply(
+            &sentence("GPRMC,123519,A,4807.038,N,01131.000,E,5.0,90.0,230394,200.0,W"),
+            Instant::now(),
+        );
+        let u = d.apply(&sentence("HCHDG,100.0,,,,"), Instant::now());
+        assert_eq!(u, Update::default(), "the RMC variation was not kept");
     }
 
     #[test]

@@ -50,6 +50,9 @@ pub enum Transport {
 pub struct Nmea0183Config {
     pub transport: Transport,
     pub address: String,
+    /// Read RMC from this talker only (for example "GN"), for a
+    /// multiplexer that mixes two GPS receivers. Empty: every talker.
+    pub talker: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -207,6 +210,12 @@ impl AppConfig {
                         "nmea0183.address doit être une adresse IP:port (par ex. 127.0.0.1:10110)"
                     );
                 }
+                let talker = &self.nmea0183.talker;
+                if !talker.is_empty()
+                    && !(talker.len() == 2 && talker.bytes().all(|b| b.is_ascii_uppercase()))
+                {
+                    bail!("nmea0183.talker doit être vide ou deux lettres majuscules (par ex. GN)");
+                }
             }
             InputSource::Nmea2k => {}
         }
@@ -266,6 +275,7 @@ impl Default for Nmea0183Config {
         Self {
             transport: Transport::Tcp,
             address: "127.0.0.1:10110".into(),
+            talker: String::new(),
         }
     }
 }
@@ -433,6 +443,20 @@ address = \"0.0.0.0:10110\"
         assert!(config.validate().is_err());
         config.input.source = InputSource::Nmea0183;
         config.validate().unwrap();
+    }
+
+    #[test]
+    fn the_nmea0183_talker_is_empty_or_two_capital_letters() {
+        let mut config = AppConfig::default();
+        config.input.source = InputSource::Nmea0183;
+        assert_eq!(config.nmea0183.talker, "");
+        config.validate().unwrap();
+        config.nmea0183.talker = "GN".into();
+        config.validate().unwrap();
+        for bad in ["gn", "G", "GPS", "G1"] {
+            config.nmea0183.talker = bad.into();
+            assert!(config.validate().is_err(), "{bad}");
+        }
     }
 
     #[test]

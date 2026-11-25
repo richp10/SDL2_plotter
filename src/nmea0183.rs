@@ -27,7 +27,7 @@ pub async fn run(config: Nmea0183Config, feed: LiveFeed) {
             config.transport, config.address
         ),
     );
-    let mut decoder = Decoder::new();
+    let mut decoder = Decoder::with_talker(&config.talker);
     let mut last_bound = Instant::now();
     let on_line = |line: &str| {
         let now = Instant::now();
@@ -74,6 +74,8 @@ pub struct Decoder {
     variation: Option<f64>,
     /// When the last HDT came. HDG is ignored while it is fresh.
     hdt_at: Option<Instant>,
+    /// When set, RMC from other talkers is ignored.
+    talker: Option<String>,
     /// AIS fragments waiting for the rest of their message.
     assembler: aivdm::Assembler,
     /// AIS targets by context (`vessels.urn:mrn:imo:mmsi:<MMSI>`, as Signal
@@ -87,8 +89,18 @@ impl Decoder {
             boat: BoatState::default(),
             variation: None,
             hdt_at: None,
+            talker: None,
             assembler: aivdm::Assembler::default(),
             targets: HashMap::new(),
+        }
+    }
+
+    /// A decoder that reads RMC from `talker` only; an empty `talker`
+    /// reads every one.
+    pub fn with_talker(talker: &str) -> Self {
+        Self {
+            talker: (!talker.is_empty()).then(|| talker.to_string()),
+            ..Self::new()
         }
     }
 
@@ -112,9 +124,10 @@ impl Decoder {
             return Update::default();
         };
         let fields: Vec<&str> = body.split(',').collect();
-        // The talker (first two characters) is ignored.
+        // The talker (first two characters) is ignored, except by the
+        // optional RMC filter.
         match fields[0].get(2..) {
-            Some("RMC") => self.rmc(&fields, now),
+            Some("RMC") if self.talker_allowed(fields[0]) => self.rmc(&fields, now),
             Some("HDT") => {
                 let update = self.heading(field(&fields, 1).and_then(degrees), now);
                 if update.boat_changed {
@@ -218,6 +231,12 @@ impl Decoder {
             ais_changed: true,
             ..Update::default()
         }
+    }
+
+    fn talker_allowed(&self, address: &str) -> bool {
+        self.talker
+            .as_deref()
+            .is_none_or(|talker| address.get(..2) == Some(talker))
     }
 
     /// HDT is true heading, so it wins over HDG while it comes in.
@@ -464,6 +483,18 @@ mod tests {
             );
             assert!(u.track_point.is_some(), "talker {talker}");
         }
+    }
+
+    #[test]
+    fn a_talker_filter_keeps_only_that_receivers_position() {
+        let mut d = Decoder::with_talker("GN");
+        let now = Instant::now();
+        let gp = sentence("GPRMC,123519,A,4807.038,N,01131.000,E,5.0,90.0,230394,,");
+        assert_eq!(d.apply(&gp, now), Update::default(), "GP filtered out");
+        let gn = sentence("GNRMC,123519,A,4807.038,N,01131.000,E,5.0,90.0,230394,,");
+        assert!(d.apply(&gn, now).track_point.is_some());
+        let hdt = sentence("HEHDT,10.0,T");
+        assert!(d.apply(&hdt, now).boat_changed, "heading is not filtered");
     }
 
     #[test]

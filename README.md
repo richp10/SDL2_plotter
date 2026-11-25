@@ -121,7 +121,7 @@ transport = "tcp"            # "tcp": connect to address; "udp": bind address an
 address = "127.0.0.1:10110"  # IP:port; for UDP, for example "0.0.0.0:10110"
 ```
 
-Used when `source = "nmea0183"`. To test with `go-gps-simulator`: run `gps-simulator -tcp` with `transport = "tcp"`, `address = "127.0.0.1:10110"`, or `gps-simulator -udp -host 127.0.0.1` with `transport = "udp"`, `address = "0.0.0.0:10110"`. The app reads RMC (position, speed, course), HDT and HDG (heading; HDG only with a magnetic variation). AIS over NMEA 0183 is not read yet.
+Used when `source = "nmea0183"`. To test with `go-gps-simulator`: run `gps-simulator -tcp` with `transport = "tcp"`, `address = "127.0.0.1:10110"`, or `gps-simulator -udp -host 127.0.0.1` with `transport = "udp"`, `address = "0.0.0.0:10110"`. The app reads RMC (position, speed, course), HDT and HDG (heading; HDG only with a magnetic variation). It also reads AIS targets from `!AIVDM` (message types 1, 2, 3, 5, 18, 19 and 24).
 
 ### Charts
 

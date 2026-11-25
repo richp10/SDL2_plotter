@@ -52,6 +52,8 @@ pub struct AisTarget {
     pub position: Option<(f64, f64)>,
     pub course_over_ground: Option<f64>,
     pub speed_over_ground: Option<f64>,
+    /// True heading in radians, when the target sends one.
+    pub heading: Option<f64>,
     last_update: Instant,
 }
 
@@ -63,6 +65,7 @@ impl AisTarget {
             position: None,
             course_over_ground: None,
             speed_over_ground: None,
+            heading: None,
             last_update: Instant::now(),
         }
     }

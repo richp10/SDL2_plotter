@@ -2,10 +2,14 @@
 //! update. Only RMC (position, speed, course), HDT and HDG (heading) are
 //! read; see `docs/nmea0183-input-design.md`.
 
+mod aivdm;
 mod transport;
 
 use std::time::Instant;
 
+use std::collections::HashMap;
+
+use crate::ais::AisTarget;
 use crate::boat::{BoatState, HEADING_TIMEOUT};
 use crate::config::{Nmea0183Config, Transport};
 use crate::feed::LiveFeed;
@@ -14,8 +18,7 @@ use crate::feed::LiveFeed;
 const METRES_PER_SECOND_PER_KNOT: f64 = 1852.0 / 3600.0;
 
 /// The NMEA 0183 source task: reads lines from the configured transport,
-/// decodes them and publishes on `feed`. Never returns. AIS is not read
-/// yet, so the AIS list stays empty.
+/// decodes them and publishes on `feed`. Never returns.
 pub async fn run(config: Nmea0183Config, feed: LiveFeed) {
     crate::diagnostics::record(
         "INFO",
@@ -25,13 +28,25 @@ pub async fn run(config: Nmea0183Config, feed: LiveFeed) {
         ),
     );
     let mut decoder = Decoder::new();
+    let mut last_bound = Instant::now();
     let on_line = |line: &str| {
-        let update = decoder.apply(line, Instant::now());
+        let now = Instant::now();
+        let update = decoder.apply(line, now);
         if update.boat_changed {
             let _ = feed.boat.send(decoder.boat());
         }
         if let Some(position) = update.track_point {
             let _ = feed.track.send(position);
+        }
+        // Silent targets, and the oldest above the cap, go at most once a
+        // second, so the map stays bounded.
+        let mut ais_changed = update.ais_changed;
+        if now.duration_since(last_bound) >= std::time::Duration::from_secs(1) {
+            ais_changed |= decoder.bound_ais(now);
+            last_bound = now;
+        }
+        if ais_changed {
+            let _ = feed.ais.send(decoder.ais_targets());
         }
     };
     match config.transport {
@@ -47,6 +62,8 @@ pub struct Update {
     pub boat_changed: bool,
     /// A new fix: one track point, `(lon, lat)`.
     pub track_point: Option<(f64, f64)>,
+    /// An AIS target changed: publish `Decoder::ais_targets()`.
+    pub ais_changed: bool,
 }
 
 /// The boat as the sentences so far describe it.
@@ -57,6 +74,11 @@ pub struct Decoder {
     variation: Option<f64>,
     /// When the last HDT came. HDG is ignored while it is fresh.
     hdt_at: Option<Instant>,
+    /// AIS fragments waiting for the rest of their message.
+    assembler: aivdm::Assembler,
+    /// AIS targets by context (`vessels.urn:mrn:imo:mmsi:<MMSI>`, as Signal
+    /// K names them).
+    targets: HashMap<String, AisTarget>,
 }
 
 impl Decoder {
@@ -65,11 +87,22 @@ impl Decoder {
             boat: BoatState::default(),
             variation: None,
             hdt_at: None,
+            assembler: aivdm::Assembler::default(),
+            targets: HashMap::new(),
         }
     }
 
     pub fn boat(&self) -> BoatState {
         self.boat
+    }
+
+    pub fn ais_targets(&self) -> Vec<AisTarget> {
+        self.targets.values().cloned().collect()
+    }
+
+    /// Applies `ais::bound`. Returns true when a target was removed.
+    pub fn bound_ais(&mut self, now: Instant) -> bool {
+        crate::ais::bound(&mut self.targets, now)
     }
 
     /// Reads one line received at `now`. A line that fails a check (no
@@ -89,6 +122,7 @@ impl Decoder {
                 }
                 update
             }
+            Some("VDM") => self.ais(&fields),
             Some("HDG") if self.hdt_is_fresh(now) => Update::default(),
             Some("HDG") => {
                 let variation = offset(field(&fields, 4), field(&fields, 5)).or(self.variation);
@@ -117,7 +151,7 @@ impl Decoder {
             self.boat.position_valid = false;
             return Update {
                 boat_changed: true,
-                track_point: None,
+                ..Update::default()
             };
         }
         let (Some(lat), Some(lon)) = (
@@ -145,6 +179,44 @@ impl Decoder {
         Update {
             boat_changed: true,
             track_point: Some((lon, lat)),
+            ..Update::default()
+        }
+    }
+
+    /// One `!AIVDM` fragment. The target is changed when a whole message
+    /// is in.
+    fn ais(&mut self, fields: &[&str]) -> Update {
+        let Some(message) = self
+            .assembler
+            .push(fields)
+            .and_then(|(payload, fill)| aivdm::decode(&payload, fill))
+        else {
+            return Update::default();
+        };
+        let (mmsi, report, name) = match message {
+            aivdm::Message::Position(report) => (report.mmsi, Some(report.clone()), report.name),
+            aivdm::Message::Name { mmsi, name } => (mmsi, None, Some(name)),
+        };
+        let context = format!("vessels.urn:mrn:imo:mmsi:{mmsi}");
+        let target = self
+            .targets
+            .entry(context.clone())
+            .or_insert_with(|| AisTarget::new(context));
+        if let Some(report) = report {
+            if report.position.is_some() {
+                target.position = report.position;
+            }
+            target.speed_over_ground = report.speed_over_ground;
+            target.course_over_ground = report.course_over_ground;
+            target.heading = report.heading;
+        }
+        if name.is_some() {
+            target.name = name;
+        }
+        target.update_received();
+        Update {
+            ais_changed: true,
+            ..Update::default()
         }
     }
 
@@ -163,7 +235,7 @@ impl Decoder {
         self.boat.heading_at = Some(now);
         Update {
             boat_changed: true,
-            track_point: None,
+            ..Update::default()
         }
     }
 }
@@ -176,7 +248,8 @@ fn checked_body(line: &str) -> Option<&str> {
     if let Some(rest) = line.strip_prefix('\\') {
         line = &rest[rest.find('\\')? + 1..];
     }
-    let line = line.strip_prefix('$')?;
+    // `$` for data, `!` for encapsulated data (AIS).
+    let line = line.strip_prefix(['$', '!'])?;
     let (body, checksum) = line.rsplit_once('*')?;
     let expected = hex_byte(checksum)?;
     let actual = body.bytes().fold(0u8, |acc, b| acc ^ b);
@@ -544,10 +617,56 @@ mod tests {
         assert_eq!(d.boat().fixed_at, None);
     }
 
+    /// `!body*hh`, as `sentence` does for `$`.
+    fn bang(body: &str) -> String {
+        sentence(body).replacen('$', "!", 1)
+    }
+
     #[test]
-    fn aivdm_gives_no_update() {
+    fn aivdm_updates_the_ais_targets() {
         let mut d = Decoder::new();
-        let line = "!AIVDM,1,1,,B,177KQJ5000G?tO`K>RA1wUbN0TKH,0*5C";
-        assert_eq!(d.apply(line, Instant::now()), Update::default());
+        let now = Instant::now();
+        let u = d.apply(&bang("AIVDM,1,1,,A,13M@=r@01s02OwHMMkJ3Q2lt0000,0"), now);
+        assert!(u.ais_changed);
+        assert!(!u.boat_changed);
+        let targets = d.ais_targets();
+        assert_eq!(targets.len(), 1);
+        let t = &targets[0];
+        assert_eq!(t.context, "vessels.urn:mrn:imo:mmsi:232001001");
+        let (lon, lat) = t.position.unwrap();
+        assert!((lon - 0.5461).abs() < 1e-4 && (lat - 51.4950).abs() < 1e-4);
+        assert!((t.heading.unwrap() - 90.0_f64.to_radians()).abs() < 1e-9);
+        assert_eq!(t.name, None);
+    }
+
+    #[test]
+    fn a_name_joins_the_target_with_the_same_mmsi() {
+        let mut d = Decoder::new();
+        let now = Instant::now();
+        d.apply(&bang("AIVDM,1,1,,B,B3M@AlP0@@0`B87GIs2`j77P0000,0"), now);
+        d.apply(&bang("AIVDM,1,1,,B,H3M@AlPpu8@T>1=@580000000000,0"), now);
+        let targets = d.ais_targets();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].name.as_deref(), Some("NORDIC STAR"));
+        assert!(targets[0].position.is_some());
+    }
+
+    #[test]
+    fn aivdo_own_ship_reports_are_not_targets() {
+        let mut d = Decoder::new();
+        let u = d.apply(
+            &bang("AIVDO,1,1,,A,13M@=r@01s02OwHMMkJ3Q2lt0000,0"),
+            Instant::now(),
+        );
+        assert_eq!(u, Update::default());
+        assert!(d.ais_targets().is_empty());
+    }
+
+    #[test]
+    fn a_dollar_aivdm_with_a_bad_checksum_is_ignored() {
+        let mut d = Decoder::new();
+        let line = bang("AIVDM,1,1,,A,13M@=r@01s02OwHMMkJ3Q2lt0000,0");
+        let bad = format!("{}00", &line[..line.len() - 2]);
+        assert_eq!(d.apply(&bad, Instant::now()), Update::default());
     }
 }

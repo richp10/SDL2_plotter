@@ -1,3 +1,7 @@
+[input]
+# "signalk", "nmea0183" or "nmea2k" (not supported yet)
+source = "signalk"
+
 [signalk]
 url = "ws://192.168.3.2/signalk/v1/stream?subscribe=none"
 
@@ -5,10 +9,16 @@ url = "ws://192.168.3.2/signalk/v1/stream?subscribe=none"
 position = "navigation.position"
 course_over_ground = "navigation.courseOverGroundLastMinute"
 speed_over_ground = "navigation.speedOverGroundLastMinute"
+heading = "navigation.headingTrue"
 ais_position = "navigation.position"
 ais_name = "name"
 ais_course_over_ground = "navigation.courseOverGroundTrue"
 ais_speed_over_ground = "navigation.speedOverGround"
+
+[nmea0183]
+# "tcp": connect to address; "udp": bind address and listen
+transport = "tcp"
+address = "127.0.0.1:10110"
 
 [charts]
 directory = "map"
@@ -39,7 +49,8 @@ ais_course_width = 3
 ais_size = 7
 ais_outline_size = 9
 # Colors use [red, green, blue, alpha], with values from 0 to 255.
-boat_color = [0, 0, 255, 255]
+boat_color = [255, 0, 0, 255]
+boat_no_fix_color = [128, 128, 128, 255]
 measure_color = [0, 0, 255, 255]
 route_color = [255, 0, 0, 255]
 track_color = [255, 0, 0, 255]

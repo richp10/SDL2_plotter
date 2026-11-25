@@ -6,7 +6,9 @@ use std::{fs, path::Path};
 #[serde(default)]
 #[derive(Default)]
 pub struct AppConfig {
+    pub input: InputConfig,
     pub signalk: SignalKConfig,
+    pub nmea0183: Nmea0183Config,
     pub charts: ChartsConfig,
     pub window: WindowConfig,
     pub fonts: FontConfig,
@@ -14,6 +16,40 @@ pub struct AppConfig {
     pub rendering: RenderingConfig,
     pub streaming: StreamingConfig,
     pub track: TrackConfig,
+}
+
+/// Where live boat data comes from. One source at a time, chosen at start.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InputSource {
+    #[default]
+    Signalk,
+    Nmea0183,
+    /// Accepted, not supported yet: the app runs with no live data.
+    Nmea2k,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct InputConfig {
+    pub source: InputSource,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Transport {
+    /// The plotter connects to `address`.
+    #[default]
+    Tcp,
+    /// The plotter binds `address` and listens.
+    Udp,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default)]
+pub struct Nmea0183Config {
+    pub transport: Transport,
+    pub address: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -29,6 +65,7 @@ pub struct SignalKPaths {
     pub position: String,
     pub course_over_ground: String,
     pub speed_over_ground: String,
+    pub heading: String,
     pub ais_position: String,
     pub ais_name: String,
     pub ais_course_over_ground: String,
@@ -74,6 +111,8 @@ pub struct AppearanceConfig {
     pub ais_size: i16,
     pub ais_outline_size: i16,
     pub boat_color: [u8; 4],
+    /// The boat marker while there is no fix.
+    pub boat_no_fix_color: [u8; 4],
     pub measure_color: [u8; 4],
     pub route_color: [u8; 4],
     pub track_color: [u8; 4],
@@ -136,22 +175,40 @@ impl AppConfig {
     }
 
     fn validate(&self) -> anyhow::Result<()> {
-        let url = url::Url::parse(&self.signalk.url)
-            .context("signalk.url doit être une URL WebSocket valide")?;
-        if !matches!(url.scheme(), "ws" | "wss") {
-            bail!("signalk.url doit utiliser le protocole ws:// ou wss://");
-        }
-        let paths = [
-            &self.signalk.paths.position,
-            &self.signalk.paths.course_over_ground,
-            &self.signalk.paths.speed_over_ground,
-            &self.signalk.paths.ais_position,
-            &self.signalk.paths.ais_name,
-            &self.signalk.paths.ais_course_over_ground,
-            &self.signalk.paths.ais_speed_over_ground,
-        ];
-        if paths.iter().any(|path| path.trim().is_empty()) {
-            bail!("Les chemins Signal K ne peuvent pas être vides");
+        match self.input.source {
+            InputSource::Signalk => {
+                let url = url::Url::parse(&self.signalk.url)
+                    .context("signalk.url doit être une URL WebSocket valide")?;
+                if !matches!(url.scheme(), "ws" | "wss") {
+                    bail!("signalk.url doit utiliser le protocole ws:// ou wss://");
+                }
+                let paths = [
+                    &self.signalk.paths.position,
+                    &self.signalk.paths.course_over_ground,
+                    &self.signalk.paths.speed_over_ground,
+                    &self.signalk.paths.heading,
+                    &self.signalk.paths.ais_position,
+                    &self.signalk.paths.ais_name,
+                    &self.signalk.paths.ais_course_over_ground,
+                    &self.signalk.paths.ais_speed_over_ground,
+                ];
+                if paths.iter().any(|path| path.trim().is_empty()) {
+                    bail!("Les chemins Signal K ne peuvent pas être vides");
+                }
+            }
+            InputSource::Nmea0183 => {
+                if self
+                    .nmea0183
+                    .address
+                    .parse::<std::net::SocketAddr>()
+                    .is_err()
+                {
+                    bail!(
+                        "nmea0183.address doit être une adresse IP:port (par ex. 127.0.0.1:10110)"
+                    );
+                }
+            }
+            InputSource::Nmea2k => {}
         }
         if self.charts.directory.is_empty() || self.charts.default.is_empty() {
             bail!("charts.directory et charts.default ne peuvent pas être vides");
@@ -204,6 +261,15 @@ impl AppConfig {
     }
 }
 
+impl Default for Nmea0183Config {
+    fn default() -> Self {
+        Self {
+            transport: Transport::Tcp,
+            address: "127.0.0.1:10110".into(),
+        }
+    }
+}
+
 impl Default for SignalKConfig {
     fn default() -> Self {
         Self {
@@ -219,6 +285,7 @@ impl Default for SignalKPaths {
             position: "navigation.position".into(),
             course_over_ground: "navigation.courseOverGroundLastMinute".into(),
             speed_over_ground: "navigation.speedOverGroundLastMinute".into(),
+            heading: "navigation.headingTrue".into(),
             ais_position: "navigation.position".into(),
             ais_name: "name".into(),
             ais_course_over_ground: "navigation.courseOverGroundTrue".into(),
@@ -271,7 +338,8 @@ impl Default for AppearanceConfig {
             ais_course_width: 3,
             ais_size: 7,
             ais_outline_size: 9,
-            boat_color: [0, 0, 255, 255],
+            boat_color: [255, 0, 0, 255],
+            boat_no_fix_color: [128, 128, 128, 255],
             measure_color: [0, 0, 255, 255],
             route_color: [255, 0, 0, 255],
             track_color: [255, 0, 0, 255],
@@ -319,6 +387,65 @@ impl Default for StreamingConfig {
 #[cfg(test)]
 mod tests {
     use super::AppConfig;
+    use super::{InputSource, Transport};
+
+    #[test]
+    fn a_config_without_an_input_table_reads_signal_k() {
+        let config: AppConfig = toml::from_str("").unwrap();
+        assert_eq!(config.input.source, InputSource::Signalk);
+        assert_eq!(config.nmea0183.transport, Transport::Tcp);
+        assert_eq!(config.nmea0183.address, "127.0.0.1:10110");
+        assert_eq!(config.signalk.paths.heading, "navigation.headingTrue");
+        assert_eq!(config.appearance.boat_color, [255, 0, 0, 255]);
+        assert_eq!(config.appearance.boat_no_fix_color, [128, 128, 128, 255]);
+    }
+
+    #[test]
+    fn nmea0183_input_reads_its_own_table() {
+        let config: AppConfig = toml::from_str(
+            "[input]
+source = \"nmea0183\"
+[nmea0183]
+transport = \"udp\"
+address = \"0.0.0.0:10110\"
+",
+        )
+        .unwrap();
+        assert_eq!(config.input.source, InputSource::Nmea0183);
+        assert_eq!(config.nmea0183.transport, Transport::Udp);
+        assert_eq!(config.nmea0183.address, "0.0.0.0:10110");
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn a_bad_nmea0183_address_is_rejected_only_when_that_source_is_chosen() {
+        let mut config = AppConfig::default();
+        config.nmea0183.address = "not an address".into();
+        config.validate().unwrap();
+        config.input.source = InputSource::Nmea0183;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn the_signal_k_url_is_not_checked_when_nmea0183_is_chosen() {
+        let mut config = AppConfig::default();
+        config.signalk.url = "http://wrong".into();
+        assert!(config.validate().is_err());
+        config.input.source = InputSource::Nmea0183;
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn nmea2k_is_accepted_by_the_config() {
+        let config: AppConfig = toml::from_str(
+            "[input]
+source = \"nmea2k\"
+",
+        )
+        .unwrap();
+        assert_eq!(config.input.source, InputSource::Nmea2k);
+        config.validate().unwrap();
+    }
 
     #[test]
     fn omitted_fields_use_defaults() {

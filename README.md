@@ -85,6 +85,15 @@ cargo build --release
 
 At first launch, `default/plotter.toml` is created with default values. It can then be edited without recompiling the application.
 
+### Input
+
+```toml
+[input]
+source = "signalk"   # "signalk", "nmea0183" or "nmea2k" (not supported yet)
+```
+
+The app reads live boat data from one source, chosen at start. With no `[input]` table, it reads Signal K. With `nmea2k`, it logs an ERROR and runs with no live data.
+
 ### Signal K
 
 ```toml
@@ -95,6 +104,7 @@ url = "ws://192.168.3.2/signalk/v1/stream?subscribe=none"
 position = "navigation.position"
 course_over_ground = "navigation.courseOverGroundLastMinute"
 speed_over_ground = "navigation.speedOverGroundLastMinute"
+heading = "navigation.headingTrue"
 ais_position = "navigation.position"
 ais_name = "name"
 ais_course_over_ground = "navigation.courseOverGroundTrue"
@@ -102,6 +112,16 @@ ais_speed_over_ground = "navigation.speedOverGround"
 ```
 
 The subscription uses these configured paths for vessel data and AIS targets.
+
+### NMEA 0183
+
+```toml
+[nmea0183]
+transport = "tcp"            # "tcp": connect to address; "udp": bind address and listen
+address = "127.0.0.1:10110"  # IP:port; for UDP, for example "0.0.0.0:10110"
+```
+
+Used when `source = "nmea0183"`. The app reads RMC (position, speed, course), HDT and HDG (heading; HDG only with a magnetic variation). AIS over NMEA 0183 is not read yet.
 
 ### Charts
 
@@ -131,7 +151,8 @@ Symbol sizes are expressed in pixels. Colors use `[red, green, blue, alpha]`, wi
 [appearance]
 boat_size = 6
 boat_circle_radius = 50
-boat_color = [0, 0, 255, 255]
+boat_color = [255, 0, 0, 255]
+boat_no_fix_color = [128, 128, 128, 255]   # no position for 10 s
 mark_size = 6
 measure_color = [0, 0, 255, 255]
 route_width = 3

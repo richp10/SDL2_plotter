@@ -363,20 +363,23 @@ mod tests {
         assert!(streamer.submit(pixels, 1600, 800));
         let submit_took = started.elapsed();
 
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let encode_started = Instant::now();
+        let deadline = encode_started + Duration::from_secs(20);
         let jpeg = loop {
             if let Some(jpeg) = streamer.frame.read().unwrap().clone() {
                 break jpeg;
             }
             assert!(Instant::now() < deadline, "no frame was encoded");
-            std::thread::sleep(Duration::from_millis(10));
+            std::thread::sleep(Duration::from_millis(1));
         };
+        let encode_took = encode_started.elapsed();
         assert_eq!(&jpeg[..2], &[0xff, 0xd8], "frame should be a JPEG");
-        // Encoding a full frame takes tens of milliseconds even in release;
-        // the submitting thread must not pay for it.
+        // The submitting thread must not pay for the encoding. Compared with
+        // the encode time, not a fixed limit, so a loaded machine (a full
+        // parallel test run) slows both sides and the test stays true.
         assert!(
-            submit_took < Duration::from_millis(5),
-            "submit took {submit_took:?}"
+            submit_took * 5 < encode_took,
+            "submit took {submit_took:?}, the encode after it {encode_took:?}"
         );
     }
 

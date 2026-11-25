@@ -93,10 +93,16 @@ impl Decoder {
             Some("HDG") => {
                 let variation =
                     signed(field(&fields, 4), field(&fields, 5), 'E', 'W').or(self.variation);
+                // Deviation is optional; when it is given it must be valid.
+                let deviation = match field(&fields, 2) {
+                    None => Some(0.0),
+                    deviation => signed(deviation, field(&fields, 3), 'E', 'W'),
+                };
                 let heading = field(&fields, 1)
                     .and_then(degrees)
+                    .zip(deviation)
                     .zip(variation)
-                    .map(|(magnetic, variation)| magnetic + variation);
+                    .map(|((magnetic, deviation), variation)| magnetic + deviation + variation);
                 self.heading(heading, now)
             }
             _ => Update::default(),
@@ -451,6 +457,15 @@ mod tests {
             (d.boat().heading.unwrap() - 100.0_f64.to_radians()).abs() < 1e-9,
             "HDG once HDT has stopped"
         );
+    }
+
+    #[test]
+    fn hdg_applies_its_deviation() {
+        let mut d = Decoder::new();
+        d.apply(&sentence("HCHDG,100.0,2.0,E,5.0,W"), Instant::now());
+        assert!((d.boat().heading.unwrap() - 97.0_f64.to_radians()).abs() < 1e-9);
+        d.apply(&sentence("HCHDG,100.0,2.0,W,5.0,W"), Instant::now());
+        assert!((d.boat().heading.unwrap() - 93.0_f64.to_radians()).abs() < 1e-9);
     }
 
     #[test]

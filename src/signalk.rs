@@ -119,7 +119,13 @@ impl SignalKClient {
             match msg {
                 Ok(Message::Text(text)) => {
                     if let Ok(json) = serde_json::from_str::<serde_json::Value>(text.as_str()) {
-                        return Some(self.decode_updates(&json));
+                        // A delta that makes the decoder panic is dropped,
+                        // not the connection.
+                        if let Some(summary) =
+                            crate::diagnostics::survive(|| self.decode_updates(&json))
+                        {
+                            return Some(summary);
+                        }
                     }
                 }
                 Ok(Message::Ping(_)) | Ok(Message::Pong(_)) => continue,

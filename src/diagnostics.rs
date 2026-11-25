@@ -135,6 +135,37 @@ pub fn record(level: &str, message: impl std::fmt::Display) {
     }
 }
 
+/// Runs `step`, turning a panic into `None` so the caller carries on. The
+/// panic hook has already logged it. State the step was changing may be
+/// half done; callers use it only where going on beats stopping (the main
+/// loop of a safety instrument, one line of input).
+pub fn survive<T>(step: impl FnOnce() -> T) -> Option<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(step)).ok()
+}
+
+/// Panics seen so far, so one that repeats every frame cannot fill the log.
+static PANICS: Mutex<Repeated> = Mutex::new(Repeated {
+    last: None,
+    count: 0,
+});
+
+/// The log line for a panic, by the `Repeated` rule.
+pub fn panic_line(panics: &mut Repeated, text: &str) -> Option<String> {
+    panics.note(text)
+}
+
+/// For the panic hook: logs the panic (message and place) as PANIC, once,
+/// then every thousandth time it repeats.
+pub fn record_panic(text: &str) {
+    let mut panics = PANICS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(line) = panic_line(&mut panics, text) {
+        drop(panics);
+        record("PANIC", line);
+    }
+}
+
 /// An error that can repeat every frame: the first time it is logged, then
 /// only every thousandth time, so a lasting fault cannot fill the log.
 #[derive(Default)]
@@ -191,6 +222,26 @@ impl Repeated {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn survive_turns_a_panic_into_none_and_passes_a_value_through() {
+        assert_eq!(survive(|| 5), Some(5));
+        let mut data = vec![1, 2, 3];
+        let index = data.len() + 4;
+        assert_eq!(survive(|| data[index]), None, "an index out of range");
+        data.push(4);
+        assert_eq!(data.len(), 4, "the caller carries on");
+    }
+
+    #[test]
+    fn a_repeated_panic_is_logged_once_then_every_thousandth_time() {
+        let mut panics = Repeated::default();
+        assert!(panic_line(&mut panics, "boom at a.rs:1").is_some());
+        for _ in 2..1000 {
+            assert!(panic_line(&mut panics, "boom at a.rs:1").is_none());
+        }
+        assert!(panic_line(&mut panics, "boom at a.rs:1").is_some());
+    }
 
     #[test]
     fn report_passes_a_value_through_and_turns_an_error_into_none() {

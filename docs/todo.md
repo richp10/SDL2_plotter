@@ -20,8 +20,9 @@ From the NMEA 0183 work (2026-11-25). See `docs/nmea0183-input-design.md`.
   bad value outside the input tables (window, appearance, rendering,
   streaming), fails `AppConfig::load_or_create`, and `main` exits.
 
-- **A panic still stops the app.** No `Err` ends the main loop now, but a
-  panic on the main thread (an index out of range, an `unwrap`) does.
+- **A panic in a worker thread is not recovered.** The main loop and the
+  input decoders survive a panic now; the tile loader and the JPEG encoder
+  threads do not restart after one.
 - **AIS from the simulator lacks edge cases.** It does not send a target
   that goes silent, "not available" values or tag blocks
   (`docs/simulator-ais-request.md`). Unit tests cover them.

@@ -47,7 +47,7 @@ async fn main() -> anyhow::Result<()> {
     }
     let default_panic_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic| {
-        crate::diagnostics::record("PANIC", panic);
+        crate::diagnostics::record_panic(&panic.to_string());
         default_panic_hook(panic);
     }));
     diagnostics::record(

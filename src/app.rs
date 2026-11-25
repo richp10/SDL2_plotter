@@ -89,6 +89,29 @@ pub(crate) struct Plotter<'ttf> {
     streamer: Option<crate::stream::Streamer>,
 }
 
+/// Counters for the loop statistics logged every `DIAGNOSTICS_INTERVAL`.
+struct LoopStats {
+    last_diagnostics: Instant,
+    loop_count: u64,
+    event_count: u64,
+    track_updates: u64,
+    rendered_frames: u64,
+    last_input: Instant,
+}
+
+impl LoopStats {
+    fn new() -> Self {
+        Self {
+            last_diagnostics: Instant::now(),
+            loop_count: 0,
+            event_count: 0,
+            track_updates: 0,
+            rendered_frames: 0,
+            last_input: Instant::now(),
+        }
+    }
+}
+
 /// The streaming texture the chart is drawn into, for a window of
 /// `width` x `height` (room for any rotation).
 pub(crate) fn chart_texture(
@@ -249,6 +272,176 @@ impl<'ttf> Plotter<'ttf> {
         Ok(())
     }
 
+    /// One iteration of the main loop, apart from the sleep: events, live
+    /// data, the frame, the cursor and tile prefetch. No step in it ends
+    /// the loop; see `main_loop`.
+    fn iteration(
+        &mut self,
+        stats: &mut LoopStats,
+        event_pump: &mut sdl2::EventPump,
+        screen: &mut screen::Screen<'_>,
+        texture_creator: &TextureCreator<WindowContext>,
+        texture: &mut Texture,
+    ) {
+        if stats.last_diagnostics.elapsed() >= DIAGNOSTICS_INTERVAL {
+            crate::diagnostics::record(
+					"INFO",
+					format!(
+						"État boucle: iterations={}, événements={}, points ajoutés={}, images rendues={}, points trace={}, sauvegarde en attente={}, dernier événement utilisateur il y a {:?}",
+						stats.loop_count,
+						stats.event_count,
+						stats.track_updates,
+						stats.rendered_frames,
+						self.session.track.point_count(),
+						self.session.track.save_pending(),
+						stats.last_input.elapsed()
+					),
+				);
+            stats.last_diagnostics = Instant::now();
+        }
+
+        /////////////////////   Event /////////////////////////
+        // Input converts clicks with the geometry the renderer holds;
+        // make sure it reflects the current state, not the last frame.
+        self.session.sync_view();
+        for event in event_pump.poll_iter() {
+            stats.event_count += 1;
+            if matches!(
+                &event,
+                Event::KeyDown { .. }
+                    | Event::TextInput { .. }
+                    | Event::MouseButtonDown { .. }
+                    | Event::MouseButtonUp { .. }
+                    | Event::MouseMotion { .. }
+                    | Event::MouseWheel { .. }
+            ) {
+                stats.last_input = Instant::now();
+            }
+            let event_started = Instant::now();
+            // A failed event costs that event, never the app.
+            let handled = self.match_event(event, screen, texture);
+            self.event_errors
+                .report(handled, "ERROR", "Erreur de traitement SDL");
+            let elapsed = event_started.elapsed();
+            if elapsed >= Duration::from_millis(500) {
+                crate::diagnostics::record(
+                    "WARN",
+                    format!("Traitement d'un événement SDL lent: {elapsed:?}"),
+                );
+            }
+        }
+
+        if std::mem::take(&mut self.device_reset) {
+            // The renderer lost its textures: make the chart texture
+            // again, as a resize to the same size does. Without a size,
+            // try again next iteration.
+            let size = screen.canvas.output_size();
+            match self
+                .resize_errors
+                .report(size, "ERROR", "Taille de la fenêtre inconnue")
+            {
+                Some(size) => {
+                    crate::diagnostics::record(
+                        "WARN",
+                        "Périphérique de rendu réinitialisé; texture refaite",
+                    );
+                    self.resized.get_or_insert(size);
+                }
+                None => self.device_reset = true,
+            }
+        }
+        if let Some((width, height)) = self.resized.take() {
+            // A texture that cannot be made yet keeps the old one and
+            // the old size; the resize is tried again next iteration.
+            let resized = self.resize(screen, texture_creator, texture, width, height);
+            if self
+                .resize_errors
+                .report(resized, "ERROR", "Redimensionnement impossible, réessayé")
+                .is_none()
+            {
+                self.resized.get_or_insert((width, height));
+            }
+        }
+
+        // Live data in: drain each channel, hand it to the session, and
+        // redraw when it says so. The rules live on Track and Session.
+        let now = Instant::now();
+        while let Ok(position) = self.live.track.try_recv() {
+            if self.session.track.record(position, now) {
+                stats.track_updates += 1;
+                self.dirty = true;
+            }
+        }
+        self.session.track.tick(now);
+
+        if let Some(boat) =
+            crate::feed::take_change(&mut self.live.boat, &mut self.boat_closed, "bateau")
+        {
+            self.session.on_boat(boat, now);
+            self.dirty = true;
+        }
+        if self.session.expire_boat(now) {
+            self.dirty = true;
+        }
+
+        self.fire_long_press();
+
+        if self.session.state.display_ais {
+            if let Some(targets) =
+                crate::feed::take_change(&mut self.live.ais, &mut self.ais_closed, "AIS")
+            {
+                self.session.set_ais(targets);
+                self.dirty = true;
+            }
+            if self.session.expire_ais(now) {
+                self.dirty = true;
+            }
+        }
+        if self.session.renderer.advance_zoom_animation() {
+            self.dirty = true;
+        }
+        //////////////////////   Display /////////////////////////
+        if self.dirty && !self.dragging_chart() {
+            let display_started = Instant::now();
+            // A frame that fails is logged and tried again next
+            // iteration: the chart must keep drawing.
+            let drawn = self.display(screen, texture);
+            if self
+                .render_errors
+                .report(drawn, "ERROR", "Erreur de rendu, image réessayée")
+                .is_some()
+            {
+                stats.rendered_frames += 1;
+                self.dirty = false;
+            }
+            let elapsed = display_started.elapsed();
+            if elapsed >= Duration::from_millis(500) {
+                crate::diagnostics::record("WARN", format!("Rendu lent: {elapsed:?}"));
+            }
+        }
+
+        /////////////////  Mouse //////////////////////////////////
+        self.mouse(screen);
+
+        /////////////// preload tiles on the edge ///////////////////////////
+        let prefetch_started = Instant::now();
+        self.session.renderer.prefetch_step(8);
+        let elapsed = prefetch_started.elapsed();
+        if elapsed >= Duration::from_millis(500) {
+            crate::diagnostics::record(
+                "WARN",
+                format!("Préchargement des tuiles lent: {elapsed:?}"),
+            );
+        }
+    }
+
+    /// After a panic in an iteration: drop the gesture in progress (its
+    /// state may be half changed) and draw the next frame in full.
+    fn after_panic(&mut self) {
+        self.grab = None;
+        self.dirty = true;
+    }
+
     /// Runs an action on the session and schedules a redraw. Opening the
     /// chart manager is the shell's: the window holds SDL state.
     fn execute_action(&mut self, action: AppAction) {
@@ -284,165 +477,24 @@ impl<'ttf> Plotter<'ttf> {
         texture_creator: &TextureCreator<WindowContext>,
         texture: &mut Texture,
     ) -> anyhow::Result<()> {
-        let mut last_diagnostics = Instant::now();
-        let mut loop_count: u64 = 0;
-        let mut event_count: u64 = 0;
-        let mut track_updates: u64 = 0;
-        let mut rendered_frames: u64 = 0;
-        let mut last_input = Instant::now();
+        let mut stats = LoopStats::new();
         crate::diagnostics::record("INFO", "Boucle SDL démarrée");
         while self.session.running {
             let loop_started = Instant::now();
-            if last_diagnostics.elapsed() >= DIAGNOSTICS_INTERVAL {
-                crate::diagnostics::record(
-					"INFO",
-					format!(
-						"État boucle: iterations={loop_count}, événements={event_count}, points ajoutés={track_updates}, images rendues={rendered_frames}, points trace={}, sauvegarde en attente={}, dernier événement utilisateur il y a {:?}",
-						self.session.track.point_count(),
-						self.session.track.save_pending(),
-						last_input.elapsed()
-					),
-				);
-                last_diagnostics = Instant::now();
-            }
-
-            /////////////////////   Event /////////////////////////
-            // Input converts clicks with the geometry the renderer holds;
-            // make sure it reflects the current state, not the last frame.
-            self.session.sync_view();
-            for event in event_pump.poll_iter() {
-                event_count += 1;
-                if matches!(
-                    &event,
-                    Event::KeyDown { .. }
-                        | Event::TextInput { .. }
-                        | Event::MouseButtonDown { .. }
-                        | Event::MouseButtonUp { .. }
-                        | Event::MouseMotion { .. }
-                        | Event::MouseWheel { .. }
-                ) {
-                    last_input = Instant::now();
-                }
-                let event_started = Instant::now();
-                // A failed event costs that event, never the app.
-                let handled = self.match_event(event, screen, texture);
-                self.event_errors
-                    .report(handled, "ERROR", "Erreur de traitement SDL");
-                let elapsed = event_started.elapsed();
-                if elapsed >= Duration::from_millis(500) {
-                    crate::diagnostics::record(
-                        "WARN",
-                        format!("Traitement d'un événement SDL lent: {elapsed:?}"),
-                    );
-                }
-            }
-
-            if std::mem::take(&mut self.device_reset) {
-                // The renderer lost its textures: make the chart texture
-                // again, as a resize to the same size does. Without a size,
-                // try again next iteration.
-                let size = screen.canvas.output_size();
-                match self
-                    .resize_errors
-                    .report(size, "ERROR", "Taille de la fenêtre inconnue")
-                {
-                    Some(size) => {
-                        crate::diagnostics::record(
-                            "WARN",
-                            "Périphérique de rendu réinitialisé; texture refaite",
-                        );
-                        self.resized.get_or_insert(size);
-                    }
-                    None => self.device_reset = true,
-                }
-            }
-            if let Some((width, height)) = self.resized.take() {
-                // A texture that cannot be made yet keeps the old one and
-                // the old size; the resize is tried again next iteration.
-                let resized = self.resize(screen, texture_creator, texture, width, height);
-                if self
-                    .resize_errors
-                    .report(resized, "ERROR", "Redimensionnement impossible, réessayé")
-                    .is_none()
-                {
-                    self.resized.get_or_insert((width, height));
-                }
-            }
-
-            // Live data in: drain each channel, hand it to the session, and
-            // redraw when it says so. The rules live on Track and Session.
-            let now = Instant::now();
-            while let Ok(position) = self.live.track.try_recv() {
-                if self.session.track.record(position, now) {
-                    track_updates += 1;
-                    self.dirty = true;
-                }
-            }
-            self.session.track.tick(now);
-
-            if let Some(boat) =
-                crate::feed::take_change(&mut self.live.boat, &mut self.boat_closed, "bateau")
-            {
-                self.session.on_boat(boat, now);
-                self.dirty = true;
-            }
-            if self.session.expire_boat(now) {
-                self.dirty = true;
-            }
-
-            self.fire_long_press();
-
-            if self.session.state.display_ais {
-                if let Some(targets) =
-                    crate::feed::take_change(&mut self.live.ais, &mut self.ais_closed, "AIS")
-                {
-                    self.session.set_ais(targets);
-                    self.dirty = true;
-                }
-                if self.session.expire_ais(now) {
-                    self.dirty = true;
-                }
-            }
-            if self.session.renderer.advance_zoom_animation() {
-                self.dirty = true;
-            }
-            //////////////////////   Display /////////////////////////
-            if self.dirty && !self.dragging_chart() {
-                let display_started = Instant::now();
-                // A frame that fails is logged and tried again next
-                // iteration: the chart must keep drawing.
-                let drawn = self.display(screen, texture);
-                if self
-                    .render_errors
-                    .report(drawn, "ERROR", "Erreur de rendu, image réessayée")
-                    .is_some()
-                {
-                    rendered_frames += 1;
-                    self.dirty = false;
-                }
-                let elapsed = display_started.elapsed();
-                if elapsed >= Duration::from_millis(500) {
-                    crate::diagnostics::record("WARN", format!("Rendu lent: {elapsed:?}"));
-                }
-            }
-
-            /////////////////  Mouse //////////////////////////////////
-            self.mouse(screen);
-
-            /////////////// preload tiles on the edge ///////////////////////////
-            let prefetch_started = Instant::now();
-            self.session.renderer.prefetch_step(8);
-            let elapsed = prefetch_started.elapsed();
-            if elapsed >= Duration::from_millis(500) {
-                crate::diagnostics::record(
-                    "WARN",
-                    format!("Préchargement des tuiles lent: {elapsed:?}"),
-                );
+            // A panic costs this iteration, never the app: the hook has
+            // logged it, the next frame is drawn in full, and an input
+            // gesture half done is dropped.
+            let survived = crate::diagnostics::survive(|| {
+                self.iteration(&mut stats, event_pump, screen, texture_creator, texture)
+            });
+            if survived.is_none() {
+                self.after_panic();
             }
 
             /////// Sleep to limit CPU usage /////////////////////////
+            // Outside the guard, so a panic every frame is not a busy loop.
             std::thread::sleep(Duration::from_millis(16));
-            loop_count += 1;
+            stats.loop_count += 1;
             let elapsed = loop_started.elapsed();
             if elapsed >= Duration::from_secs(1) {
                 crate::diagnostics::record(

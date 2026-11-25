@@ -35,7 +35,10 @@ pub async fn run(config: Nmea0183Config, feed: LiveFeed) {
     let mut last_bound = Instant::now();
     let on_line = |line: &str| {
         let now = Instant::now();
-        let update = decoder.apply(line, now);
+        // A line that makes the decoder panic is dropped, not the source.
+        let Some(update) = crate::diagnostics::survive(|| decoder.apply(line, now)) else {
+            return;
+        };
         if update.boat_changed {
             let _ = feed.boat.send(decoder.boat());
         }

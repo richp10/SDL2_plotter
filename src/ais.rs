@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use crate::overlay::Shape;
+use crate::overlay::{AisStyle, Category, Mark, Shape};
 
 /// A target not heard from for this long is dropped from the display.
 pub const TARGET_TIMEOUT: Duration = Duration::from_secs(5 * 60);
@@ -108,6 +108,11 @@ pub fn shapes(targets: &[AisTarget]) -> Vec<Shape> {
                 course: target.course_over_ground,
                 heading: target.heading,
                 label: target.label(),
+                style: AisStyle {
+                    category: Category::of(target.ship_type),
+                    mark: Mark::of(target.nav_status),
+                    class_b: target.class_b,
+                },
             })
         })
         .collect()
@@ -150,11 +155,14 @@ mod tests {
     }
 
     #[test]
-    fn a_target_shape_carries_its_course_and_heading() {
+    fn a_target_shape_carries_its_course_heading_and_style() {
         let mut target = AisTarget::new("vessels.urn:mrn:imo:mmsi:232001001".to_string());
         target.position = Some((0.5, 51.5));
         target.course_over_ground = Some(1.0);
         target.heading = Some(1.5);
+        target.ship_type = Some(30);
+        target.nav_status = Some(7);
+        target.class_b = true;
         assert_eq!(
             shapes(&[target]),
             vec![Shape::Ais {
@@ -162,8 +170,55 @@ mod tests {
                 course: Some(1.0),
                 heading: Some(1.5),
                 label: "232001001".into(),
+                style: AisStyle {
+                    category: Category::Fishing,
+                    mark: Some(Mark::Fishing),
+                    class_b: true,
+                },
             }]
         );
+    }
+
+    #[test]
+    fn the_ship_type_gives_the_colour_category() {
+        for (kind, category) in [
+            (Some(70), Category::Cargo),
+            (Some(79), Category::Cargo),
+            (Some(80), Category::Tanker),
+            (Some(89), Category::Tanker),
+            (Some(60), Category::Passenger),
+            (Some(40), Category::HighSpeed),
+            (Some(49), Category::HighSpeed),
+            (Some(50), Category::Service),
+            (Some(52), Category::Service),
+            (Some(55), Category::Service),
+            (Some(30), Category::Fishing),
+            (Some(36), Category::Leisure),
+            (Some(37), Category::Leisure),
+            (Some(31), Category::Other),
+            (Some(90), Category::Other),
+            (None, Category::Other),
+        ] {
+            assert_eq!(Category::of(kind), category, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn the_nav_status_gives_the_day_shape_mark() {
+        for (status, mark) in [
+            (Some(0), None),
+            (Some(1), Some(Mark::Ball)),
+            (Some(5), Some(Mark::Ball)),
+            (Some(2), Some(Mark::TwoBalls)),
+            (Some(3), Some(Mark::BallDiamondBall)),
+            (Some(4), Some(Mark::Cylinder)),
+            (Some(6), Some(Mark::ThreeBalls)),
+            (Some(7), Some(Mark::Fishing)),
+            (Some(8), None),
+            (None, None),
+        ] {
+            assert_eq!(Mark::of(status), mark, "{status:?}");
+        }
     }
 
     #[test]

@@ -41,6 +41,7 @@ pub enum Shape {
         course: Option<f64>,
         heading: Option<f64>,
         label: String,
+        style: AisStyle,
     },
     Waypoint {
         at: (f64, f64),
@@ -78,6 +79,7 @@ pub enum Draw {
         at: Point,
         course: Option<f64>,
         heading: Option<f64>,
+        style: AisStyle,
     },
     Waypoint(Point),
     Mark(Point),
@@ -150,6 +152,7 @@ pub fn plan(view: &ChartView, shapes: &[Shape]) -> Vec<Draw> {
                 course,
                 heading,
                 label,
+                style,
             } => {
                 let at = view.to_pixel(*at);
                 if visible(at) {
@@ -162,6 +165,7 @@ pub fn plan(view: &ChartView, shapes: &[Shape]) -> Vec<Draw> {
                         at,
                         course: screen(course),
                         heading: screen(heading),
+                        style: *style,
                     });
                     draws.push(Draw::Text {
                         at: Point::new(at.x + 10, at.y - 10),
@@ -209,26 +213,103 @@ pub fn plan(view: &ChartView, shapes: &[Shape]) -> Vec<Draw> {
     draws
 }
 
-/// The outline of an AIS target's hull around `at`: the bow first, then
-/// the other corners. `angle` is a screen angle (clockwise from up) and
-/// `half_length` the distance from the centre to the bow, in pixels.
-pub fn ais_hull(at: Point, angle: f64, half_length: f64) -> [Point; 5] {
+/// The colour group of an AIS target, from its ship type: what it is and,
+/// roughly, how large.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Category {
+    Cargo,
+    Tanker,
+    Passenger,
+    HighSpeed,
+    /// Pilot, search and rescue, tug, port tender, law enforcement.
+    Service,
+    Fishing,
+    /// Sailing and pleasure craft.
+    Leisure,
+    /// Any other type, or none known yet.
+    #[default]
+    Other,
+}
+
+impl Category {
+    pub fn of(ship_type: Option<u8>) -> Self {
+        match ship_type {
+            Some(70..=79) => Self::Cargo,
+            Some(80..=89) => Self::Tanker,
+            Some(60..=69) => Self::Passenger,
+            Some(40..=49) => Self::HighSpeed,
+            Some(50..=59) => Self::Service,
+            Some(30) => Self::Fishing,
+            Some(36 | 37) => Self::Leisure,
+            _ => Self::Other,
+        }
+    }
+}
+
+/// The day shape a vessel shows by COLREGs for its navigational status,
+/// drawn beside the target as OpenCPN does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mark {
+    /// At anchor or moored.
+    Ball,
+    /// Not under command.
+    TwoBalls,
+    /// Aground.
+    ThreeBalls,
+    /// Restricted in her ability to manoeuvre.
+    BallDiamondBall,
+    /// Constrained by her draught.
+    Cylinder,
+    /// Engaged in fishing: two cones, points together.
+    Fishing,
+}
+
+impl Mark {
+    /// The mark for an AIS navigational status; none under way.
+    pub fn of(nav_status: Option<u8>) -> Option<Self> {
+        Some(match nav_status? {
+            1 | 5 => Self::Ball,
+            2 => Self::TwoBalls,
+            3 => Self::BallDiamondBall,
+            4 => Self::Cylinder,
+            6 => Self::ThreeBalls,
+            7 => Self::Fishing,
+            _ => return None,
+        })
+    }
+}
+
+/// How an AIS target is drawn, apart from where: its colour group, its
+/// day-shape mark and its class (a class B hull has a flat stern).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct AisStyle {
+    pub category: Category,
+    pub mark: Option<Mark>,
+    pub class_b: bool,
+}
+
+/// The outline of a hull around `at`: the bow first, then the other
+/// corners. `angle` is a screen angle (clockwise from up) and
+/// `half_length` the distance from the centre to the bow, in pixels. A
+/// flat stern (class B, and the own boat) has five corners; a class A
+/// stern has a notch in the middle.
+pub fn ais_hull(at: Point, angle: f64, half_length: f64, flat_stern: bool) -> Vec<Point> {
     // Bow, shoulders and stern corners, with the bow towards -y.
-    const HULL: [(f64, f64); 5] = [
-        (0.0, -1.0),
-        (0.45, -0.3),
-        (0.4, 0.9),
-        (-0.4, 0.9),
-        (-0.45, -0.3),
-    ];
+    let mut hull = vec![(0.0, -1.0), (0.45, -0.3), (0.4, 0.9)];
+    if !flat_stern {
+        hull.push((0.0, 0.6));
+    }
+    hull.extend([(-0.4, 0.9), (-0.45, -0.3)]);
     let (sin, cos) = angle.sin_cos();
-    HULL.map(|(x, y)| {
-        let (x, y) = (x * half_length, y * half_length);
-        Point::new(
-            at.x + (x * cos - y * sin).round() as i32,
-            at.y + (x * sin + y * cos).round() as i32,
-        )
-    })
+    hull.into_iter()
+        .map(|(x, y)| {
+            let (x, y) = (x * half_length, y * half_length);
+            Point::new(
+                at.x + (x * cos - y * sin).round() as i32,
+                at.y + (x * sin + y * cos).round() as i32,
+            )
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -287,6 +368,7 @@ mod tests {
                 course: None,
                 heading: Some(2.0),
                 label: "Ship".into(),
+                style: AisStyle::default(),
             }],
         );
         let Draw::Ais {
@@ -300,12 +382,27 @@ mod tests {
     }
 
     #[test]
+    fn a_class_a_hull_has_a_notched_stern_and_a_class_b_hull_a_flat_one() {
+        let centre = Point::new(100, 100);
+        let a = ais_hull(centre, 0.0, 10.0, false);
+        let b = ais_hull(centre, 0.0, 10.0, true);
+        assert_eq!((a.len(), b.len()), (6, 5));
+        let deepest_stern = |hull: &[Point]| hull.iter().map(|p| p.y).max().unwrap();
+        assert_eq!(deepest_stern(&a), deepest_stern(&b), "same length");
+        assert!(
+            a.iter()
+                .any(|p| p.x == 100 && p.y > 100 && p.y < deepest_stern(&a)),
+            "a notch in the middle of the class A stern: {a:?}"
+        );
+    }
+
+    #[test]
     fn the_ais_hull_points_its_bow_along_the_direction() {
         let centre = Point::new(100, 100);
-        let north = ais_hull(centre, 0.0, 10.0);
+        let north = ais_hull(centre, 0.0, 10.0, true);
         assert_eq!(north[0], Point::new(100, 90), "bow up");
         assert!(north.iter().skip(1).all(|p| p.y > 90));
-        let east = ais_hull(centre, std::f64::consts::FRAC_PI_2, 10.0);
+        let east = ais_hull(centre, std::f64::consts::FRAC_PI_2, 10.0, true);
         assert_eq!(east[0], Point::new(110, 100), "bow right");
         assert!(east.iter().skip(1).all(|p| p.x < 110));
     }
@@ -375,6 +472,7 @@ mod tests {
                     course: Some(f64::NAN),
                     heading: None,
                     label: "Ship".into(),
+                    style: AisStyle::default(),
                 },
             ],
         );

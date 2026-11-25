@@ -14,6 +14,20 @@ From the NMEA 0183 work (2026-11-25). See `docs/nmea0183-input-design.md`.
   IP (Yacht Devices RAW, Actisense W2K-1). `nmea2k` now logs an ERROR.
   Research: `docs/nmea0183-input-research-2026-11-25.md` section 6.
 
+## AIS, next steps
+
+From `docs/ais-symbology-research-2026-11-25.md` (option C done: colour by
+ship type, day-shape marks, class B flat stern).
+
+- **CPA/TCPA alerts.** Closest point of approach and time to it for each
+  target; a dangerous target drawn red (OpenCPN, IEC 62288) and an alarm.
+  The most important for safety.
+- **Real-size outlines** from the type 5 dimensions when zoomed in close.
+- **AtoN, base station and SART/MOB/EPIRB symbols** (message types 21, 4,
+  14; MMSI 970, 972, 974).
+- **Signal K AIS class.** The specification schema has no path for it, so
+  Signal K targets are drawn as class A.
+
 ## Other
 
 - **Other config errors still stop the start.** A toml syntax error, or a

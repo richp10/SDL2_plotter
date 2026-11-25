@@ -1,5 +1,5 @@
 use crate::config::{AppearanceConfig, FontConfig, WindowConfig};
-use crate::overlay::Draw;
+use crate::overlay::{AisStyle, Category, Draw, Mark};
 use sdl2::gfx::primitives::DrawRenderer;
 use sdl2::mouse::{Cursor, SystemCursor};
 use sdl2::pixels::Color;
@@ -231,7 +231,8 @@ impl<'ttf> Screen<'ttf> {
                     at,
                     course,
                     heading,
-                } => self.show_ais_target(at.x, at.y, *course, *heading)?,
+                    style,
+                } => self.show_ais_target(at.x, at.y, *course, *heading, *style)?,
                 Draw::Waypoint(at) => self.show_waypoint(*at)?,
                 Draw::Mark(at) => self.show_mark(at.x, at.y)?,
                 Draw::Line(a, b) => self.show_line(*a, *b)?,
@@ -389,6 +390,7 @@ impl<'ttf> Screen<'ttf> {
                 Point::new(x, y),
                 angle,
                 f64::from(self.appearance.boat_hull_size),
+                true,
             );
             let xs: Option<Vec<i16>> = corners.iter().map(|p| i16::try_from(p.x).ok()).collect();
             let ys: Option<Vec<i16>> = corners.iter().map(|p| i16::try_from(p.y).ok()).collect();
@@ -416,17 +418,39 @@ impl<'ttf> Screen<'ttf> {
         Ok(())
     }
 
+    /// The colour for an AIS target's category.
+    fn ais_colour(&self, category: Category) -> Color {
+        let a = &self.appearance;
+        configured_color(match category {
+            Category::Cargo => a.ais_cargo_color,
+            Category::Tanker => a.ais_tanker_color,
+            Category::Passenger => a.ais_passenger_color,
+            Category::HighSpeed => a.ais_high_speed_color,
+            Category::Service => a.ais_service_color,
+            Category::Fishing => a.ais_fishing_color,
+            Category::Leisure => a.ais_leisure_color,
+            Category::Other => a.ais_other_color,
+        })
+    }
+
+    /// An AIS target: a hull in its category colour along its heading,
+    /// else its course (notched stern for class A, flat for class B); a
+    /// round marker when no direction is known; its COG vector; and its
+    /// day-shape mark to the left.
     fn show_ais_target(
         &mut self,
         x: i32,
         y: i32,
         course_over_ground: Option<f64>,
         heading: Option<f64>,
+        style: AisStyle,
     ) -> Result<(), String> {
         let clip = self.clip();
         let Some((x16, y16)) = clip.point_i16(Point::new(x, y)) else {
             return Ok(());
         };
+        let colour = self.ais_colour(style.category);
+        let outline = configured_color(self.appearance.ais_outline_color);
         if let Some(course) = course_over_ground.filter(|course| course.is_finite()) {
             let end_x =
                 x + (course.sin() * f64::from(self.appearance.ais_course_length)).round() as i32;
@@ -441,41 +465,89 @@ impl<'ttf> Screen<'ttf> {
                     bx,
                     by,
                     self.appearance.ais_course_width,
-                    configured_color(self.appearance.ais_color),
+                    colour,
                 );
             }
         }
-        // A hull along the heading, else along the course; with neither the
-        // direction is unknown, so a round marker.
         let direction = heading.or(course_over_ground.filter(|c| c.is_finite()));
+        let half_length = 2.0 * f64::from(self.appearance.ais_outline_size);
         let hull = direction.and_then(|angle| {
-            let half_length = 2.0 * f64::from(self.appearance.ais_outline_size);
-            let corners = crate::overlay::ais_hull(Point::new(x, y), angle, half_length);
+            let corners =
+                crate::overlay::ais_hull(Point::new(x, y), angle, half_length, style.class_b);
             let xs: Option<Vec<i16>> = corners.iter().map(|p| i16::try_from(p.x).ok()).collect();
             let ys: Option<Vec<i16>> = corners.iter().map(|p| i16::try_from(p.y).ok()).collect();
             xs.zip(ys)
         });
         if let Some((xs, ys)) = hull {
-            self.canvas
-                .filled_polygon(&xs, &ys, configured_color(self.appearance.ais_color))?;
-            self.canvas.polygon(
-                &xs,
-                &ys,
-                configured_color(self.appearance.ais_outline_color),
-            )?;
+            self.canvas.filled_polygon(&xs, &ys, colour)?;
+            self.canvas.polygon(&xs, &ys, outline)?;
         } else {
-            self.canvas.filled_circle(
-                x16,
-                y16,
-                self.appearance.ais_size,
-                configured_color(self.appearance.ais_color),
-            )?;
-            self.canvas.circle(
-                x16,
-                y16,
-                self.appearance.ais_outline_size,
-                configured_color(self.appearance.ais_outline_color),
-            )?;
+            self.canvas
+                .filled_circle(x16, y16, self.appearance.ais_size, colour)?;
+            self.canvas
+                .circle(x16, y16, self.appearance.ais_outline_size, outline)?;
+        }
+        if let Some(mark) = style.mark {
+            let left = x16.saturating_sub(half_length as i16 + 8);
+            self.show_day_shape(mark, left, y16)?;
+        }
+        Ok(())
+    }
+
+    /// A day shape centred on (`x`, `y`), upright on the screen as it
+    /// hangs on a vessel: black, with a white rim so it shows on any chart.
+    fn show_day_shape(&mut self, mark: Mark, x: i16, y: i16) -> Result<(), String> {
+        const R: i16 = 4;
+        let black = Color::RGB(0, 0, 0);
+        let white = Color::RGB(255, 255, 255);
+        let ball = |canvas: &mut WindowCanvas, cy: i16| -> Result<(), String> {
+            canvas.filled_circle(x, cy, R + 1, white)?;
+            canvas.filled_circle(x, cy, R, black)
+        };
+        let shape = |canvas: &mut WindowCanvas, xs: &[i16], ys: &[i16]| -> Result<(), String> {
+            canvas.polygon(xs, ys, white)?;
+            canvas.filled_polygon(xs, ys, black)?;
+            canvas.polygon(xs, ys, white)
+        };
+        let step = 2 * R + 2;
+        match mark {
+            Mark::Ball => ball(&mut self.canvas, y)?,
+            Mark::TwoBalls => {
+                ball(&mut self.canvas, y - step / 2)?;
+                ball(&mut self.canvas, y + step / 2)?;
+            }
+            Mark::ThreeBalls => {
+                for cy in [y - step, y, y + step] {
+                    ball(&mut self.canvas, cy)?;
+                }
+            }
+            Mark::BallDiamondBall => {
+                ball(&mut self.canvas, y - step)?;
+                shape(
+                    &mut self.canvas,
+                    &[x, x + R, x, x - R],
+                    &[y - R - 1, y, y + R + 1, y],
+                )?;
+                ball(&mut self.canvas, y + step)?;
+            }
+            Mark::Cylinder => shape(
+                &mut self.canvas,
+                &[x - R + 1, x + R - 1, x + R - 1, x - R + 1],
+                &[y - 2 * R, y - 2 * R, y + 2 * R, y + 2 * R],
+            )?,
+            Mark::Fishing => {
+                // Two cones, points together at the centre.
+                shape(
+                    &mut self.canvas,
+                    &[x - R, x + R, x],
+                    &[y - 2 * R, y - 2 * R, y],
+                )?;
+                shape(
+                    &mut self.canvas,
+                    &[x, x + R, x - R],
+                    &[y, y + 2 * R, y + 2 * R],
+                )?;
+            }
         }
         Ok(())
     }

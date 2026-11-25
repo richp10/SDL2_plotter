@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use std::collections::HashMap;
 
 use crate::ais::AisTarget;
-use crate::boat::{BoatState, HEADING_TIMEOUT};
+use crate::boat::{BoatState, FixGuard, HEADING_TIMEOUT};
 use crate::config::{Nmea0183Config, Transport};
 use crate::feed::LiveFeed;
 
@@ -86,6 +86,8 @@ pub struct Decoder {
     talker: Option<String>,
     /// When the last RMC came. GGA, GLL and VTG are used only without one.
     rmc_at: Option<Instant>,
+    /// Keeps impossible jumps (a second GPS) off the chart.
+    guard: FixGuard,
     /// AIS fragments waiting for the rest of their message.
     assembler: aivdm::Assembler,
     /// AIS targets by context (`vessels.urn:mrn:imo:mmsi:<MMSI>`, as Signal
@@ -101,6 +103,7 @@ impl Decoder {
             hdt_at: None,
             talker: None,
             rmc_at: None,
+            guard: FixGuard::default(),
             assembler: aivdm::Assembler::default(),
             targets: HashMap::new(),
         }
@@ -246,6 +249,9 @@ impl Decoder {
             return Update::default();
         };
         if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
+            return Update::default();
+        }
+        if !self.guard.accept((lon, lat), now) {
             return Update::default();
         }
         self.boat.latitude = lat;
@@ -468,6 +474,20 @@ mod tests {
         assert!(b.position_valid);
         assert_eq!(b.fixed_at, Some(now));
         assert_eq!(u.track_point, Some((b.longitude, b.latitude)));
+    }
+
+    #[test]
+    fn a_second_gps_far_away_does_not_move_the_boat() {
+        let now = Instant::now();
+        let mut d = fixed_decoder(now);
+        let far = sentence("GPRMC,123520,A,4907.038,N,01131.000,E,022.4,084.4,230394,003.1,W");
+        let u = d.apply(&far, now + Duration::from_secs(1));
+        assert_eq!(u.track_point, None);
+        assert!(
+            (d.boat().latitude - 48.1173).abs() < 1e-6,
+            "60 NM in 1 s: ignored"
+        );
+        assert_eq!(d.boat().fixed_at, Some(now), "no new fix time");
     }
 
     #[test]
@@ -758,11 +778,13 @@ mod tests {
         let now = Instant::now();
         let mut d = fixed_decoder(now);
         let late = now + RMC_SILENCE;
-        let u = d.apply(&sentence(GLL), late);
+        // Near the RMC fix: a far one would be rejected as a jump.
+        let near = sentence("GPGLL,4807.050,N,01131.000,E,123524,A,A");
+        let u = d.apply(&near, late);
         assert!(u.track_point.is_some());
         let b = d.boat();
-        assert!((b.latitude - (49.0 + 16.45 / 60.0)).abs() < 1e-9);
-        assert!((b.longitude + (123.0 + 11.12 / 60.0)).abs() < 1e-9);
+        assert!((b.latitude - (48.0 + 7.05 / 60.0)).abs() < 1e-9);
+        assert!((b.longitude - (11.0 + 31.0 / 60.0)).abs() < 1e-9);
         assert_eq!(b.fixed_at, Some(late));
     }
 

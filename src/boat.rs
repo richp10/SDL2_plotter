@@ -78,6 +78,79 @@ impl BoatState {
     }
 }
 
+/// Faster than this between two fixes is not a boat: 50 kn, in m/s.
+const MAX_SPEED: f64 = 50.0 * 1852.0 / 3600.0;
+/// GPS noise allowed on top of `MAX_SPEED`, in metres.
+const JUMP_ALLOWANCE_METERS: f64 = 50.0;
+/// Fixes in a row that agree with each other, but not with the boat,
+/// before the boat moves to them.
+const AGREEING_FIXES: u32 = 3;
+
+/// Keeps impossible jumps off the chart: a second GPS on the same network,
+/// or one bad fix. A fix is accepted when the speed it implies since the
+/// last accepted fix is below 50 kn (plus 50 m of noise, over at least one
+/// second). Otherwise it is rejected, unless it is the third in a row of
+/// fixes that agree with each other: then the boat really is there (the
+/// first GPS stopped, or came back after a gap). An accepted fix breaks
+/// the row, so a second stream that mixes with the first never wins.
+#[derive(Default)]
+pub struct FixGuard {
+    last: Option<((f64, f64), Instant)>,
+    candidate: Option<((f64, f64), Instant, u32)>,
+    rejected: crate::diagnostics::Repeated,
+}
+
+impl FixGuard {
+    /// True when `position` (`(lon, lat)`, already range-checked) received
+    /// at `now` may be shown and recorded.
+    pub fn accept(&mut self, position: (f64, f64), now: Instant) -> bool {
+        let Some((last, last_at)) = self.last else {
+            self.last = Some((position, now));
+            return true;
+        };
+        if plausible(last, last_at, position, now) {
+            self.last = Some((position, now));
+            self.candidate = None;
+            self.rejected.clear();
+            return true;
+        }
+        let in_a_row = match self.candidate {
+            Some((candidate, at, count)) if plausible(candidate, at, position, now) => count + 1,
+            _ => 1,
+        };
+        if in_a_row >= AGREEING_FIXES {
+            crate::diagnostics::record(
+                "WARN",
+                format!(
+                    "Position du bateau déplacée: {AGREEING_FIXES} positions concordantes loin de la précédente"
+                ),
+            );
+            self.last = Some((position, now));
+            self.candidate = None;
+            self.rejected.clear();
+            return true;
+        }
+        self.candidate = Some((position, now, in_a_row));
+        if let Some(line) = self
+            .rejected
+            .note("Position improbable ignorée (plus de 50 nœuds depuis la précédente; deux GPS ?)")
+        {
+            crate::diagnostics::record("WARN", line);
+        }
+        false
+    }
+}
+
+/// True when going from `from` at `from_at` to `to` at `now` is within
+/// `MAX_SPEED`, plus the noise allowance.
+fn plausible(from: (f64, f64), from_at: Instant, to: (f64, f64), now: Instant) -> bool {
+    let seconds = now
+        .saturating_duration_since(from_at)
+        .as_secs_f64()
+        .max(1.0);
+    crate::gps::distance_meters(from, to) <= MAX_SPEED * seconds + JUMP_ALLOWANCE_METERS
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,6 +224,72 @@ mod tests {
         assert!(!stale.position_valid);
         assert_eq!(stale.heading, None);
         assert_eq!(stale.position(), (-4.5, 48.4), "the last position is kept");
+    }
+
+    // One minute of latitude is one nautical mile (1852 m), so positions
+    // here are built from minutes, independently of the guard's maths.
+    const MINUTE: f64 = 1.0 / 60.0;
+
+    fn at(minutes_north: f64) -> (f64, f64) {
+        (0.5, 51.5 + minutes_north * MINUTE)
+    }
+
+    #[test]
+    fn the_first_fix_and_normal_movement_are_accepted() {
+        let t = Instant::now();
+        let mut guard = FixGuard::default();
+        assert!(guard.accept(at(0.0), t));
+        // 5 kn for one second: 2.6 m.
+        assert!(guard.accept(at(0.0014), t + Duration::from_secs(1)));
+        // A second sentence for the same fix, at the same instant.
+        assert!(guard.accept(at(0.0014), t + Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn a_jump_faster_than_50_knots_is_rejected() {
+        let t = Instant::now();
+        let mut guard = FixGuard::default();
+        assert!(guard.accept(at(0.0), t));
+        // 2 NM in one second is 7200 kn.
+        assert!(!guard.accept(at(2.0), t + Duration::from_secs(1)));
+        // 40 kn for a minute: 0.67 NM, fine.
+        assert!(guard.accept(at(0.66), t + Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn a_second_stream_that_mixes_with_the_first_never_wins() {
+        let t = Instant::now();
+        let mut guard = FixGuard::default();
+        for second in 0..20u64 {
+            let now = t + Duration::from_secs(second);
+            let moved = second as f64 * 0.0014;
+            assert!(guard.accept(at(moved), now), "stream A, second {second}");
+            assert!(
+                !guard.accept(at(2.0 + moved), now),
+                "stream B, second {second}"
+            );
+        }
+    }
+
+    #[test]
+    fn three_fixes_in_a_row_that_agree_move_the_boat() {
+        let t = Instant::now();
+        let mut guard = FixGuard::default();
+        assert!(guard.accept(at(0.0), t));
+        // The first receiver stopped; the second one is 2 NM away.
+        assert!(!guard.accept(at(2.0), t + Duration::from_secs(1)));
+        assert!(!guard.accept(at(2.0014), t + Duration::from_secs(2)));
+        assert!(guard.accept(at(2.0028), t + Duration::from_secs(3)));
+        assert!(guard.accept(at(2.0042), t + Duration::from_secs(4)));
+    }
+
+    #[test]
+    fn a_long_gap_allows_a_long_way() {
+        let t = Instant::now();
+        let mut guard = FixGuard::default();
+        assert!(guard.accept(at(0.0), t));
+        // 10 NM after an hour without a fix is 10 kn.
+        assert!(guard.accept(at(10.0), t + Duration::from_secs(3600)));
     }
 
     #[test]

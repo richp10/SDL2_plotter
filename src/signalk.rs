@@ -11,7 +11,7 @@ use tokio_tungstenite::{
 };
 
 use crate::ais::AisTarget;
-use crate::boat::BoatState;
+use crate::boat::{BoatState, FixGuard};
 use crate::config::{SignalKConfig, SignalKPaths};
 use crate::feed::LiveFeed;
 /// A ping is sent after this long with no message.
@@ -38,6 +38,8 @@ pub struct SignalKClient {
     write: SplitSink<WsStream, Message>,
     read: SplitStream<WsStream>,
     pub data: BoatState,
+    /// Keeps impossible jumps (a second GPS) off the chart.
+    guard: FixGuard,
     pub targets: HashMap<String, AisTarget>,
     self_context: Option<String>,
     url: String,
@@ -59,6 +61,7 @@ impl SignalKClient {
             write,
             read,
             data: BoatState::default(),
+            guard: FixGuard::default(),
             targets: HashMap::new(),
             self_context: None,
             url: config.url,
@@ -247,6 +250,7 @@ impl SignalKClient {
     fn decode_updates(&mut self, v: &Value) -> DeltaSummary {
         apply_delta(
             &mut self.data,
+            &mut self.guard,
             &mut self.targets,
             &self.paths,
             self.self_context.as_deref(),
@@ -260,6 +264,7 @@ impl SignalKClient {
 /// target map, and reports what changed.
 fn apply_delta(
     data: &mut BoatState,
+    guard: &mut FixGuard,
     targets: &mut HashMap<String, AisTarget>,
     paths: &SignalKPaths,
     self_context: Option<&str>,
@@ -292,6 +297,7 @@ fn apply_delta(
                             && longitude.is_finite()
                             && (-90.0..=90.0).contains(&latitude)
                             && (-180.0..=180.0).contains(&longitude)
+                            && guard.accept((longitude, latitude), now)
                         {
                             data.latitude = latitude;
                             data.longitude = longitude;
@@ -544,6 +550,41 @@ mod tests {
     }
 
     #[test]
+    fn an_own_position_far_from_the_last_is_ignored() {
+        let paths = SignalKPaths::default();
+        let mut boat = BoatState::default();
+        let mut targets = HashMap::new();
+        let mut guard = FixGuard::default();
+        let t0 = Instant::now();
+        let position = |lat: f64| {
+            json!({"context": "vessels.self", "updates": [{"values": [
+                {"path": "navigation.position", "value": {"latitude": lat, "longitude": 26.98}}
+            ]}]})
+        };
+        apply_delta(
+            &mut boat,
+            &mut guard,
+            &mut targets,
+            &paths,
+            None,
+            &position(36.95),
+            t0,
+        );
+        let summary = apply_delta(
+            &mut boat,
+            &mut guard,
+            &mut targets,
+            &paths,
+            None,
+            &position(37.95),
+            t0 + std::time::Duration::from_secs(1),
+        );
+        assert!(!summary.self_position);
+        assert_eq!(boat.latitude, 36.95);
+        assert_eq!(boat.fixed_at, Some(t0));
+    }
+
+    #[test]
     fn own_heading_is_read_in_radians_and_stamped() {
         let paths = SignalKPaths::default();
         let mut boat = BoatState::default();
@@ -552,7 +593,15 @@ mod tests {
         let heading = json!({"context": "vessels.self", "updates": [{"values": [
             {"path": "navigation.headingTrue", "value": 1.25}
         ]}]});
-        let summary = apply_delta(&mut boat, &mut targets, &paths, None, &heading, now);
+        let summary = apply_delta(
+            &mut boat,
+            &mut FixGuard::default(),
+            &mut targets,
+            &paths,
+            None,
+            &heading,
+            now,
+        );
         assert!(summary.self_changed);
         assert!(!summary.self_position);
         assert_eq!(boat.heading, Some(1.25));
@@ -569,13 +618,22 @@ mod tests {
         let own = json!({"context": "vessels.self", "updates": [{"values": [
             {"path": "navigation.position", "value": {"latitude": 36.95, "longitude": 26.98}}
         ]}]});
-        apply_delta(&mut boat, &mut targets, &paths, None, &own, t0);
+        apply_delta(
+            &mut boat,
+            &mut FixGuard::default(),
+            &mut targets,
+            &paths,
+            None,
+            &own,
+            t0,
+        );
         assert_eq!(boat.fixed_at, Some(t0));
         let course = json!({"context": "vessels.self", "updates": [{"values": [
             {"path": "navigation.courseOverGroundLastMinute", "value": 1.5}
         ]}]});
         apply_delta(
             &mut boat,
+            &mut FixGuard::default(),
             &mut targets,
             &paths,
             None,
@@ -596,7 +654,15 @@ mod tests {
         let own = json!({"context": "vessels.self", "updates": [{"values": [
             {"path": "navigation.position", "value": {"latitude": 36.95, "longitude": 26.98}}
         ]}]});
-        let summary = apply_delta(&mut data, &mut targets, &paths, None, &own, now);
+        let summary = apply_delta(
+            &mut data,
+            &mut FixGuard::default(),
+            &mut targets,
+            &paths,
+            None,
+            &own,
+            now,
+        );
         assert!(summary.self_position);
         assert!(summary.self_changed);
         assert!(!summary.ais_changed);
@@ -604,7 +670,15 @@ mod tests {
         let course = json!({"context": "vessels.self", "updates": [{"values": [
             {"path": "navigation.courseOverGroundLastMinute", "value": 1.5}
         ]}]});
-        let summary = apply_delta(&mut data, &mut targets, &paths, None, &course, now);
+        let summary = apply_delta(
+            &mut data,
+            &mut FixGuard::default(),
+            &mut targets,
+            &paths,
+            None,
+            &course,
+            now,
+        );
         assert_eq!(
             summary,
             DeltaSummary {
@@ -620,7 +694,15 @@ mod tests {
         let other = json!({"context": "vessels.urn:mrn:imo:mmsi:123456789", "updates": [{"values": [
             {"path": "navigation.position", "value": {"latitude": 37.0, "longitude": 27.0}}
         ]}]});
-        let summary = apply_delta(&mut data, &mut targets, &paths, None, &other, now);
+        let summary = apply_delta(
+            &mut data,
+            &mut FixGuard::default(),
+            &mut targets,
+            &paths,
+            None,
+            &other,
+            now,
+        );
         assert!(!summary.self_position);
         assert!(summary.ais_changed);
         assert_eq!(targets.len(), 1);
@@ -628,7 +710,15 @@ mod tests {
         let unrelated = json!({"context": "vessels.self", "updates": [{"values": [
             {"path": "environment.depth.belowKeel", "value": 12.5}
         ]}]});
-        let summary = apply_delta(&mut data, &mut targets, &paths, None, &unrelated, now);
+        let summary = apply_delta(
+            &mut data,
+            &mut FixGuard::default(),
+            &mut targets,
+            &paths,
+            None,
+            &unrelated,
+            now,
+        );
         assert!(!summary.self_position);
         assert!(!summary.ais_changed);
     }
@@ -646,9 +736,18 @@ mod tests {
         };
         let sog = "navigation.speedOverGroundLastMinute";
         let cog = "navigation.courseOverGroundLastMinute";
-        apply_delta(&mut boat, &mut targets, &paths, None, &delta(sog, 2.5), now);
+        apply_delta(
+            &mut boat,
+            &mut FixGuard::default(),
+            &mut targets,
+            &paths,
+            None,
+            &delta(sog, 2.5),
+            now,
+        );
         let summary = apply_delta(
             &mut boat,
+            &mut FixGuard::default(),
             &mut targets,
             &paths,
             None,
@@ -657,10 +756,19 @@ mod tests {
         );
         assert!(!summary.self_changed);
         assert_eq!(boat.speed_over_ground, 2.5, "a negative speed is ignored");
-        apply_delta(&mut boat, &mut targets, &paths, None, &delta(cog, 7.0), now);
+        apply_delta(
+            &mut boat,
+            &mut FixGuard::default(),
+            &mut targets,
+            &paths,
+            None,
+            &delta(cog, 7.0),
+            now,
+        );
         assert!((boat.course_over_ground - (7.0 - std::f64::consts::TAU)).abs() < 1e-12);
         apply_delta(
             &mut boat,
+            &mut FixGuard::default(),
             &mut targets,
             &paths,
             None,

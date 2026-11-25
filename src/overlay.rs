@@ -89,6 +89,11 @@ pub enum Draw {
         at: Point,
         text: String,
     },
+    /// Small text beside a marker (an AIS target's name).
+    Label {
+        at: Point,
+        text: String,
+    },
 }
 
 /// Projects and culls `shapes` for `view`. Polylines are kept whole (the
@@ -167,8 +172,10 @@ pub fn plan(view: &ChartView, shapes: &[Shape]) -> Vec<Draw> {
                         heading: screen(heading),
                         style: *style,
                     });
-                    draws.push(Draw::Text {
-                        at: Point::new(at.x + 10, at.y - 10),
+                    // Clear of the hull (twice `ais_outline_size` from the
+                    // centre by default).
+                    draws.push(Draw::Label {
+                        at: Point::new(at.x + 22, at.y - 8),
                         text: label.clone(),
                     });
                 }
@@ -479,11 +486,17 @@ mod tests {
         let texts: Vec<&str> = draws
             .iter()
             .filter_map(|d| match d {
-                Draw::Text { text, .. } => Some(text.as_str()),
+                Draw::Text { text, .. } | Draw::Label { text, .. } => Some(text.as_str()),
                 _ => None,
             })
             .collect();
         assert_eq!(texts, vec!["Here", "Ship"]);
+        assert!(
+            draws
+                .iter()
+                .any(|d| matches!(d, Draw::Label { text, .. } if text == "Ship")),
+            "an AIS name is a small label"
+        );
         assert!(
             matches!(draws[2], Draw::Ais { course: None, .. }),
             "a non-finite course is dropped: {draws:?}"

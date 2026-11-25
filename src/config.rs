@@ -127,6 +127,8 @@ pub struct FontConfig {
     pub file: String,
     pub window_size: u16,
     pub ui_size: u16,
+    /// AIS target names on the chart.
+    pub label_size: u16,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -283,8 +285,12 @@ impl AppConfig {
         if self.window.width == 0 || self.window.height == 0 {
             bail!("window.width et window.height doivent être supérieurs à zéro");
         }
-        if self.fonts.file.is_empty() || self.fonts.window_size == 0 || self.fonts.ui_size == 0 {
-            bail!("fonts.file, fonts.window_size et fonts.ui_size doivent être renseignés");
+        if self.fonts.file.is_empty()
+            || self.fonts.window_size == 0
+            || self.fonts.ui_size == 0
+            || self.fonts.label_size == 0
+        {
+            bail!("fonts.file, fonts.window_size, fonts.ui_size et fonts.label_size doivent être renseignés");
         }
         let appearance_sizes = [
             self.appearance.boat_size,
@@ -404,6 +410,7 @@ impl Default for FontConfig {
             file: "assets/Montserrat-Regular.ttf".into(),
             window_size: 28,
             ui_size: 16,
+            label_size: 14,
         }
     }
 }
@@ -431,14 +438,14 @@ impl Default for AppearanceConfig {
             waypoint_color: [220, 30, 30, 255],
             coverage_color: [255, 140, 0, 255],
             cog_color: [0, 0, 255, 255],
-            ais_cargo_color: [0, 170, 0, 255],
-            ais_tanker_color: [200, 0, 200, 255],
-            ais_passenger_color: [0, 120, 255, 255],
-            ais_high_speed_color: [240, 220, 0, 255],
-            ais_service_color: [0, 200, 210, 255],
-            ais_fishing_color: [255, 140, 0, 255],
-            ais_leisure_color: [160, 100, 230, 255],
-            ais_other_color: [150, 150, 150, 255],
+            ais_cargo_color: [0, 125, 0, 255],
+            ais_tanker_color: [150, 0, 150, 255],
+            ais_passenger_color: [0, 70, 200, 255],
+            ais_high_speed_color: [185, 150, 0, 255],
+            ais_service_color: [0, 130, 140, 255],
+            ais_fishing_color: [215, 85, 0, 255],
+            ais_leisure_color: [105, 45, 175, 255],
+            ais_other_color: [95, 95, 95, 255],
             ais_outline_color: [0, 0, 0, 255],
             map_background_color: [250, 250, 250, 255],
             line_color: [0, 0, 255, 255],
@@ -480,6 +487,15 @@ impl Default for StreamingConfig {
 mod tests {
     use super::AppConfig;
     use super::{InputSource, Transport};
+
+    #[test]
+    fn ais_labels_are_half_the_chart_text_size_by_default() {
+        let config = AppConfig::default();
+        assert_eq!(config.fonts.label_size * 2, config.fonts.window_size);
+        let mut bad = AppConfig::default();
+        bad.fonts.label_size = 0;
+        assert!(bad.validate().is_err());
+    }
 
     #[test]
     fn a_config_without_an_input_table_reads_signal_k() {

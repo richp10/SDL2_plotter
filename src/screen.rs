@@ -88,6 +88,8 @@ impl MoteurSdl {
 /// canvas directly because they are chrome, not chart content.
 pub struct Screen<'ttf> {
     font: Font<'ttf, 'static>,
+    /// The smaller font of AIS target names.
+    label_font: Font<'ttf, 'static>,
     pub canvas: WindowCanvas,
     pub screen_width: u32,
     pub screen_height: u32,
@@ -109,6 +111,7 @@ impl<'ttf> Screen<'ttf> {
         appearance: &AppearanceConfig,
     ) -> Result<Self, String> {
         let font = ttf_context.load_font(&font_config.file, font_config.window_size)?;
+        let label_font = ttf_context.load_font(&font_config.file, font_config.label_size)?;
 
         let video_subsystem = context
             .video()
@@ -183,6 +186,7 @@ impl<'ttf> Screen<'ttf> {
         }
         Ok(Screen {
             font,
+            label_font,
             canvas,
             screen_width,
             screen_height,
@@ -237,7 +241,8 @@ impl<'ttf> Screen<'ttf> {
                 Draw::Mark(at) => self.show_mark(at.x, at.y)?,
                 Draw::Line(a, b) => self.show_line(*a, *b)?,
                 Draw::Outline(points) => self.show_outline(points)?,
-                Draw::Text { at, text } => self.show_text(text, at.x, at.y)?,
+                Draw::Text { at, text } => self.show_text(text, at.x, at.y, false)?,
+                Draw::Label { at, text } => self.show_text(text, at.x, at.y, true)?,
             }
         }
         Ok(())
@@ -637,9 +642,10 @@ impl<'ttf> Screen<'ttf> {
         self.canvas.fill_rect(area)
     }
 
-    fn show_text(&mut self, texte: &str, x: i32, y: i32) -> Result<(), String> {
+    /// Text on a light backing; `small` for the label font.
+    fn show_text(&mut self, texte: &str, x: i32, y: i32, small: bool) -> Result<(), String> {
         let texture_creator = self.canvas.texture_creator();
-        let font = &self.font;
+        let font = if small { &self.label_font } else { &self.font };
 
         let surface = font
             .render(texte)

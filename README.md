@@ -164,14 +164,14 @@ route_color = [255, 0, 0, 255]
 track_color = [255, 0, 0, 255]
 waypoint_color = [220, 30, 30, 255]
 coverage_color = [255, 140, 0, 255]
-ais_cargo_color = [0, 170, 0, 255]        # ship types 70-79
-ais_tanker_color = [200, 0, 200, 255]     # 80-89
-ais_passenger_color = [0, 120, 255, 255]  # 60-69
-ais_high_speed_color = [240, 220, 0, 255] # 40-49
-ais_service_color = [0, 200, 210, 255]    # 50-59: pilot, SAR, tug, law
-ais_fishing_color = [255, 140, 0, 255]    # 30
-ais_leisure_color = [160, 100, 230, 255]  # 36-37: sailing, pleasure
-ais_other_color = [150, 150, 150, 255]    # any other, or not known yet
+ais_cargo_color = [0, 125, 0, 255]        # ship types 70-79
+ais_tanker_color = [150, 0, 150, 255]     # 80-89
+ais_passenger_color = [0, 70, 200, 255]  # 60-69
+ais_high_speed_color = [185, 150, 0, 255] # 40-49
+ais_service_color = [0, 130, 140, 255]    # 50-59: pilot, SAR, tug, law
+ais_fishing_color = [215, 85, 0, 255]    # 30
+ais_leisure_color = [105, 45, 175, 255]  # 36-37: sailing, pleasure
+ais_other_color = [95, 95, 95, 255]    # any other, or not known yet
 ```
 
 ### Rendering

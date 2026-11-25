@@ -13,6 +13,8 @@ use super::confirm_dialog::Confirmation;
 use crate::ais::AisTarget;
 use crate::boat::BoatState;
 use crate::catalogue::{Bounds, Catalogue, ChartFile, Choice, Request, Role};
+use crate::collision::{CollisionRisk, CollisionThresholds, RiskKind};
+use crate::config::CollisionConfig;
 use crate::mbtiles_renderer::MBTilesRenderer;
 use crate::mesure::Mesure;
 use crate::route::Route;
@@ -42,6 +44,10 @@ pub(crate) struct Session {
     last_ais_expiry: Instant,
     /// The AIS target whose details window is open, by context.
     pub selected_ais: Option<String>,
+    /// The AIS targets inside the collision limits, from the last fix and
+    /// AIS list.
+    pub collision_risks: Vec<CollisionRisk>,
+    collision_config: CollisionConfig,
     pub route: Route,
     pub mesure: Mesure,
     pub track: Track,
@@ -79,6 +85,7 @@ impl Session {
         catalogue: Catalogue,
         default_chart: String,
         export_dir: PathBuf,
+        collision_config: CollisionConfig,
     ) -> Self {
         let mut session = Session {
             chart_drag: (0, 0),
@@ -89,6 +96,8 @@ impl Session {
             boat,
             ais_targets: Vec::new(),
             selected_ais: None,
+            collision_risks: Vec::new(),
+            collision_config,
             last_ais_expiry: Instant::now(),
             route,
             mesure: Mesure::new(),
@@ -133,6 +142,7 @@ impl Session {
         let boat = boat.expired(now);
         log_fix_change(self.boat.position_valid, boat.position_valid);
         self.boat = boat;
+        self.update_collision_risks();
         if self.state.follow && valid_boat_position(&boat) {
             self.state.position = Some((boat.longitude, boat.latitude));
         }
@@ -147,6 +157,9 @@ impl Session {
             || expired.heading.is_some() != self.boat.heading.is_some();
         log_fix_change(self.boat.position_valid, expired.position_valid);
         self.boat = expired;
+        if changed {
+            self.update_collision_risks();
+        }
         changed
     }
 
@@ -154,6 +167,36 @@ impl Session {
     pub fn set_ais(&mut self, targets: Vec<AisTarget>) {
         self.ais_targets = targets;
         self.forget_missing_selection();
+        self.update_collision_risks();
+    }
+
+    /// Recomputes `collision_risks` from the boat and the AIS list. With no
+    /// valid fix there is no risk to compute.
+    fn update_collision_risks(&mut self) {
+        self.collision_risks = if self.collision_config.enabled {
+            crate::collision::risks(
+                self.boat,
+                &self.ais_targets,
+                CollisionThresholds {
+                    cpa_nm: self.collision_config.cpa_nm,
+                    tcpa_minutes: self.collision_config.tcpa_minutes,
+                    proximity_nm: self.collision_config.proximity_nm,
+                },
+            )
+        } else {
+            Vec::new()
+        };
+    }
+
+    pub fn collision_alarm_active(&self) -> bool {
+        !self.collision_risks.is_empty()
+    }
+
+    /// True when a risk is a target close by with no motion data.
+    pub fn collision_alarm_is_uncertain(&self) -> bool {
+        self.collision_risks
+            .iter()
+            .any(|risk| risk.kind == RiskKind::ProximityUncertain)
     }
 
     /// The AIS target within a tap of `pixel` (20 px), by context.
@@ -194,6 +237,9 @@ impl Session {
         self.last_ais_expiry = now;
         let changed = crate::ais::expire(&mut self.ais_targets, now);
         self.forget_missing_selection();
+        if changed {
+            self.update_collision_risks();
+        }
         changed
     }
 
@@ -519,7 +565,7 @@ pub(in crate::app) mod test_support {
     use super::Session;
     use crate::boat::BoatState;
     use crate::catalogue::Catalogue;
-    use crate::config::RenderingConfig;
+    use crate::config::{CollisionConfig, RenderingConfig};
     use crate::mbtiles_renderer::test_support::{fixture_chart, unique_name};
     use crate::mbtiles_renderer::MBTilesRenderer;
     use crate::{route::Route, state::State, track::Track, waypoints::Waypoints};
@@ -590,6 +636,7 @@ pub(in crate::app) mod test_support {
             catalogue,
             chart_str,
             dir.join("export"),
+            CollisionConfig::default(),
         );
         Fixture {
             dir,
@@ -688,6 +735,38 @@ mod tests {
         assert_eq!(
             fx.session.ais_at(sdl2::rect::Point::new(on.x + 80, on.y)),
             None
+        );
+        fx.finish();
+    }
+
+    #[test]
+    fn a_converging_target_raises_the_alarm_and_a_lost_fix_clears_it() {
+        let mut fx = session(&[2]);
+        let start = Instant::now();
+        let mut boat = BoatState::default();
+        boat.longitude = 0.0;
+        boat.latitude = 0.0;
+        boat.position_valid = true;
+        boat.speed_over_ground = 5.0 * 1852.0 / 3600.0;
+        boat.course_over_ground = 0.0;
+        boat.fixed_at = Some(start);
+        fx.session.on_boat(boat, start);
+        // Dead ahead, 0.5 NM, stopped: CPA 0 in 6 minutes.
+        let mut ship = AisTarget::new("vessels.urn:mrn:imo:mmsi:232001001".to_string());
+        ship.position = Some((0.0, 0.5 / 60.0));
+        ship.course_over_ground = Some(0.0);
+        ship.speed_over_ground = Some(0.0);
+        fx.session.set_ais(vec![ship]);
+        assert!(fx.session.collision_alarm_active());
+        assert!(!fx.session.collision_alarm_is_uncertain());
+        let tcpa = fx.session.collision_risks[0].tcpa_minutes;
+        assert!((tcpa - 6.0).abs() < 0.05, "{tcpa}");
+
+        fx.session
+            .expire_boat(start + crate::boat::FIX_TIMEOUT + Duration::from_secs(1));
+        assert!(
+            !fx.session.collision_alarm_active(),
+            "no CPA from a position that is no longer known"
         );
         fx.finish();
     }

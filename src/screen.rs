@@ -237,6 +237,11 @@ impl<'ttf> Screen<'ttf> {
                     heading,
                     style,
                 } => self.show_ais_target(at.x, at.y, *course, *heading, *style)?,
+                Draw::Collision {
+                    at,
+                    course,
+                    uncertain,
+                } => self.show_collision_target(at.x, at.y, *course, *uncertain)?,
                 Draw::Waypoint(at) => self.show_waypoint(*at)?,
                 Draw::Mark(at) => self.show_mark(at.x, at.y)?,
                 Draw::Line(a, b) => self.show_line(*a, *b)?,
@@ -570,6 +575,96 @@ impl<'ttf> Screen<'ttf> {
 
     /// Waypoint pin: a triangle under a ringed dot, tip at `point`.
     /// Off-screen points are culled before the i16 conversion.
+    fn show_collision_target(
+        &mut self,
+        x: i32,
+        y: i32,
+        course_over_ground: Option<f64>,
+        uncertain: bool,
+    ) -> Result<(), String> {
+        let clip = self.clip();
+        let Some((x16, y16)) = clip.point_i16(Point::new(x, y)) else {
+            return Ok(());
+        };
+        let color = if uncertain {
+            Color::RGBA(255, 165, 0, 255)
+        } else {
+            Color::RGBA(255, 0, 0, 255)
+        };
+        if let Some(course) = course_over_ground.filter(|course| course.is_finite()) {
+            let length = f64::from(self.appearance.ais_course_length);
+            let end_x = x + (course.sin() * length).round() as i32;
+            let end_y = y - (course.cos() * length).round() as i32;
+            if let Some(((ax, ay), (bx, by))) =
+                clip.segment_i16(Point::new(x, y), Point::new(end_x, end_y))
+            {
+                self.canvas.thick_line(
+                    ax,
+                    ay,
+                    bx,
+                    by,
+                    self.appearance.ais_course_width.saturating_add(1),
+                    gfx(color),
+                )?;
+            }
+        }
+        self.canvas.filled_circle(
+            x16,
+            y16,
+            self.appearance.ais_size.saturating_add(2),
+            gfx(color),
+        )?;
+        self.canvas.circle(
+            x16,
+            y16,
+            self.appearance.ais_outline_size.saturating_add(2),
+            gfx(Color::WHITE),
+        )?;
+        Ok(())
+    }
+
+    /// The collision banner, centred above the status bar.
+    pub fn show_collision_alarm(&mut self, message: &str, uncertain: bool) -> Result<(), String> {
+        const HEIGHT: u32 = 54;
+        const BOTTOM_BAR_HEIGHT: u32 = 32;
+        const MARGIN: u32 = 8;
+        let width = self.screen_width.saturating_sub(40).min(900);
+        let x = ((self.screen_width.saturating_sub(width)) / 2) as i32;
+        let y = self
+            .screen_height
+            .saturating_sub(BOTTOM_BAR_HEIGHT + HEIGHT + MARGIN) as i32;
+        let area = Rect::new(x, y, width, HEIGHT);
+        let color = if uncertain {
+            Color::RGBA(180, 100, 0, 235)
+        } else {
+            Color::RGBA(180, 0, 0, 235)
+        };
+        self.canvas.set_draw_color(color);
+        self.canvas.fill_rect(area)?;
+        let max_text_width = width.saturating_sub(20);
+        let mut fitted = message.to_string();
+        while self
+            .font
+            .size_of(&fitted)
+            .map(|(text_width, _)| text_width > max_text_width)
+            .unwrap_or(false)
+            && fitted.chars().count() > 4
+        {
+            let mut chars: Vec<char> = fitted.chars().collect();
+            chars.truncate(chars.len() - 4);
+            fitted = chars.into_iter().collect();
+            fitted.push_str("...");
+        }
+        draw_text(
+            &mut self.canvas,
+            &self.font,
+            &fitted,
+            area,
+            TextAlign::Centered,
+            Color::WHITE,
+        )
+    }
+
     fn show_waypoint(&mut self, point: Point) -> Result<(), String> {
         let Some((x, y)) = self.clip().point_i16(point) else {
             return Ok(());

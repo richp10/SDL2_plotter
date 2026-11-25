@@ -19,9 +19,10 @@ From the NMEA 0183 work (2026-11-25). See `docs/nmea0183-input-design.md`.
 From `docs/ais-symbology-research-2026-11-25.md` (option C done: colour by
 ship type, day-shape marks, class B flat stern).
 
-- **CPA/TCPA alerts.** Closest point of approach and time to it for each
-  target; a dangerous target drawn red (OpenCPN, IEC 62288) and an alarm.
-  The most important for safety.
+- **CPA/TCPA alerts: done** (Kalymnos, `collision.rs`, `[collision]`). Still
+  open: acknowledge or silence the alarm, a repeated beep while it lasts, and
+  no alarm when the own fix is lost during a close approach (now the alarm
+  clears).
 - **Real-size outlines** from the type 5 dimensions when zoomed in close.
 - **AtoN, base station and SART/MOB/EPIRB symbols** (message types 21, 4,
   14; MMSI 970, 972, 974).

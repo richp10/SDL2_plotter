@@ -267,10 +267,17 @@ pub fn nav_status_name(status: u8) -> &'static str {
 
 /// One labelled marker per target that has a position.
 pub fn shapes(targets: &[AisTarget]) -> Vec<Shape> {
+    shapes_without(targets, &[])
+}
+
+/// As `shapes`, without the targets at `excluded`: the collision alarm
+/// draws those itself.
+pub fn shapes_without(targets: &[AisTarget], excluded: &[(f64, f64)]) -> Vec<Shape> {
     targets
         .iter()
         .filter_map(|target| {
-            target.position.map(|at| Shape::Ais {
+            let at = target.position.filter(|at| !excluded.contains(at));
+            at.map(|at| Shape::Ais {
                 at,
                 course: target.course_over_ground,
                 heading: target.heading,
@@ -288,6 +295,15 @@ pub fn shapes(targets: &[AisTarget]) -> Vec<Shape> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn collision_targets_can_be_hidden_from_normal_ais_shapes() {
+        let mut target = AisTarget::new("vessels.target".to_string());
+        target.position = Some((2.0, 3.0));
+        target.course_over_ground = Some(0.0);
+        assert!(shapes_without(std::slice::from_ref(&target), &[(2.0, 3.0)]).is_empty());
+        assert_eq!(shapes(&[target]).len(), 1);
+    }
 
     #[test]
     fn target_expires_after_five_minutes_without_updates() {

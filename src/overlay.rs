@@ -43,6 +43,14 @@ pub enum Shape {
         label: String,
         style: AisStyle,
     },
+    /// An AIS target inside the collision limits; `course` is true, in
+    /// radians. `uncertain`: close by, with no motion data.
+    Collision {
+        at: (f64, f64),
+        course: Option<f64>,
+        label: String,
+        uncertain: bool,
+    },
     Waypoint {
         at: (f64, f64),
         label: String,
@@ -80,6 +88,11 @@ pub enum Draw {
         course: Option<f64>,
         heading: Option<f64>,
         style: AisStyle,
+    },
+    Collision {
+        at: Point,
+        course: Option<f64>,
+        uncertain: bool,
     },
     Waypoint(Point),
     Mark(Point),
@@ -176,6 +189,27 @@ pub fn plan(view: &ChartView, shapes: &[Shape]) -> Vec<Draw> {
                     // centre by default).
                     draws.push(Draw::Label {
                         at: Point::new(at.x + 22, at.y - 8),
+                        text: label.clone(),
+                    });
+                }
+            }
+            Shape::Collision {
+                at,
+                course,
+                label,
+                uncertain,
+            } => {
+                let at = view.to_pixel(*at);
+                if visible(at) {
+                    draws.push(Draw::Collision {
+                        at,
+                        course: course
+                            .filter(|c| c.is_finite())
+                            .map(|c| view.course_to_screen(c)),
+                        uncertain: *uncertain,
+                    });
+                    draws.push(Draw::Text {
+                        at: Point::new(at.x + 10, at.y - 10),
                         text: label.clone(),
                     });
                 }

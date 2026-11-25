@@ -7,10 +7,12 @@
 
 mod action;
 mod ais;
+mod alarm;
 mod app;
 mod boat;
 mod buttombar;
 mod catalogue;
+mod collision;
 mod config;
 mod diagnostics;
 mod feed;
@@ -84,6 +86,22 @@ async fn run() -> anyhow::Result<()> {
         app::chart_texture(&texture_creator, screen.screen_width, screen.screen_height)
             .map_err(anyhow::Error::msg)?;
     let streamer = stream::Streamer::start_or_disable(&config.streaming);
+    let alarm_sound = match sdl.context.audio() {
+        Ok(audio) => match alarm::AlarmSound::new(&audio) {
+            Ok(sound) => Some(sound),
+            Err(error) => {
+                diagnostics::record("WARN", format!("Alarme sonore indisponible: {error}"));
+                None
+            }
+        },
+        Err(error) => {
+            diagnostics::record(
+                "WARN",
+                format!("Sous-système audio SDL indisponible: {error}"),
+            );
+            None
+        }
+    };
     let mut plotter = app::Plotter::new(
         &sdl.context,
         &sdl.ttf_context,
@@ -91,6 +109,7 @@ async fn run() -> anyhow::Result<()> {
         screen.screen_height,
         &config,
         streamer,
+        alarm_sound,
         app::Files::default(),
     )?;
     diagnostics::record("INFO", "Application initialisée");

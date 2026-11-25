@@ -92,6 +92,14 @@ pub(crate) struct Plotter<'ttf> {
     boat_closed: bool,
     ais_closed: bool,
     streamer: Option<crate::stream::Streamer>,
+    /// The alarm beep; `None` when the machine has no audio.
+    alarm_sound: Option<crate::alarm::AlarmSound>,
+    /// The collision markers blink: shown while this is true.
+    alarm_blink_on: bool,
+    last_alarm_blink: Instant,
+    /// The alarm last announced: `Some(true)` for a target without motion
+    /// data, `Some(false)` for a predicted CPA, `None` for no alarm.
+    last_alarm_kind: Option<bool>,
 }
 
 /// Every file the plotter reads and writes, apart from the config and the
@@ -164,6 +172,8 @@ pub(crate) fn chart_texture(
 }
 
 impl<'ttf> Plotter<'ttf> {
+    // Each part comes from main.rs, which builds it with SDL; a struct would only repeat them.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         sdl_context: &sdl2::Sdl,
         ttf_context: &'ttf Sdl2TtfContext,
@@ -171,6 +181,7 @@ impl<'ttf> Plotter<'ttf> {
         height: u32,
         config: &AppConfig,
         streamer: Option<crate::stream::Streamer>,
+        alarm_sound: Option<crate::alarm::AlarmSound>,
         files: Files,
     ) -> anyhow::Result<Self> {
         let text_input = sdl_context
@@ -250,6 +261,7 @@ impl<'ttf> Plotter<'ttf> {
             catalogue,
             config.charts.default.clone(),
             files.export.clone(),
+            config.collision.clone(),
         );
 
         Ok(Self {
@@ -280,7 +292,40 @@ impl<'ttf> Plotter<'ttf> {
             boat_closed: false,
             ais_closed: false,
             streamer,
+            alarm_sound,
+            alarm_blink_on: true,
+            last_alarm_blink: Instant::now(),
+            last_alarm_kind: None,
         })
+    }
+
+    /// Beeps and logs when a collision alarm starts or changes kind, and
+    /// blinks the alarm markers every 500 ms while one is active.
+    fn sound_collision_alarm(&mut self, now: Instant) {
+        let active = self.session.collision_alarm_active();
+        let kind = active.then(|| self.session.collision_alarm_is_uncertain());
+        if kind != self.last_alarm_kind {
+            self.last_alarm_kind = kind;
+            if let Some(uncertain) = kind {
+                if let Some(sound) = &mut self.alarm_sound {
+                    sound.beep(uncertain);
+                }
+                crate::diagnostics::record(
+                    "WARN",
+                    if uncertain {
+                        "Proximité AIS sans données de mouvement"
+                    } else {
+                        "Risque de collision détecté"
+                    },
+                );
+            }
+            self.dirty = true;
+        }
+        if active && now.duration_since(self.last_alarm_blink) >= Duration::from_millis(500) {
+            self.last_alarm_blink = now;
+            self.alarm_blink_on = !self.alarm_blink_on;
+            self.dirty = true;
+        }
     }
 
     /// The window was resized or maximised: everything that holds its size
@@ -423,17 +468,17 @@ impl<'ttf> Plotter<'ttf> {
 
         self.fire_long_press();
 
-        if self.session.state.display_ais {
-            if let Some(targets) =
-                crate::feed::take_change(&mut self.live.ais, &mut self.ais_closed, "AIS")
-            {
-                self.session.set_ais(targets);
-                self.dirty = true;
-            }
-            if self.session.expire_ais(now) {
-                self.dirty = true;
-            }
+        // AIS is read even while hidden: the collision alarm needs it.
+        if let Some(targets) =
+            crate::feed::take_change(&mut self.live.ais, &mut self.ais_closed, "AIS")
+        {
+            self.session.set_ais(targets);
+            self.dirty = true;
         }
+        if self.session.expire_ais(now) {
+            self.dirty = true;
+        }
+        self.sound_collision_alarm(now);
         if self.session.renderer.advance_zoom_animation() {
             self.dirty = true;
         }
@@ -602,6 +647,7 @@ mod tests {
             640,
             480,
             &config,
+            None,
             None,
             files,
         )

@@ -160,6 +160,25 @@ Routes and the current track are stored as versioned JSON in `default/route.json
 
 On first launch after upgrading, an existing `default/route.gpx` or `default/track.gpx` is migrated to its corresponding JSON file. The original GPX file is left unchanged.
 
+### Collision alarm
+
+When enabled, the application predicts the closest point of approach (CPA) for
+AIS targets using the boat and target course/speed. It shows a red banner and
+highlights the target when both thresholds are reached, and emits a short
+generated beep when a new risk appears. The alarm remains active while the
+risk remains present.
+
+```toml
+[collision]
+enabled = true
+cpa_nm = 0.5
+tcpa_minutes = 15.0
+proximity_nm = 2.0
+```
+
+`proximity_nm` déclenche une alerte distincte lorsqu’une cible a une position
+AIS proche mais pas de SOG ou de COG fiables.
+
 ### Network streaming
 
 The MJPEG stream can be viewed in a browser on a local computer or tablet:

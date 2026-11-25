@@ -57,7 +57,39 @@ impl Plotter<'_> {
         }
         shapes.extend(self.session.boat.shape());
         if self.session.state.display_ais {
-            shapes.extend(crate::ais::shapes(&self.session.ais_targets));
+            let collision_positions: Vec<_> = self
+                .session
+                .collision_risks
+                .iter()
+                .map(|risk| risk.position)
+                .collect();
+            shapes.extend(crate::ais::shapes_without(
+                &self.session.ais_targets,
+                &collision_positions,
+            ));
+        }
+        if self.alarm_blink_on {
+            shapes.extend(self.session.collision_risks.iter().map(|risk| {
+                let target = self
+                    .session
+                    .ais_targets
+                    .iter()
+                    .find(|target| target.position == Some(risk.position));
+                crate::overlay::Shape::Collision {
+                    at: risk.position,
+                    course: target.and_then(|target| target.course_over_ground),
+                    label: format!(
+                        "{} {}",
+                        if risk.kind == crate::collision::RiskKind::ProximityUncertain {
+                            "PROXIMITÉ AIS"
+                        } else {
+                            "COLLISION"
+                        },
+                        risk.target
+                    ),
+                    uncertain: risk.kind == crate::collision::RiskKind::ProximityUncertain,
+                }
+            }));
         }
         if self.session.state.display_track {
             shapes.extend(self.session.track.shape(Some(self.session.boat.position())));
@@ -81,6 +113,29 @@ impl Plotter<'_> {
             .map_err(anyhow::Error::msg)?;
         let chart = self.session.chart_status();
         self.display_buttombar(screen, &chart);
+        if self.session.collision_alarm_active() {
+            let risk = self
+                .session
+                .collision_risks
+                .iter()
+                .find(|risk| risk.kind == crate::collision::RiskKind::ProximityUncertain)
+                .unwrap_or(&self.session.collision_risks[0]);
+            let uncertain = risk.kind == crate::collision::RiskKind::ProximityUncertain;
+            let message = if uncertain {
+                format!(
+                    "PROXIMITE AIS INCERTAINE : {} — distance {:.2} NM",
+                    risk.target, risk.cpa_nm
+                )
+            } else {
+                format!(
+                    "ALERTE COLLISION : {} — CPA {:.2} NM / TCPA {:.0} min",
+                    risk.target, risk.cpa_nm, risk.tcpa_minutes
+                )
+            };
+            screen
+                .show_collision_alarm(&message, uncertain)
+                .map_err(anyhow::Error::msg)?;
+        }
         if let Some(streamer) = &self.streamer {
             streamer
                 .capture(&screen.canvas)

@@ -14,6 +14,7 @@ pub struct AppConfig {
     pub rendering: RenderingConfig,
     pub streaming: StreamingConfig,
     pub track: TrackConfig,
+    pub collision: CollisionConfig,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -99,6 +100,15 @@ pub struct RenderingConfig {
 #[serde(default)]
 pub struct TrackConfig {
     pub checkpoint_interval_seconds: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default)]
+pub struct CollisionConfig {
+    pub enabled: bool,
+    pub cpa_nm: f64,
+    pub tcpa_minutes: f64,
+    pub proximity_nm: f64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -191,6 +201,16 @@ impl AppConfig {
         }
         if self.track.checkpoint_interval_seconds == 0 {
             bail!("track.checkpoint_interval_seconds doit être supérieur à zéro");
+        }
+        if self.collision.enabled
+            && (!self.collision.cpa_nm.is_finite()
+                || self.collision.cpa_nm <= 0.0
+                || !self.collision.tcpa_minutes.is_finite()
+                || self.collision.tcpa_minutes <= 0.0
+                || !self.collision.proximity_nm.is_finite()
+                || self.collision.proximity_nm <= 0.0)
+        {
+            bail!("collision.cpa_nm et collision.tcpa_minutes doivent être positifs");
         }
         if self.streaming.enabled
             && (self.streaming.port == 0
@@ -312,6 +332,17 @@ impl Default for StreamingConfig {
             port: 8080,
             fps: 5,
             jpeg_quality: 70,
+        }
+    }
+}
+
+impl Default for CollisionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            cpa_nm: 0.5,
+            tcpa_minutes: 15.0,
+            proximity_nm: 2.0,
         }
     }
 }

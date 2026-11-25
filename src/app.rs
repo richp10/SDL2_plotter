@@ -73,6 +73,10 @@ pub(crate) struct Plotter<'ttf> {
     track_rx: tokio::sync::mpsc::UnboundedReceiver<(f64, f64)>,
     ais_rx: watch::Receiver<Vec<ais::AisTarget>>,
     streamer: Option<crate::stream::Streamer>,
+    alarm_sound: Option<crate::alarm::AlarmSound>,
+    alarm_blink_on: bool,
+    last_alarm_blink: Instant,
+    last_alarm_kind: Option<bool>,
 }
 
 impl<'ttf> Plotter<'ttf> {
@@ -83,6 +87,7 @@ impl<'ttf> Plotter<'ttf> {
         height: u32,
         config: &AppConfig,
         streamer: Option<crate::stream::Streamer>,
+        alarm_sound: Option<crate::alarm::AlarmSound>,
     ) -> anyhow::Result<Self> {
         let text_input = sdl_context
             .video()
@@ -148,6 +153,7 @@ impl<'ttf> Plotter<'ttf> {
             catalogue,
             config.charts.default.clone(),
             PathBuf::from("export"),
+            config.collision.clone(),
         );
 
         Ok(Self {
@@ -169,6 +175,10 @@ impl<'ttf> Plotter<'ttf> {
             track_rx,
             ais_rx,
             streamer,
+            alarm_sound,
+            alarm_blink_on: true,
+            last_alarm_blink: Instant::now(),
+            last_alarm_kind: None,
         })
     }
 
@@ -279,17 +289,42 @@ impl<'ttf> Plotter<'ttf> {
                 self.dirty = true;
             }
 
+            let alarm_active = self.session.collision_alarm_active();
+            let alarm_kind = alarm_active.then(|| self.session.collision_alarm_is_uncertain());
+            if alarm_kind != self.last_alarm_kind {
+                self.last_alarm_kind = alarm_kind;
+                if let Some(uncertain) = alarm_kind {
+                    if let Some(sound) = &mut self.alarm_sound {
+                        sound.beep(uncertain);
+                    }
+                    crate::diagnostics::record(
+                        "WARN",
+                        if uncertain {
+                            "Proximité AIS sans données de mouvement"
+                        } else {
+                            "Risque de collision détecté"
+                        },
+                    );
+                }
+                self.dirty = true;
+            }
+            if alarm_active
+                && now.duration_since(self.last_alarm_blink) >= Duration::from_millis(500)
+            {
+                self.last_alarm_blink = now;
+                self.alarm_blink_on = !self.alarm_blink_on;
+                self.dirty = true;
+            }
+
             self.fire_long_press();
 
-            if self.session.state.display_ais {
-                if self.ais_rx.has_changed().unwrap_or(false) {
-                    self.session
-                        .set_ais(self.ais_rx.borrow_and_update().clone());
-                    self.dirty = true;
-                }
-                if self.session.expire_ais(now) {
-                    self.dirty = true;
-                }
+            if self.ais_rx.has_changed().unwrap_or(false) {
+                self.session
+                    .set_ais(self.ais_rx.borrow_and_update().clone());
+                self.dirty = true;
+            }
+            if self.session.expire_ais(now) {
+                self.dirty = true;
             }
             if self.session.renderer.advance_zoom_animation() {
                 self.dirty = true;

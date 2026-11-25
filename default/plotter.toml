@@ -59,6 +59,12 @@ prefetch_margin = 2
 [track]
 checkpoint_interval_seconds = 15
 
+[collision]
+enabled = true
+cpa_nm = 0.5
+tcpa_minutes = 15.0
+proximity_nm = 2.0
+
 [streaming]
 enabled = true
 bind_address = "127.0.0.1"

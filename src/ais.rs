@@ -62,16 +62,20 @@ impl AisTarget {
     }
 }
 
-/// One labelled marker per target that has a position.
-pub fn shapes(targets: &[AisTarget]) -> Vec<Shape> {
+/// Builds normal AIS markers while suppressing targets represented by another
+/// overlay, such as the collision alarm marker.
+pub fn shapes_without(targets: &[AisTarget], excluded: &[(f64, f64)]) -> Vec<Shape> {
     targets
         .iter()
         .filter_map(|target| {
-            target.position.map(|at| Shape::Ais {
-                at,
-                course: target.course_over_ground,
-                label: target.label(),
-            })
+            target
+                .position
+                .filter(|position| !excluded.contains(position))
+                .map(|at| Shape::Ais {
+                    at,
+                    course: target.course_over_ground,
+                    label: target.label(),
+                })
         })
         .collect()
 }
@@ -110,5 +114,14 @@ mod tests {
 
         assert!(!retain_fresh(&mut targets, now));
         assert_eq!(targets.len(), 1);
+    }
+
+    #[test]
+    fn collision_targets_can_be_hidden_from_normal_ais_shapes() {
+        let mut target = AisTarget::new("vessels.target".to_string());
+        target.position = Some((2.0, 3.0));
+        target.course_over_ground = Some(0.0);
+        let shapes = shapes_without(&[target], &[(2.0, 3.0)]);
+        assert!(shapes.is_empty());
     }
 }

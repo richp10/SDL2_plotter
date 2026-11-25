@@ -54,6 +54,12 @@ pub struct AisTarget {
     pub speed_over_ground: Option<f64>,
     /// True heading in radians, when the target sends one.
     pub heading: Option<f64>,
+    /// AIS ship type, 1 to 99, once a static report gave it.
+    pub ship_type: Option<u8>,
+    /// AIS navigational status, 0 to 14 (class A position reports).
+    pub nav_status: Option<u8>,
+    /// A class B transponder (small craft).
+    pub class_b: bool,
     last_update: Instant,
 }
 
@@ -66,6 +72,9 @@ impl AisTarget {
             course_over_ground: None,
             speed_over_ground: None,
             heading: None,
+            ship_type: None,
+            nav_status: None,
+            class_b: false,
             last_update: Instant::now(),
         }
     }

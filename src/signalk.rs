@@ -230,6 +230,8 @@ impl SignalKClient {
             self.paths.ais_name.as_str(),
             self.paths.ais_course_over_ground.as_str(),
             self.paths.ais_speed_over_ground.as_str(),
+            self.paths.ais_ship_type.as_str(),
+            self.paths.ais_nav_state.as_str(),
         ];
         let ais_payload = Subscribe {
             context: "vessels.*".to_string(),
@@ -380,11 +382,35 @@ fn update_ais_target(
         {
             target.speed_over_ground = Some(speed);
         }
+    } else if path == paths.ais_ship_type {
+        if let Some(kind) = value["id"].as_u64().filter(|kind| (1..=99).contains(kind)) {
+            target.ship_type = Some(kind as u8);
+        }
+    } else if path == paths.ais_nav_state {
+        target.nav_status = value.as_str().and_then(nav_status_code);
     } else {
         return false;
     }
     target.update_received();
     true
+}
+
+/// The AIS navigational status for a Signal K `navigation.state` text
+/// (the specification's list); `None` for one with no AIS equivalent the
+/// plotter draws.
+fn nav_status_code(state: &str) -> Option<u8> {
+    Some(match state {
+        "motoring" => 0,
+        "anchored" => 1,
+        "not under command" => 2,
+        state if state.starts_with("restricted manouverability") => 3,
+        "constrained by draft" => 4,
+        "moored" => 5,
+        "aground" => 6,
+        "fishing" | "fishing-hampered" | "trawling" | "trawling-shooting" | "trawling-hauling" => 7,
+        "sailing" => 8,
+        _ => return None,
+    })
 }
 
 async fn wait_for_signalk_connection(url: &str) -> WsStream {
@@ -642,6 +668,43 @@ mod tests {
         );
         assert_eq!(boat.fixed_at, Some(t0));
         assert_eq!(boat.course_over_ground, 1.5);
+    }
+
+    #[test]
+    fn ais_ship_type_and_nav_state_are_read() {
+        let context = "vessels.urn:mrn:imo:mmsi:123456789";
+        let mut targets = HashMap::new();
+        let paths = SignalKPaths::default();
+        update_ais_target(
+            &mut targets,
+            &paths,
+            context,
+            &paths.ais_ship_type,
+            &json!({"id": 30, "name": "Fishing"}),
+        );
+        update_ais_target(
+            &mut targets,
+            &paths,
+            context,
+            &paths.ais_nav_state,
+            &json!("fishing"),
+        );
+        let t = targets.get(context).unwrap();
+        assert_eq!((t.ship_type, t.nav_status), (Some(30), Some(7)));
+        for (state, code) in [
+            ("motoring", Some(0)),
+            ("anchored", Some(1)),
+            ("not under command", Some(2)),
+            ("restricted manouverability towing < 200m", Some(3)),
+            ("constrained by draft", Some(4)),
+            ("moored", Some(5)),
+            ("aground", Some(6)),
+            ("trawling", Some(7)),
+            ("sailing", Some(8)),
+            ("pilotage", None),
+        ] {
+            assert_eq!(nav_status_code(state), code, "{state}");
+        }
     }
 
     #[test]

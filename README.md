@@ -109,6 +109,8 @@ ais_position = "navigation.position"
 ais_name = "name"
 ais_course_over_ground = "navigation.courseOverGroundTrue"
 ais_speed_over_ground = "navigation.speedOverGround"
+ais_ship_type = "design.aisShipType"
+ais_nav_state = "navigation.state"
 ```
 
 The subscription uses these configured paths for vessel data and AIS targets.

@@ -296,9 +296,20 @@ impl Decoder {
         else {
             return Update::default();
         };
-        let (mmsi, report, name) = match message {
-            aivdm::Message::Position(report) => (report.mmsi, Some(report.clone()), report.name),
-            aivdm::Message::Name { mmsi, name } => (mmsi, None, Some(name)),
+        let (mmsi, report, name, ship_type, class_b) = match message {
+            aivdm::Message::Position(report) => (
+                report.mmsi,
+                Some(report.clone()),
+                report.name,
+                report.ship_type,
+                report.class_b,
+            ),
+            aivdm::Message::Static {
+                mmsi,
+                name,
+                ship_type,
+                class_b,
+            } => (mmsi, None, name, ship_type, class_b),
         };
         let context = format!("vessels.urn:mrn:imo:mmsi:{mmsi}");
         let target = self
@@ -312,10 +323,15 @@ impl Decoder {
             target.speed_over_ground = report.speed_over_ground;
             target.course_over_ground = report.course_over_ground;
             target.heading = report.heading;
+            target.nav_status = report.nav_status;
         }
         if name.is_some() {
             target.name = name;
         }
+        if ship_type.is_some() {
+            target.ship_type = ship_type;
+        }
+        target.class_b = class_b;
         target.update_received();
         Update {
             ais_changed: true,
@@ -900,6 +916,29 @@ mod tests {
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].name.as_deref(), Some("NORDIC STAR"));
         assert!(targets[0].position.is_some());
+    }
+
+    #[test]
+    fn a_target_keeps_its_type_status_and_class() {
+        let mut d = Decoder::new();
+        let now = Instant::now();
+        d.apply(&bang("AIVDM,1,1,,A,101r4PEP00wrFE9th2572?wp2000,0"), now);
+        let t = &d.ais_targets()[0];
+        assert_eq!(
+            (t.nav_status, t.class_b, t.ship_type),
+            (Some(5), false, None)
+        );
+        d.apply(&bang("AIVDM,1,1,,B,B3M@AlP0@@0`B87GIs2`j77P0000,0"), now);
+        d.apply(&bang("AIVDM,1,1,,B,H3M@AlTT1234001GHIJopq104220,0"), now);
+        let b = d
+            .ais_targets()
+            .into_iter()
+            .find(|t| t.context.ends_with("232002002"))
+            .unwrap();
+        assert_eq!(
+            (b.class_b, b.ship_type, b.nav_status),
+            (true, Some(36), None)
+        );
     }
 
     #[test]

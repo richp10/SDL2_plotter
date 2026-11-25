@@ -15,10 +15,14 @@ const METRES_PER_SECOND_PER_KNOT: f64 = 1852.0 / 3600.0;
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum Message {
     Position(PositionReport),
-    /// A static report: the vessel's name.
-    Name {
+    /// A static report: the vessel's name and ship type, either or both.
+    Static {
         mmsi: u32,
-        name: String,
+        name: Option<String>,
+        /// AIS ship type, 1 to 99 (0, "not available", is `None`).
+        ship_type: Option<u8>,
+        /// Class B (type 24); class A (type 5) otherwise.
+        class_b: bool,
     },
 }
 
@@ -37,6 +41,13 @@ pub(super) struct PositionReport {
     pub heading: Option<f64>,
     /// Type 19 carries the name too.
     pub name: Option<String>,
+    /// Navigational status 0 to 14 (class A only; 15, "not defined", is
+    /// `None`).
+    pub nav_status: Option<u8>,
+    /// Type 19 carries the ship type.
+    pub ship_type: Option<u8>,
+    /// Types 18 and 19 are class B.
+    pub class_b: bool,
 }
 
 /// Joins the fragments of multi-sentence messages.
@@ -101,22 +112,72 @@ impl Assembler {
     }
 }
 
+/// Where a position report keeps its fields (bit offsets, gpsd AIVDM).
+struct Layout {
+    sog: usize,
+    lon: usize,
+    lat: usize,
+    cog: usize,
+    heading: usize,
+    nav_status: Option<usize>,
+    name: Option<usize>,
+    ship_type: Option<usize>,
+    class_b: bool,
+}
+
+const CLASS_A: Layout = Layout {
+    sog: 50,
+    lon: 61,
+    lat: 89,
+    cog: 116,
+    heading: 128,
+    nav_status: Some(38),
+    name: None,
+    ship_type: None,
+    class_b: false,
+};
+const CLASS_B: Layout = Layout {
+    sog: 46,
+    lon: 57,
+    lat: 85,
+    cog: 112,
+    heading: 124,
+    nav_status: None,
+    name: None,
+    ship_type: None,
+    class_b: true,
+};
+const CLASS_B_EXTENDED: Layout = Layout {
+    name: Some(143),
+    ship_type: Some(263),
+    ..CLASS_B
+};
+
 /// Decodes one whole payload. `None` for a bad payload, a type the plotter
-/// does not read, or a static report with no name.
+/// does not read, or a static report with neither name nor ship type.
 pub(super) fn decode(payload: &str, fill: u8) -> Option<Message> {
     let bits = Bits::new(payload, fill)?;
+    let static_report = |name: Option<String>, ship_type: Option<u8>, class_b| {
+        if name.is_none() && ship_type.is_none() {
+            return None;
+        }
+        Some(Message::Static {
+            mmsi: bits.mmsi()?,
+            name,
+            ship_type,
+            class_b,
+        })
+    };
     match bits.uint(0, 6)? {
-        1..=3 => bits.position(50, 61, 89, 116, 128, None),
-        18 => bits.position(46, 57, 85, 112, 124, None),
-        19 => bits.position(46, 57, 85, 112, 124, Some(143)),
-        5 => Some(Message::Name {
-            mmsi: bits.mmsi()?,
-            name: bits.name(112)?,
-        }),
-        24 if bits.uint(38, 2)? == 0 => Some(Message::Name {
-            mmsi: bits.mmsi()?,
-            name: bits.name(40)?,
-        }),
+        1..=3 => bits.position(&CLASS_A),
+        18 => bits.position(&CLASS_B),
+        19 => bits.position(&CLASS_B_EXTENDED),
+        5 => static_report(bits.name(112), bits.ship_type(232), false),
+        24 => match bits.uint(38, 2)? {
+            0 => static_report(bits.name(40), None, true),
+            1 => static_report(None, bits.ship_type(40), true),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -156,6 +217,14 @@ impl Bits {
         })
     }
 
+    /// The 8-bit ship type at `start`: 1 to 99; 0 ("not available") and the
+    /// reserved values above 99 are `None`.
+    fn ship_type(&self, start: usize) -> Option<u8> {
+        self.uint(start, 8)
+            .filter(|kind| (1..=99).contains(kind))
+            .map(|kind| kind as u8)
+    }
+
     fn mmsi(&self) -> Option<u32> {
         u32::try_from(self.uint(8, 30)?).ok()
     }
@@ -172,23 +241,15 @@ impl Bits {
         (!name.is_empty()).then_some(name)
     }
 
-    fn position(
-        &self,
-        sog: usize,
-        lon: usize,
-        lat: usize,
-        cog: usize,
-        heading: usize,
-        name: Option<usize>,
-    ) -> Option<Message> {
-        let longitude = self.int(lon, 28)? as f64 / 600_000.0;
-        let latitude = self.int(lat, 27)? as f64 / 600_000.0;
+    fn position(&self, layout: &Layout) -> Option<Message> {
+        let longitude = self.int(layout.lon, 28)? as f64 / 600_000.0;
+        let latitude = self.int(layout.lat, 27)? as f64 / 600_000.0;
         let position = ((-180.0..=180.0).contains(&longitude)
             && (-90.0..=90.0).contains(&latitude))
         .then_some((longitude, latitude));
-        let speed = self.uint(sog, 10)?;
-        let course = self.uint(cog, 12)?;
-        let heading = self.uint(heading, 9)?;
+        let speed = self.uint(layout.sog, 10)?;
+        let course = self.uint(layout.cog, 12)?;
+        let heading = self.uint(layout.heading, 9)?;
         Some(Message::Position(PositionReport {
             mmsi: self.mmsi()?,
             position,
@@ -196,7 +257,14 @@ impl Bits {
                 .then(|| speed as f64 / 10.0 * METRES_PER_SECOND_PER_KNOT),
             course_over_ground: (course < 3600).then(|| (course as f64 / 10.0).to_radians()),
             heading: (heading < 360).then(|| (heading as f64).to_radians()),
-            name: name.and_then(|start| self.name(start)),
+            name: layout.name.and_then(|start| self.name(start)),
+            nav_status: layout
+                .nav_status
+                .and_then(|start| self.uint(start, 4))
+                .filter(|status| *status < 15)
+                .map(|status| status as u8),
+            ship_type: layout.ship_type.and_then(|start| self.ship_type(start)),
+            class_b: layout.class_b,
         }))
     }
 }
@@ -303,22 +371,51 @@ mod tests {
     }
 
     #[test]
-    fn static_reports_give_the_name() {
+    fn static_reports_give_the_name_and_the_ship_type() {
         assert_eq!(
             one(TYPE_24A, 0),
-            Some(Message::Name {
+            Some(Message::Static {
                 mmsi: 232002002,
-                name: "NORDIC STAR".into()
+                name: Some("NORDIC STAR".into()),
+                ship_type: None,
+                class_b: true,
             })
         );
-        assert_eq!(one(TYPE_24B, 0), None, "part B has no name");
+        assert_eq!(
+            one(TYPE_24B, 0),
+            Some(Message::Static {
+                mmsi: 232002002,
+                name: None,
+                ship_type: Some(36),
+                class_b: true,
+            }),
+            "part B: the type"
+        );
         assert_eq!(
             one(TYPE_5, 2),
-            Some(Message::Name {
+            Some(Message::Static {
                 mmsi: 232001001,
-                name: "SEA SPIRIT".into()
+                name: Some("SEA SPIRIT".into()),
+                ship_type: Some(70),
+                class_b: false,
             })
         );
+    }
+
+    #[test]
+    fn position_reports_give_the_nav_status_and_the_class() {
+        let Some(Message::Position(a)) = one(TYPE_1, 0) else {
+            panic!()
+        };
+        assert_eq!((a.nav_status, a.class_b), (Some(0), false));
+        let Some(Message::Position(moored)) = one(TYPE_1_NA, 0) else {
+            panic!()
+        };
+        assert_eq!(moored.nav_status, Some(5), "pyais: status 5");
+        let Some(Message::Position(b)) = one(TYPE_18, 0) else {
+            panic!()
+        };
+        assert_eq!((b.nav_status, b.class_b), (None, true), "class B has none");
     }
 
     #[test]

@@ -99,6 +99,10 @@ pub struct SignalKPaths {
     pub ais_name: String,
     pub ais_course_over_ground: String,
     pub ais_speed_over_ground: String,
+    /// `{id, name}`; `id` is the AIS ship type.
+    pub ais_ship_type: String,
+    /// Text such as "anchored" or "fishing".
+    pub ais_nav_state: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -232,6 +236,8 @@ impl AppConfig {
                     &self.signalk.paths.ais_name,
                     &self.signalk.paths.ais_course_over_ground,
                     &self.signalk.paths.ais_speed_over_ground,
+                    &self.signalk.paths.ais_ship_type,
+                    &self.signalk.paths.ais_nav_state,
                 ];
                 if paths.iter().any(|path| path.trim().is_empty()) {
                     return Some("Les chemins Signal K ne peuvent pas être vides".into());
@@ -358,6 +364,8 @@ impl Default for SignalKPaths {
             ais_name: "name".into(),
             ais_course_over_ground: "navigation.courseOverGroundTrue".into(),
             ais_speed_over_ground: "navigation.speedOverGround".into(),
+            ais_ship_type: "design.aisShipType".into(),
+            ais_nav_state: "navigation.state".into(),
         }
     }
 }

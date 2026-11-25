@@ -395,12 +395,13 @@ pub async fn run(config: SignalKConfig, feed: LiveFeed) {
                     .send((signalk.data.longitude, signalk.data.latitude));
             }
 
-            // Targets that have gone quiet are dropped here, so the map does
-            // not grow for the whole passage. Checked at most once a second.
+            // Silent targets, and the oldest above the cap, are dropped
+            // here, so the map stays bounded for the whole passage. Checked
+            // at most once a second.
             let mut ais_changed = summary.ais_changed;
             let now = Instant::now();
             if now.duration_since(last_eviction) >= Duration::from_secs(1) {
-                ais_changed |= crate::ais::retain_fresh(&mut signalk.targets, now);
+                ais_changed |= crate::ais::bound(&mut signalk.targets, now);
                 last_eviction = now;
             }
             if ais_changed {

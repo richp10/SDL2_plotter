@@ -14,6 +14,30 @@ pub fn retain_fresh(targets: &mut HashMap<String, AisTarget>, now: Instant) -> b
     targets.len() != before
 }
 
+/// At most this many targets are kept. A busy port has a few hundred.
+pub const MAX_TARGETS: usize = 500;
+
+/// Keeps the target map bounded for a passage of weeks: removes silent
+/// targets (`retain_fresh`), then the least recently heard ones above
+/// `MAX_TARGETS`. Static data (name) lives in the target, so it goes with
+/// it. Returns true when at least one target was removed.
+pub fn bound(targets: &mut HashMap<String, AisTarget>, now: Instant) -> bool {
+    let mut removed = retain_fresh(targets, now);
+    if targets.len() > MAX_TARGETS {
+        let mut by_age: Vec<(Instant, String)> = targets
+            .iter()
+            .map(|(context, target)| (target.last_update, context.clone()))
+            .collect();
+        by_age.sort();
+        let excess = targets.len() - MAX_TARGETS;
+        for (_, context) in by_age.into_iter().take(excess) {
+            targets.remove(&context);
+        }
+        removed = true;
+    }
+    removed
+}
+
 /// The same rule for the displayed list. Returns true when one was removed.
 pub fn expire(targets: &mut Vec<AisTarget>, now: Instant) -> bool {
     let before = targets.len();
@@ -110,5 +134,33 @@ mod tests {
 
         assert!(!retain_fresh(&mut targets, now));
         assert_eq!(targets.len(), 1);
+    }
+
+    #[test]
+    fn the_target_list_is_capped_by_dropping_the_least_recent() {
+        let now = Instant::now();
+        let mut targets = HashMap::new();
+        for i in 0..MAX_TARGETS + 2 {
+            let mut target = AisTarget::new(format!("vessels.{i}"));
+            target.last_update = now - Duration::from_millis(i as u64);
+            targets.insert(target.context.clone(), target);
+        }
+        assert!(bound(&mut targets, now));
+        assert_eq!(targets.len(), MAX_TARGETS);
+        assert!(targets.contains_key("vessels.0"), "the newest stays");
+        assert!(!targets.contains_key(&format!("vessels.{}", MAX_TARGETS + 1)));
+        assert!(!targets.contains_key(&format!("vessels.{MAX_TARGETS}")));
+        assert!(!bound(&mut targets, now), "nothing more to drop");
+    }
+
+    #[test]
+    fn bound_also_drops_silent_targets() {
+        let now = Instant::now();
+        let mut targets = HashMap::new();
+        let mut stale = AisTarget::new("vessels.stale".to_string());
+        stale.last_update = now - TARGET_TIMEOUT;
+        targets.insert(stale.context.clone(), stale);
+        assert!(bound(&mut targets, now));
+        assert!(targets.is_empty());
     }
 }

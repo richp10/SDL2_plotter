@@ -42,8 +42,9 @@ pub fn channels() -> (LiveFeed, LiveReceivers) {
 }
 
 /// The new value when the source changed it, else `None`. When the source
-/// has gone (its sender dropped), logs one ERROR naming `what` and returns
-/// `None` from then on: the app carries on with no live data.
+/// has gone (its sender dropped), returns its last value if it was not
+/// seen yet, logs one ERROR naming `what` and returns `None` from then on:
+/// the app carries on with no live data.
 pub fn take_change<T: Clone>(
     rx: &mut watch::Receiver<T>,
     closed_reported: &mut bool,
@@ -53,6 +54,10 @@ pub fn take_change<T: Clone>(
         Ok(true) => Some(rx.borrow_and_update().clone()),
         Ok(false) => None,
         Err(_) => {
+            // `has_changed` reports the close before a value not yet seen;
+            // the value itself is still there.
+            let unseen = rx.borrow().has_changed();
+            let last = unseen.then(|| rx.borrow_and_update().clone());
             if !*closed_reported {
                 *closed_reported = true;
                 crate::diagnostics::record(
@@ -62,7 +67,7 @@ pub fn take_change<T: Clone>(
                     ),
                 );
             }
-            None
+            last
         }
     }
 }
@@ -89,6 +94,20 @@ mod tests {
         assert!(take_change(&mut rx.boat, &mut reported, "bateau").is_some());
         assert!(take_change(&mut rx.boat, &mut reported, "bateau").is_none());
         assert!(!reported);
+    }
+
+    #[test]
+    fn the_last_value_before_the_source_stops_is_not_lost() {
+        let (feed, mut rx) = channels();
+        let mut boat = BoatState::default();
+        boat.latitude = 12.0;
+        feed.boat.send(boat).unwrap();
+        drop(feed);
+        let mut reported = false;
+        let last = take_change(&mut rx.boat, &mut reported, "bateau");
+        assert_eq!(last.map(|b| b.latitude), Some(12.0));
+        assert!(reported);
+        assert!(take_change(&mut rx.boat, &mut reported, "bateau").is_none());
     }
 
     #[test]

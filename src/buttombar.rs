@@ -30,7 +30,15 @@ impl<'ttf> Buttombar<'ttf> {
         })
     }
 
-    pub fn show(&mut self, canvas: &mut WindowCanvas, message1: &str, message2: &str) {
+    /// The bar with a message on the left, one in the centre (the chart
+    /// shown) and one on the right.
+    pub fn show(
+        &mut self,
+        canvas: &mut WindowCanvas,
+        message1: &str,
+        centre: &str,
+        message2: &str,
+    ) {
         canvas.set_draw_color(COLOR);
         canvas.set_viewport(Rect::new(
             0,
@@ -41,6 +49,16 @@ impl<'ttf> Buttombar<'ttf> {
         let r = sdl2::rect::Rect::new(0, 0, self.width, HEIGHT);
         canvas.fill_rect(r).unwrap();
         let _ = self.show_message_left(canvas, message1);
+        if !centre.is_empty() {
+            let _ = crate::screen::draw_text(
+                canvas,
+                &self.font,
+                centre,
+                Rect::new(0, 0, self.width, HEIGHT),
+                crate::screen::TextAlign::Centered,
+                Color::BLACK,
+            );
+        }
         let _ = self.show_message_right(canvas, message2);
         canvas.set_viewport(None);
     }

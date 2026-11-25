@@ -1,10 +1,27 @@
 use sdl2::render::Texture;
 
 use super::Plotter;
+
+/// The night overlay's opacity, over the chart and the photo button alike.
+/// Night mode is not built yet: nothing is dimmed.
+pub(super) const NIGHT_OPACITY: u8 = 0;
 use crate::screen::Screen;
 use crate::Mode;
 
 impl Plotter<'_> {
+    /// Mid-drag: the chart texture redrawn at the view from tiles already
+    /// loaded, nothing else. The full frame follows the release.
+    pub(super) fn redraw_chart_texture(&mut self, texture: &mut Texture) -> Result<(), String> {
+        let (pixels, texture_rect) = self.session.renderer.render_draft();
+        texture
+            .update(
+                Some(texture_rect),
+                &pixels,
+                (texture_rect.width() * 4) as usize,
+            )
+            .map_err(|error| error.to_string())
+    }
+
     pub(super) fn display(
         &mut self,
         screen: &mut Screen<'_>,
@@ -48,14 +65,42 @@ impl Plotter<'_> {
         if self.session.state.display_waypoint {
             shapes.extend(self.session.waypoints.shapes());
         }
+        if let Some(b) = self.session.highlight {
+            shapes.push(crate::overlay::Shape::Outline(vec![
+                (b.west, b.north),
+                (b.east, b.north),
+                (b.east, b.south),
+                (b.west, b.south),
+            ]));
+        }
         let draws = crate::overlay::plan(&self.session.renderer.view(), &shapes);
         screen.paint(&draws).map_err(anyhow::Error::msg)?;
 
-        screen.night_layer(0).map_err(anyhow::Error::msg)?;
-        self.display_buttombar(screen);
+        screen
+            .night_layer(NIGHT_OPACITY)
+            .map_err(anyhow::Error::msg)?;
+        let chart = self.session.chart_status();
+        self.display_buttombar(screen, &chart);
         if let Some(streamer) = &self.streamer {
             streamer
                 .capture(&screen.canvas)
+                .map_err(anyhow::Error::msg)?;
+        }
+        if let Some(button) = self.session.photo_button() {
+            let (centre, zoom) = self.session.view_centre_and_zoom();
+            let thumbnail = button.preview.as_ref().and_then(|preview| {
+                self.thumbnails.get(
+                    &preview.path,
+                    &preview.levels,
+                    centre,
+                    zoom,
+                    super::photo_button::SIZE,
+                )
+            });
+            self.photo_button
+                .show(&mut screen.canvas, &button, thumbnail.as_ref());
+            screen
+                .night_rect(self.photo_button.area(), NIGHT_OPACITY)
                 .map_err(anyhow::Error::msg)?;
         }
         self.topbar.show(&mut screen.canvas);
@@ -63,6 +108,10 @@ impl Plotter<'_> {
             self.confirm_dialog
                 .show(&mut screen.canvas, action)
                 .map_err(anyhow::Error::msg)?;
+        }
+        if self.chart_manager.is_open() {
+            self.chart_manager
+                .show(&mut screen.canvas, &self.session.catalogue);
         }
         screen.canvas.present();
 
@@ -78,12 +127,12 @@ impl Plotter<'_> {
         }
     }
 
-    pub(super) fn display_buttombar(&mut self, screen: &mut Screen<'_>) {
+    pub(super) fn display_buttombar(&mut self, screen: &mut Screen<'_>, chart: &str) {
         if let Some(pending) = &self.pending_waypoint {
             let message_left = format!("Nom du waypoint : {}", pending.name);
             let message_right = "Entrée : valider | Échap : annuler";
             self.buttombar
-                .show(&mut screen.canvas, &message_left, message_right);
+                .show(&mut screen.canvas, &message_left, "", message_right);
             return;
         }
 
@@ -119,6 +168,6 @@ impl Plotter<'_> {
             " / North Up"
         };
         self.buttombar
-            .show(&mut screen.canvas, &message_left, &message_right);
+            .show(&mut screen.canvas, &message_left, chart, &message_right);
     }
 }

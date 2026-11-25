@@ -7,6 +7,7 @@
 # Runtime data the application writes. Personal to each installation.
 /default/*.json
 /default/*.gpx
+/settings/
 /export/
 plotter.log
 plotter.log.1

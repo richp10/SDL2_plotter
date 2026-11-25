@@ -3,6 +3,7 @@ use chrono::Local;
 use super::confirm_dialog::ConfirmAction;
 use super::session::Session;
 use super::AppAction;
+use crate::catalogue::Role;
 use crate::Mode;
 
 impl Session {
@@ -18,6 +19,19 @@ impl Session {
                     Mode::Measurement => Mode::EditRoute,
                 };
             }
+            // The window belongs to the shell (`Plotter::execute_action`).
+            AppAction::OpenChartManager => {}
+            AppAction::ToggleLock => {
+                self.state.lock = match self.state.lock.take() {
+                    Some(_) => None,
+                    None => self.chart_choice().file.map(|f| f.file_name.clone()),
+                };
+            }
+            AppAction::NextPhoto => match self.next_photo_layer() {
+                Some(layer) => self.choose_layer(Some(layer)),
+                None if self.showing_photo() => self.choose_layer(self.state.chart_layer.clone()),
+                None => crate::diagnostics::record("INFO", "Aucune photo ici"),
+            },
             AppAction::ToggleFollow => {
                 self.state.follow = !self.state.follow;
                 self.center_map_on_visible_center();
@@ -105,30 +119,30 @@ impl Session {
                     }
                 }
             }
-            AppAction::ChangeChart(index) => {
-                match self.renderer.change_map(&self.charts_path[index]) {
-                    Ok(()) => {
-                        self.state.map = self.charts_path[index].clone();
-                        self.state.map_offset = (0, 0);
-                    }
-                    Err(error) => {
-                        crate::diagnostics::record(
-                            "ERROR",
-                            format!("Impossible d'ouvrir {}: {error}", self.charts_path[index]),
-                        );
-                    }
-                }
-            }
             AppAction::Pan(dx, dy) => {
-                if self.state.follow {
+                if self.following_boat() {
+                    // The boat stays the anchor; the drag is an offset from it.
                     self.state.map_offset.0 += dx;
                     self.state.map_offset.1 += dy;
                 } else if let Some(center) = self.renderer.view().panned_center(dx, dy) {
+                    // Nothing to be offset from: the saved position moves.
                     self.state.position = Some(center);
                     self.state.map_offset = (0, 0);
                 }
             }
             AppAction::ZoomIn => {
+                // As deep as the most detailed file here goes, no deeper.
+                if self.state.zoom < self.zoom_limit() {
+                    self.anchor_on_visible_center();
+                    self.zoom_to(self.state.zoom + 1);
+                }
+            }
+            AppAction::ZoomOut => {
+                // Below every file's first level the default chart shows.
+                if self.state.zoom > 0 {
+                    self.anchor_on_visible_center();
+                    self.zoom_to(self.state.zoom - 1);
+                }
                 self.state.zoom = self.renderer.zoom_increase();
                 self.state.map = self.renderer.current_map().to_string();
             }
@@ -177,6 +191,46 @@ impl Session {
         self.sync_view();
     }
 
+    /// True while the view is anchored on a live boat fix.
+    fn following_boat(&self) -> bool {
+        self.state.follow && super::session::valid_boat_position(&self.boat)
+    }
+
+    /// Unless the boat is the anchor, folds the pan offset into the saved
+    /// position so that whatever changes the zoom keeps the visible centre.
+    /// A pixel offset is a different distance at each zoom; a position is not.
+    fn anchor_on_visible_center(&mut self) {
+        if !self.following_boat() {
+            self.center_map_on_visible_center();
+        }
+    }
+
+    /// The navigator chose a layer: automatic switching stays in it, the
+    /// lock is released, and the layer is remembered for its role.
+    pub(super) fn choose_layer(&mut self, layer: Option<String>) {
+        self.state.lock = None;
+        let was_photo = self.on_photo_layer();
+        if let Some(layer) = &layer {
+            match self.catalogue.role_of(layer) {
+                Role::Chart => self.state.chart_layer = Some(layer.clone()),
+                Role::Satellite | Role::Map => self.state.imagery_layer = Some(layer.clone()),
+            }
+        }
+        self.state.layer = layer;
+        // A round of photos starts from a chart and keeps its order to the
+        // end, even though the last one used changes on every step.
+        if !self.on_photo_layer() {
+            self.photo_round = None;
+        } else if !was_photo {
+            self.photo_round = self.state.layer.clone();
+        }
+    }
+
+    fn zoom_to(&mut self, zoom: i32) {
+        self.renderer.zoom_to(zoom);
+        self.state.zoom = zoom;
+    }
+
     pub(super) fn center_map_on_visible_center(&mut self) {
         if let Some(position) = self.state.position {
             self.state.position = Some(
@@ -190,7 +244,9 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
-    use super::super::session::test_support::session;
+    use super::super::session::test_support::{
+        session, session_with_bounded_charts, session_with_charts,
+    };
     use super::*;
 
     #[test]
@@ -235,13 +291,135 @@ mod tests {
         fx.finish();
     }
 
+    fn valid_boat() -> crate::boat::BoatState {
+        crate::boat::BoatState {
+            longitude: 0.0,
+            latitude: 0.0,
+            position_valid: true,
+            speed_over_ground: 4.0,
+            course_over_ground: 0.0,
+        }
+    }
+
+    fn visible_centre(session: &Session) -> (f64, f64) {
+        session
+            .renderer
+            .view()
+            .to_lonlat(sdl2::rect::Point::new(256, 128))
+            .unwrap()
+    }
+
+    fn assert_close(actual: (f64, f64), expected: (f64, f64)) {
+        // Offsets are whole pixels; allow one pixel of rounding at zoom 2.
+        assert!(
+            (actual.0 - expected.0).abs() < 0.4 && (actual.1 - expected.1).abs() < 0.4,
+            "got {actual:?}, expected {expected:?}"
+        );
+    }
+
+    #[test]
+    fn panning_while_following_without_a_fix_moves_the_position_like_not_following() {
+        let mut fx = session(&[2]);
+        fx.session.state.follow = true;
+        fx.session.state.position = Some((0.0, 0.0));
+        fx.session.sync_view();
+        fx.session.execute_action(AppAction::Pan(100, 0));
+        assert_eq!(
+            fx.session.state.map_offset,
+            (0, 0),
+            "no boat to be offset from"
+        );
+        let (lon, _) = fx.session.state.position.unwrap();
+        assert!(lon < 0.0, "the saved position moved: {lon}");
+        fx.finish();
+    }
+
+    #[test]
+    fn zooming_keeps_the_visible_centre_when_the_view_was_dragged() {
+        let mut fx = session(&[2, 3]);
+        fx.session.state.follow = false;
+        fx.session.state.position = Some((0.0, 0.0));
+        fx.session.state.map_offset = (90, 30);
+        fx.session.sync_view();
+        let before = visible_centre(&fx.session);
+
+        fx.session.execute_action(AppAction::ZoomOut);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        fx.session.renderer.advance_zoom_animation();
+        fx.session.sync_view();
+
+        assert_close(visible_centre(&fx.session), before);
+        assert_eq!(fx.session.state.map_offset, (0, 0));
+        fx.finish();
+    }
+
     #[test]
     fn panning_while_following_drags_the_chart_by_an_offset() {
         let mut fx = session(&[2]);
         fx.session.state.follow = true;
+        fx.session.boat = valid_boat();
         fx.session.execute_action(AppAction::Pan(30, -10));
         fx.session.execute_action(AppAction::Pan(5, 5));
         assert_eq!(fx.session.state.map_offset, (35, -5));
+        fx.finish();
+    }
+
+    #[test]
+    fn a_chart_drag_applied_in_steps_ends_where_one_pan_would() {
+        // Not following; following; following course up (the boat turned).
+        for (follow, course_up) in [(false, false), (true, false), (true, true)] {
+            let run = |steps: &[(i32, i32)]| {
+                let mut fx = session(&[2]);
+                fx.session.state.follow = follow;
+                fx.session.state.course_up = course_up;
+                fx.session.state.position = Some((10.0, 20.0));
+                fx.session.boat = crate::boat::BoatState {
+                    longitude: 10.0,
+                    latitude: 20.0,
+                    course_over_ground: 0.7,
+                    ..valid_boat()
+                };
+                fx.session.sync_view();
+                for &total in steps {
+                    fx.session.drag_chart(total);
+                }
+                fx.session.end_chart_drag(*steps.last().unwrap());
+                let landed = (visible_centre(&fx.session), fx.session.state.map_offset);
+                fx.finish();
+                landed
+            };
+            let (stepped, stepped_offset) = run(&[(40, -10), (90, 5), (150, 30)]);
+            let (once, once_offset) = run(&[(150, 30)]);
+            assert!(
+                (stepped.0 - once.0).abs() < 1e-6 && (stepped.1 - once.1).abs() < 1e-6,
+                "follow {follow}, course up {course_up}: {stepped:?} vs {once:?}"
+            );
+            assert_eq!(stepped_offset, once_offset);
+        }
+    }
+
+    #[test]
+    fn the_dragged_texture_shows_only_the_part_of_the_drag_not_yet_applied() {
+        let mut fx = session(&[2]);
+        fx.session.state.follow = false;
+        fx.session.state.position = Some((0.0, 0.0));
+        fx.session.sync_view();
+        assert_eq!(fx.session.chart_drag_shift((25, 5)), (25, 5));
+        fx.session.drag_chart((40, -10));
+        assert_eq!(fx.session.chart_drag_shift((90, 5)), (50, 15));
+        fx.session.end_chart_drag((90, 5));
+        assert_eq!(
+            fx.session.chart_drag_shift((7, 7)),
+            (7, 7),
+            "the next drag starts afresh"
+        );
+        fx.session.drag_chart((30, 0));
+        fx.session.start_chart_drag();
+        assert_eq!(
+            fx.session.chart_drag_shift((4, 4)),
+            (4, 4),
+            "a drag whose release was lost leaves nothing behind"
+        );
         fx.finish();
     }
 
@@ -264,6 +442,7 @@ mod tests {
     fn turning_follow_off_folds_the_pan_offset_into_the_position() {
         let mut fx = session(&[2]);
         fx.session.state.follow = true;
+        fx.session.boat = valid_boat();
         fx.session.state.position = Some((0.0, 0.0));
         fx.session.execute_action(AppAction::Pan(100, 0));
         fx.session.execute_action(AppAction::FollowOff);
@@ -285,7 +464,7 @@ mod tests {
         fx.session.execute_action(AppAction::ZoomIn);
         assert_eq!(fx.session.state.zoom, 3);
         fx.session.execute_action(AppAction::ZoomIn);
-        assert_eq!(fx.session.state.zoom, 3, "top of the chart: no change");
+        assert_eq!(fx.session.state.zoom, 3, "top of the only chart: no change");
         fx.finish();
     }
 
@@ -312,21 +491,434 @@ mod tests {
     }
 
     #[test]
-    fn changing_chart_records_it_and_an_unreadable_chart_leaves_the_state_alone() {
-        let mut fx = session(&[2]);
-        let chart = fx.session.charts_path[0].clone();
-        fx.session.state.map_offset = (5, 5);
-        fx.session.execute_action(AppAction::ChangeChart(0));
-        assert_eq!(fx.session.state.map, chart);
-        assert_eq!(fx.session.state.map_offset, (0, 0));
+    fn choosing_a_layer_shows_its_best_file() {
+        let mut fx =
+            session_with_charts(&[("A_Navionics.mbtiles", &[2]), ("B_BingSat.mbtiles", &[2])]);
+        fx.session.choose_layer(Some("Bing satellite".into()));
+        fx.session.sync_view();
+        assert_eq!(fx.session.state.layer.as_deref(), Some("Bing satellite"));
+        assert!(fx.session.state.map.ends_with("B_BingSat.mbtiles"));
+        assert!(fx.session.renderer.path().ends_with("B_BingSat.mbtiles"));
+        fx.finish();
+    }
 
-        fx.session.state.map_offset = (7, 7);
-        fx.session.execute_action(AppAction::ChangeChart(1));
+    #[test]
+    fn zooming_in_switches_to_the_more_detailed_file_of_the_layer_and_back() {
+        let mut fx = session_with_charts(&[
+            ("Ocean_Navionics.mbtiles", &[1, 2, 3]),
+            ("Coast_Navionics.mbtiles", &[4, 5]),
+        ]);
+        fx.session.state.zoom = 3;
+        fx.session.renderer.zoom_to(3);
+        fx.session.sync_view();
+        assert!(fx
+            .session
+            .renderer
+            .path()
+            .ends_with("Ocean_Navionics.mbtiles"));
+
         assert_eq!(
-            fx.session.state.map, chart,
-            "the missing chart is not recorded"
+            fx.session.renderer.fill_paths(),
+            Vec::<&str>::new(),
+            "Coast starts deeper"
         );
-        assert_eq!(fx.session.state.map_offset, (7, 7));
+        fx.session.execute_action(AppAction::ZoomIn);
+        assert_eq!(fx.session.state.zoom, 4);
+        settle(&mut fx);
+        assert!(
+            fx.session
+                .renderer
+                .fill_paths()
+                .first()
+                .is_some_and(|p| p.ends_with("Ocean_Navionics.mbtiles")),
+            "the ocean chart fills in beyond the coast chart"
+        );
+        assert!(fx
+            .session
+            .renderer
+            .path()
+            .ends_with("Coast_Navionics.mbtiles"));
+        assert!(fx.session.state.map.ends_with("Coast_Navionics.mbtiles"));
+
+        fx.session.execute_action(AppAction::ZoomIn);
+        fx.session.execute_action(AppAction::ZoomIn);
+        assert_eq!(fx.session.state.zoom, 5, "no deeper than the deepest file");
+
+        for _ in 0..2 {
+            fx.session.execute_action(AppAction::ZoomOut);
+        }
+        assert_eq!(fx.session.state.zoom, 3);
+        settle(&mut fx);
+        assert!(fx
+            .session
+            .renderer
+            .path()
+            .ends_with("Ocean_Navionics.mbtiles"));
+        fx.finish();
+    }
+
+    #[test]
+    fn below_every_files_first_level_the_default_chart_shows_and_zooming_in_returns() {
+        let mut fx = session_with_charts(&[
+            ("World.mbtiles", &[0, 1]),
+            ("Ocean_Navionics.mbtiles", &[3, 4]),
+        ]);
+        fx.session.state.layer = Some("Navionics".into());
+        fx.session.state.zoom = 3;
+        fx.session.renderer.zoom_to(3);
+        settle(&mut fx);
+        assert!(fx
+            .session
+            .renderer
+            .path()
+            .ends_with("Ocean_Navionics.mbtiles"));
+        fx.session.execute_action(AppAction::ZoomOut);
+        settle(&mut fx);
+        assert!(
+            fx.session.renderer.path().ends_with("World.mbtiles"),
+            "World is a chart in the default layer, the fallback"
+        );
+        fx.session.execute_action(AppAction::ZoomIn);
+        settle(&mut fx);
+        assert!(fx
+            .session
+            .renderer
+            .path()
+            .ends_with("Ocean_Navionics.mbtiles"));
+        fx.finish();
+    }
+
+    /// An ocean chart at levels 1-3 and a coast chart at 4-5, one layer.
+    /// Lets the zoom animation finish and syncs, as the loop would.
+    fn settle(fx: &mut super::super::session::test_support::Fixture) {
+        std::thread::sleep(std::time::Duration::from_millis(260));
+        fx.session.renderer.advance_zoom_animation();
+        fx.session.sync_view();
+    }
+
+    fn ocean_and_coast() -> super::super::session::test_support::Fixture {
+        let mut fx = session_with_charts(&[
+            ("Ocean_Navionics.mbtiles", &[1, 2, 3]),
+            ("Coast_Navionics.mbtiles", &[4, 5]),
+        ]);
+        fx.session.state.zoom = 3;
+        fx.session.renderer.zoom_to(3);
+        fx.session.sync_view();
+        fx
+    }
+
+    /// Regression: the file must follow the zoom being drawn, not the zoom
+    /// reached, or a wheel burst opens a deep file while the drawing is
+    /// still levels above it (the 57 s frame).
+    #[test]
+    fn mid_animation_the_file_follows_the_zoom_being_drawn() {
+        let mut fx = ocean_and_coast();
+        fx.session.execute_action(AppAction::ZoomIn);
+        assert_eq!(fx.session.state.zoom, 4);
+        assert!(
+            fx.session
+                .renderer
+                .path()
+                .ends_with("Ocean_Navionics.mbtiles"),
+            "still drawn at zoom 3: the coast chart (from 4) waits"
+        );
+        settle(&mut fx);
+        assert!(fx
+            .session
+            .renderer
+            .path()
+            .ends_with("Coast_Navionics.mbtiles"));
+        fx.finish();
+    }
+
+    #[test]
+    fn a_locked_chart_stays_through_zooming_and_says_what_it_hides() {
+        let mut fx = ocean_and_coast();
+        fx.session.execute_action(AppAction::ToggleLock);
+        assert_eq!(
+            fx.session.state.lock.as_deref(),
+            Some("Ocean_Navionics.mbtiles")
+        );
+
+        fx.session.execute_action(AppAction::ZoomIn);
+        assert_eq!(fx.session.state.zoom, 4);
+        settle(&mut fx);
+        assert!(fx
+            .session
+            .renderer
+            .path()
+            .ends_with("Ocean_Navionics.mbtiles"));
+        let status = fx.session.chart_status();
+        assert!(
+            status.starts_with("Navionics: Ocean_Navionics"),
+            "{}",
+            status
+        );
+        assert!(status.contains("OVERSCALE ×2"), "{}", status);
+        assert!(
+            status.contains("More detail: Coast_Navionics"),
+            "{}",
+            status
+        );
+        assert!(status.contains("LOCKED"), "{}", status);
+        assert!(!fx.session.showing_photo());
+
+        fx.session.execute_action(AppAction::ToggleLock);
+        assert_eq!(fx.session.state.lock, None);
+        assert!(fx
+            .session
+            .renderer
+            .path()
+            .ends_with("Coast_Navionics.mbtiles"));
+        let status = fx.session.chart_status();
+        assert!(!status.contains("LOCKED") && !status.contains("OVERSCALE"));
+        fx.finish();
+    }
+
+    #[test]
+    fn choosing_a_layer_releases_the_lock() {
+        let mut fx = ocean_and_coast();
+        fx.session.execute_action(AppAction::ToggleLock);
+        fx.session.choose_layer(Some("Navionics".into()));
+        assert_eq!(fx.session.state.lock, None);
+        fx.finish();
+    }
+
+    #[test]
+    fn a_photo_is_switched_on_and_off_by_hand() {
+        let mut fx = session_with_charts(&[
+            ("Ocean_Navionics.mbtiles", &[1, 2, 3]),
+            ("Isle_BingSat.mbtiles", &[1, 2, 3]),
+        ]);
+        fx.session.state.layer = Some("Navionics".into());
+        fx.session.sync_view();
+        assert!(!fx.session.showing_photo());
+
+        fx.session.execute_action(AppAction::NextPhoto);
+        assert_eq!(fx.session.state.layer.as_deref(), Some("Bing satellite"));
+        assert!(fx.session.renderer.path().ends_with("Isle_BingSat.mbtiles"));
+        let status = fx.session.chart_status();
+        assert!(fx.session.showing_photo());
+        assert!(status.ends_with(" · NO DEPTHS"), "{status}");
+        assert!(status.starts_with("Bing satellite: "), "{}", status);
+
+        fx.session.execute_action(AppAction::NextPhoto);
+        assert_eq!(fx.session.state.layer.as_deref(), Some("Navionics"));
+        assert!(fx
+            .session
+            .renderer
+            .path()
+            .ends_with("Ocean_Navionics.mbtiles"));
+        assert!(!fx.session.showing_photo());
+        fx.finish();
+    }
+
+    #[test]
+    fn a_chart_says_nothing_about_depths_and_no_chart_here_is_the_overview_map() {
+        let mut fx =
+            session_with_bounded_charts(&[("Isle_Navionics.mbtiles", &[1, 2, 3], "0,0,40,40")]);
+        fx.session.state.follow = false;
+        fx.session.state.position = Some((20.0, 20.0));
+        fx.session.sync_view();
+        assert!(!fx.session.chart_status().contains("NO DEPTHS"));
+        fx.session.state.position = Some((-100.0, 20.0));
+        fx.session.sync_view();
+        assert_eq!(fx.session.chart_status(), "Overview map");
+        fx.finish();
+    }
+
+    #[test]
+    fn a_map_comes_after_the_satellites_and_says_no_depths() {
+        let mut fx = session_with_bounded_charts(&[
+            ("Ocean_Navionics.mbtiles", &[1, 2, 3], "-180,-85,180,85"),
+            ("Isle_OSM.mbtiles", &[1, 2, 3], "0,0,40,40"),
+            ("Isle_BingSat.mbtiles", &[1, 2, 3], "0,0,40,40"),
+        ]);
+        fx.session.state.follow = false;
+        fx.session.state.position = Some((20.0, 20.0));
+        fx.session.state.layer = Some("Navionics".into());
+        fx.session.state.chart_layer = Some("Navionics".into());
+        fx.session.state.zoom = 3;
+        fx.session.renderer.zoom_to(3);
+        settle(&mut fx);
+
+        fx.session.execute_action(AppAction::NextPhoto);
+        assert!(fx.session.renderer.path().ends_with("Isle_BingSat.mbtiles"));
+        let button = fx.session.photo_button().unwrap();
+        assert!(ends(&button.preview, "Isle_OSM.mbtiles"));
+        assert_eq!(button.preview_kind, Role::Map);
+
+        fx.session.execute_action(AppAction::NextPhoto);
+        assert!(fx.session.renderer.path().ends_with("Isle_OSM.mbtiles"));
+        assert_eq!(fx.session.photo_button().unwrap().position, Some((2, 2)));
+        let status = fx.session.chart_status();
+        assert!(status.starts_with("OpenStreetMap: "), "{status}");
+        assert!(status.ends_with(" · NO DEPTHS"), "{status}");
+
+        fx.session.execute_action(AppAction::NextPhoto);
+        assert_eq!(fx.session.state.layer.as_deref(), Some("Navionics"));
+        fx.finish();
+    }
+
+    #[test]
+    fn without_imagery_files_next_photo_changes_nothing() {
+        let mut fx = ocean_and_coast();
+        fx.session.execute_action(AppAction::NextPhoto);
+        assert_eq!(fx.session.state.layer.as_deref(), Some("Navionics"));
+        fx.finish();
+    }
+
+    /// A world ocean chart and two photos of one island (0..40 E, 0..40 N),
+    /// all at levels 1-3, viewed over the island at zoom 3 on the chart.
+    fn island() -> super::super::session::test_support::Fixture {
+        let mut fx = session_with_bounded_charts(&[
+            ("Ocean_Navionics.mbtiles", &[1, 2, 3], "-180,-85,180,85"),
+            ("Isle_BingSat.mbtiles", &[1, 2, 3], "0,0,40,40"),
+            ("Isle_GoogleSat.mbtiles", &[1, 2, 3], "0,0,40,40"),
+        ]);
+        fx.session.state.follow = false;
+        fx.session.state.position = Some((20.0, 20.0));
+        fx.session.state.layer = Some("Navionics".into());
+        fx.session.state.chart_layer = Some("Navionics".into());
+        fx.session.state.zoom = 3;
+        fx.session.renderer.zoom_to(3);
+        settle(&mut fx);
+        fx
+    }
+
+    fn ends(preview: &Option<super::super::session::Preview>, name: &str) -> bool {
+        preview.as_ref().is_some_and(|p| p.path.ends_with(name))
+    }
+
+    #[test]
+    fn zooming_out_past_a_photos_first_level_keeps_the_photo_layer() {
+        let mut fx = island();
+        fx.session.execute_action(AppAction::NextPhoto);
+        fx.session.state.zoom = 0;
+        fx.session.renderer.zoom_to(0);
+        settle(&mut fx);
+        assert_eq!(fx.session.state.layer.as_deref(), Some("Bing satellite"));
+        assert!(!fx.session.renderer.path().ends_with("Isle_BingSat.mbtiles"));
+        fx.session.state.zoom = 3;
+        fx.session.renderer.zoom_to(3);
+        settle(&mut fx);
+        assert!(fx.session.renderer.path().ends_with("Isle_BingSat.mbtiles"));
+        fx.finish();
+    }
+
+    #[test]
+    fn next_photo_steps_through_the_sources_here_and_back_to_the_chart() {
+        let mut fx = island();
+        let button = fx.session.photo_button().expect("photos here");
+        assert_eq!(button.position, None);
+        assert!(ends(&button.preview, "Isle_BingSat.mbtiles"));
+        assert_eq!(button.preview_kind, Role::Satellite);
+
+        fx.session.execute_action(AppAction::NextPhoto);
+        assert!(fx.session.renderer.path().ends_with("Isle_BingSat.mbtiles"));
+        let button = fx.session.photo_button().unwrap();
+        assert_eq!(button.position, Some((1, 2)));
+        assert!(ends(&button.preview, "Isle_GoogleSat.mbtiles"));
+
+        fx.session.execute_action(AppAction::NextPhoto);
+        assert!(fx
+            .session
+            .renderer
+            .path()
+            .ends_with("Isle_GoogleSat.mbtiles"));
+        let button = fx.session.photo_button().unwrap();
+        assert_eq!(button.position, Some((2, 2)));
+        assert!(ends(&button.preview, "Ocean_Navionics.mbtiles"));
+        assert_eq!(button.preview_kind, Role::Chart);
+
+        fx.session.execute_action(AppAction::NextPhoto);
+        assert_eq!(fx.session.state.layer.as_deref(), Some("Navionics"));
+        assert!(fx
+            .session
+            .renderer
+            .path()
+            .ends_with("Ocean_Navionics.mbtiles"));
+        fx.finish();
+    }
+
+    #[test]
+    fn the_last_photo_used_comes_first() {
+        let mut fx = island();
+        fx.session.execute_action(AppAction::NextPhoto);
+        fx.session.execute_action(AppAction::NextPhoto);
+        fx.session.execute_action(AppAction::NextPhoto);
+        let button = fx.session.photo_button().unwrap();
+        assert!(ends(&button.preview, "Isle_GoogleSat.mbtiles"));
+        fx.finish();
+    }
+
+    #[test]
+    fn no_button_and_no_change_where_no_photo_exists() {
+        let mut fx = island();
+        fx.session.state.position = Some((-100.0, 20.0));
+        fx.session.sync_view();
+        assert!(fx.session.photo_button().is_none());
+        fx.session.execute_action(AppAction::NextPhoto);
+        assert_eq!(fx.session.state.layer.as_deref(), Some("Navionics"));
+        fx.finish();
+    }
+
+    #[test]
+    fn leaving_the_photos_coverage_drops_back_to_the_chart_for_good() {
+        let mut fx = island();
+        fx.session.execute_action(AppAction::NextPhoto);
+        assert!(fx.session.renderer.path().ends_with("Isle_BingSat.mbtiles"));
+
+        fx.session.state.position = Some((-100.0, 20.0));
+        fx.session.sync_view();
+        assert_eq!(fx.session.state.layer.as_deref(), Some("Navionics"));
+
+        fx.session.state.position = Some((20.0, 20.0));
+        fx.session.sync_view();
+        assert_eq!(fx.session.state.layer.as_deref(), Some("Navionics"));
+        assert!(fx
+            .session
+            .renderer
+            .path()
+            .ends_with("Ocean_Navionics.mbtiles"));
+        fx.finish();
+    }
+
+    #[test]
+    fn a_tap_releases_the_lock() {
+        let mut fx = island();
+        fx.session.execute_action(AppAction::ToggleLock);
+        assert!(fx.session.state.lock.is_some());
+        fx.session.execute_action(AppAction::NextPhoto);
+        assert_eq!(fx.session.state.lock, None);
+        assert!(fx.session.renderer.path().ends_with("Isle_BingSat.mbtiles"));
+        fx.finish();
+    }
+
+    #[test]
+    fn a_chart_that_fails_to_open_is_logged_once_and_the_current_one_stays() {
+        let mut fx = session_with_charts(&[
+            ("Ocean_Navionics.mbtiles", &[1, 2]),
+            ("Coast_Navionics.mbtiles", &[3]),
+        ]);
+        fx.session.state.zoom = 2;
+        fx.session.renderer.zoom_to(2);
+        fx.session.sync_view();
+        std::fs::remove_file(fx.dir.join("charts/Coast_Navionics.mbtiles")).unwrap();
+
+        fx.session.execute_action(AppAction::ZoomIn);
+        assert_eq!(fx.session.state.zoom, 3);
+        assert!(fx
+            .session
+            .renderer
+            .path()
+            .ends_with("Ocean_Navionics.mbtiles"));
+        fx.session.sync_view();
+        assert!(fx
+            .session
+            .renderer
+            .path()
+            .ends_with("Ocean_Navionics.mbtiles"));
         fx.finish();
     }
 

@@ -191,6 +191,7 @@ impl<'ttf> Screen<'ttf> {
                 Draw::Waypoint(at) => self.show_waypoint(*at)?,
                 Draw::Mark(at) => self.show_mark(at.x, at.y)?,
                 Draw::Line(a, b) => self.show_line(*a, *b)?,
+                Draw::Outline(points) => self.show_outline(points)?,
                 Draw::Text { at, text } => self.show_text(text, at.x, at.y)?,
             }
         }
@@ -395,6 +396,18 @@ impl<'ttf> Screen<'ttf> {
         self.canvas.draw_lines(pts)
     }
 
+    /// A closed outline, two pixels wide so it shows on any chart. Each
+    /// side goes through `show_line`, which clips before any `i16`.
+    fn show_outline(&mut self, points: &[Point]) -> Result<(), String> {
+        let color = configured_color(self.appearance.coverage_color);
+        for (a, b) in points.iter().zip(points.iter().cycle().skip(1)) {
+            for offset in [Point::new(0, 0), Point::new(1, 1)] {
+                self.show_line_in(*a + offset, *b + offset, color)?;
+            }
+        }
+        Ok(())
+    }
+
     fn show_mark(&mut self, x: i32, y: i32) -> Result<(), String> {
         if !self.clip().contains(f64::from(x), f64::from(y)) {
             return Ok(());
@@ -410,11 +423,14 @@ impl<'ttf> Screen<'ttf> {
     }
 
     fn show_line(&mut self, a: Point, b: Point) -> Result<(), String> {
+        self.show_line_in(a, b, configured_color(self.appearance.line_color))
+    }
+
+    fn show_line_in(&mut self, a: Point, b: Point, color: Color) -> Result<(), String> {
         let Some(((ax, ay), (bx, by))) = self.clip().segment_i16(a, b) else {
             return Ok(());
         };
-        self.canvas
-            .set_draw_color(configured_color(self.appearance.line_color));
+        self.canvas.set_draw_color(color);
         self.canvas.draw_line(
             Point::new(i32::from(ax), i32::from(ay)),
             Point::new(i32::from(bx), i32::from(by)),
@@ -430,6 +446,16 @@ impl<'ttf> Screen<'ttf> {
         let ecran_total = Rect::new(0, 0, self.screen_width, self.screen_height);
         self.canvas.fill_rect(ecran_total)?;
         Ok(())
+    }
+
+    /// The night overlay over one area only: chrome drawn after the
+    /// chart's overlay that must dim the same.
+    pub fn night_rect(&mut self, area: Rect, opacity: u8) -> Result<(), String> {
+        self.canvas.set_blend_mode(BlendMode::Blend);
+        let [red, green, blue, _] = self.appearance.night_overlay_color;
+        self.canvas
+            .set_draw_color(Color::RGBA(red, green, blue, opacity));
+        self.canvas.fill_rect(area)
     }
 
     fn show_text(&mut self, texte: &str, x: i32, y: i32) -> Result<(), String> {

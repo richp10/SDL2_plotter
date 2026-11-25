@@ -14,7 +14,7 @@ const BORDER_COLOR: Color = Color::RGB(120, 120, 120);
 const ITEM_WIDTH: u32 = 96; // largeur d'un titre dans la barre
 const MENU_WIDTH: u32 = 170; // largeur d'un menu déroulant
 const ENTRY_HEIGHT: u32 = 28; // hauteur d'une entrée du menu
-const HEIGHT: u32 = 32; // hauteur de la barre
+pub const HEIGHT: u32 = 32; // hauteur de la barre
 
 struct Entry {
     label: String,
@@ -49,15 +49,14 @@ pub struct Topbar<'ttf> {
 }
 
 impl MenuBar {
-    /// The menu bar. `chart_names` are the Charts entries, in the order of
-    /// `Session::charts_path`, so entry `i` is `ChangeChart(i)`; a chart
-    /// whose name matches another entry's label is still a chart.
-    pub fn new(chart_names: Vec<String>) -> Self {
-        let charts = chart_names
-            .into_iter()
-            .enumerate()
-            .map(|(index, name)| entry(&name, AppAction::ChangeChart(index)))
-            .collect();
+    /// The menu bar. Layers are chosen in the chart manager and photos
+    /// with the photo button, so the Charts menu holds the manager and the
+    /// lock only.
+    pub fn new() -> Self {
+        let charts = vec![
+            entry("Chart manager...", AppAction::OpenChartManager),
+            entry("Lock chart", AppAction::ToggleLock),
+        ];
         let menus = vec![
             Menu {
                 title: "App",
@@ -220,14 +219,13 @@ impl<'ttf> Topbar<'ttf> {
     pub fn new(
         ttf_context: &'ttf Sdl2TtfContext,
         width: u32,
-        names: Vec<String>,
         font_config: &FontConfig,
     ) -> Result<Self, String> {
         let font = ttf_context.load_font(&font_config.file, font_config.ui_size)?;
         Ok(Topbar {
             font,
             width,
-            bar: MenuBar::new(names),
+            bar: MenuBar::new(),
         })
     }
 
@@ -312,7 +310,7 @@ mod tests {
     use super::*;
 
     fn bar() -> MenuBar {
-        MenuBar::new(vec!["Atlantic".to_string(), "Channel".to_string()])
+        MenuBar::new()
     }
 
     // Titles sit at x = index * ITEM_WIDTH; "Route" is the third menu.
@@ -340,13 +338,19 @@ mod tests {
     }
 
     #[test]
-    fn chart_names_fill_the_charts_menu() {
+    fn the_charts_menu_is_the_chart_manager_then_the_lock() {
         let mut bar = bar();
         bar.event(ITEM_WIDTH + 10, 10);
         assert_eq!(
-            bar.event(ITEM_WIDTH + 10, HEIGHT + ENTRY_HEIGHT + 5),
-            Some(AppAction::ChangeChart(1))
+            bar.event(ITEM_WIDTH + 10, HEIGHT + 5),
+            Some(AppAction::OpenChartManager)
         );
+        bar.event(ITEM_WIDTH + 10, 10);
+        assert_eq!(
+            bar.event(ITEM_WIDTH + 10, HEIGHT + ENTRY_HEIGHT + 5),
+            Some(AppAction::ToggleLock)
+        );
+        assert_eq!(bar.menus[1].entries.len(), 2);
     }
 
     #[test]
@@ -373,21 +377,6 @@ mod tests {
         assert_eq!(
             bar.event(3 * ITEM_WIDTH + 10, first_entry_y),
             Some(AppAction::ClearTrack)
-        );
-    }
-
-    #[test]
-    fn a_chart_named_like_a_menu_entry_still_switches_chart() {
-        let mut bar = MenuBar::new(vec!["Exit".to_string(), "On".to_string()]);
-        bar.event(ITEM_WIDTH + 10, 10); // open Charts
-        assert_eq!(
-            bar.event(ITEM_WIDTH + 10, HEIGHT + 5),
-            Some(AppAction::ChangeChart(0))
-        );
-        bar.event(ITEM_WIDTH + 10, 10);
-        assert_eq!(
-            bar.event(ITEM_WIDTH + 10, HEIGHT + ENTRY_HEIGHT + 5),
-            Some(AppAction::ChangeChart(1))
         );
     }
 

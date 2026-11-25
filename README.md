@@ -138,6 +138,7 @@ route_width = 3
 route_color = [255, 0, 0, 255]
 track_color = [255, 0, 0, 255]
 waypoint_color = [220, 30, 30, 255]
+coverage_color = [255, 140, 0, 255]
 ```
 
 ### Rendering

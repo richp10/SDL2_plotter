@@ -10,6 +10,7 @@ mod ais;
 mod app;
 mod boat;
 mod buttombar;
+mod catalogue;
 mod config;
 mod diagnostics;
 mod geo_data;

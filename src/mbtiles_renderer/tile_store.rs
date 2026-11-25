@@ -21,7 +21,7 @@ pub(super) struct Tile {
 pub(super) type CachedTile = Option<Arc<Tile>>;
 
 /// `(zoom, column, row)` in XYZ order; the TMS flip happens at the SQL.
-pub(super) type TileKey = (i32, i64, i64);
+pub(crate) type TileKey = (i32, i64, i64);
 
 /// Decodes tiles on its own thread with its own read-only connection, so a
 /// frame is never held up by PNG decoding. Dropping it joins the thread.
@@ -96,7 +96,7 @@ impl Drop for TileLoader {
 
 /// Raw tile bytes, or `None` when the chart has no tile there. MBTiles rows
 /// are TMS (row 0 at the south), so the XYZ row is flipped.
-fn fetch_tile_bytes(
+pub(super) fn fetch_tile_bytes(
     conn: &Connection,
     z: i32,
     x: i64,
@@ -178,6 +178,24 @@ impl TileStore {
     /// Opens the chart read-only and reads its metadata and zoom levels.
     /// `cache_size` is the number of decoded tiles kept (at least one).
     pub(super) fn open(mbtiles_path: &str, cache_size: usize) -> rusqlite::Result<Self> {
+        Self::open_with(mbtiles_path, cache_size, None)
+    }
+
+    /// Opens the chart with its levels as the catalogue already read them,
+    /// so nothing scans the tiles table (seconds on a big file).
+    pub(super) fn open_known(
+        mbtiles_path: &str,
+        cache_size: usize,
+        levels: &[i32],
+    ) -> rusqlite::Result<Self> {
+        Self::open_with(mbtiles_path, cache_size, Some(levels))
+    }
+
+    fn open_with(
+        mbtiles_path: &str,
+        cache_size: usize,
+        levels: Option<&[i32]>,
+    ) -> rusqlite::Result<Self> {
         let conn = Connection::open_with_flags(
             mbtiles_path,
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
@@ -197,8 +215,10 @@ impl TileStore {
 
         let parsed_min = metadata.get("minzoom").and_then(|v| v.parse::<i32>().ok());
         let parsed_max = metadata.get("maxzoom").and_then(|v| v.parse::<i32>().ok());
-        let (min_zoom, max_zoom) = match (parsed_min, parsed_max) {
-            (Some(min), Some(max)) => (min, max),
+        let known = levels.and_then(|l| Some((*l.first()?, *l.last()?)));
+        let (min_zoom, max_zoom) = match (parsed_min, parsed_max, known) {
+            (Some(min), Some(max), _) => (min, max),
+            (_, _, Some(range)) => range,
             _ => {
                 let (min_row, max_row): (Option<i64>, Option<i64>) = conn.query_row(
                     "SELECT MIN(zoom_level), MAX(zoom_level) FROM tiles",
@@ -209,10 +229,11 @@ impl TileStore {
             }
         };
 
-        let mut available_zooms = Vec::new();
-        if let Ok(mut stmt) =
-            conn.prepare("SELECT DISTINCT zoom_level FROM tiles ORDER BY zoom_level")
-        {
+        let mut available_zooms = levels.map(<[i32]>::to_vec).unwrap_or_default();
+        if let (None, Ok(mut stmt)) = (
+            levels,
+            conn.prepare("SELECT DISTINCT zoom_level FROM tiles ORDER BY zoom_level"),
+        ) {
             if let Ok(rows) = stmt.query_map([], |row| row.get::<_, i32>(0)) {
                 available_zooms = rows.flatten().collect();
             }
@@ -330,6 +351,16 @@ impl TileStore {
         tile
     }
 
+    /// The tile if it is already decoded, else asked of the loader and
+    /// `None`: nothing is read or decoded on this thread.
+    pub(super) fn tile_if_loaded(&mut self, key: TileKey) -> Option<CachedTile> {
+        if let Some(cached) = self.cache.get(&key) {
+            return Some(cached.clone());
+        }
+        self.loader.request(key);
+        None
+    }
+
     /// True when the tile is cached or already on its way from the loader.
     pub(super) fn is_known(&self, key: &TileKey) -> bool {
         self.cache.contains(key) || self.loader.is_pending(key)
@@ -372,6 +403,19 @@ pub(crate) mod test_support {
     use image::{Rgba, RgbaImage};
     use rusqlite::Connection;
 
+    /// A name no other test of this run uses: the process id, the clock and
+    /// a counter, because tests run in parallel and two of them can read the
+    /// same clock value (Windows counts in 100 ns steps).
+    pub(crate) fn unique_name() -> String {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let count = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        format!("{}-{nanos}-{count}", std::process::id())
+    }
+
     /// Writes a small raster MBTiles file holding every tile of the given
     /// zoom levels, each a solid-colour 256x256 PNG.
     pub(crate) fn fixture_chart(zooms: &[i32]) -> std::path::PathBuf {
@@ -379,14 +423,7 @@ pub(crate) mod test_support {
     }
 
     pub(crate) fn fixture_chart_with(zooms: &[i32], colour: Rgba<u8>) -> std::path::PathBuf {
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "plotter-fixture-{}-{unique}.mbtiles",
-            std::process::id()
-        ));
+        let path = std::env::temp_dir().join(format!("plotter-fixture-{}.mbtiles", unique_name()));
         let mut png = Vec::new();
         RgbaImage::from_pixel(TILE_SIZE, TILE_SIZE, colour)
             .write_to(
@@ -395,12 +432,16 @@ pub(crate) mod test_support {
             )
             .unwrap();
 
-        let conn = Connection::open(&path).unwrap();
+        let mut conn = Connection::open(&path).unwrap();
         conn.execute_batch(
             "CREATE TABLE metadata (name TEXT, value TEXT);
              CREATE TABLE tiles (zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_data BLOB);",
         )
         .unwrap();
+        // One transaction: a commit per tile costs a sync each on Windows,
+        // a minute for a zoom-5 fixture.
+        let conn_tx = conn.transaction().unwrap();
+        let conn = &conn_tx;
         for &z in zooms {
             let n = 1i64 << z;
             for x in 0..n {
@@ -410,6 +451,7 @@ pub(crate) mod test_support {
                 }
             }
         }
+        conn_tx.commit().unwrap();
         path
     }
 }

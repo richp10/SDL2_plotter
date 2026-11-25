@@ -9,6 +9,13 @@ pub enum AppAction {
     SetMode(Mode),
     CycleMode,
     ToggleFollow,
+    /// Freeze the chart file shown against automatic switching, or release.
+    ToggleLock,
+    /// One step of chart, each photo source available here, chart again.
+    NextPhoto,
+    /// From a photo straight back to the chosen chart layer.
+    /// Open the chart manager window (the shell's, not the session's).
+    OpenChartManager,
     FollowOn,
     FollowOff,
     ToggleGoto,
@@ -21,7 +28,6 @@ pub enum AppAction {
     ExportTrackGpx,
     ClearWaypoints,
     ExportWaypointsGpx,
-    ChangeChart(usize),
     Pan(i32, i32),
     ZoomIn,
     ZoomOut,
@@ -42,6 +48,9 @@ impl AppAction {
             Self::SetMode(_) => "SetMode",
             Self::CycleMode => "CycleMode",
             Self::ToggleFollow => "ToggleFollow",
+            Self::ToggleLock => "ToggleLock",
+            Self::NextPhoto => "NextPhoto",
+            Self::OpenChartManager => "OpenChartManager",
             Self::FollowOn => "On",
             Self::FollowOff => "Off",
             Self::ToggleGoto => "ToggleGoto",
@@ -54,7 +63,6 @@ impl AppAction {
             Self::ExportTrackGpx => "ExportTrackGpx",
             Self::ClearWaypoints => "ClearWaypoints",
             Self::ExportWaypointsGpx => "ExportWaypointsGpx",
-            Self::ChangeChart(_) => "ChangeChart",
             Self::Pan(_, _) => "Pan",
             Self::ZoomIn => "ZoomIn",
             Self::ZoomOut => "ZoomOut",

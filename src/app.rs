@@ -1,4 +1,5 @@
 use crate::boat::BoatState;
+use crate::catalogue::Catalogue;
 use crate::{
     ais, buttombar, config::AppConfig, mbtiles_renderer, route, screen, signalk, state, topbar,
     track, waypoints,
@@ -11,9 +12,11 @@ use std::time::{Duration, Instant};
 use tokio::sync::watch;
 
 mod actions;
+mod chart_manager;
 mod confirm_dialog;
 mod gesture;
 mod input;
+mod photo_button;
 mod render;
 mod session;
 mod tools;
@@ -27,6 +30,8 @@ use tools::Target;
 
 const STATE_FILE: &str = "default/state.json";
 const DEFAULT_TRACK_PATH: &str = "default/track.json";
+/// What the user decided about each chart file; see `catalogue`.
+const CHART_SETTINGS: &str = "settings/charts.json";
 const LONG_CLICK: Duration = Duration::from_millis(500);
 const MOVE_TOLERANCE: i32 = 5;
 const DIAGNOSTICS_INTERVAL: Duration = Duration::from_secs(10);
@@ -52,9 +57,15 @@ pub(crate) struct Plotter<'ttf> {
     gestures: GestureRecognizer,
     /// What a drag in progress grabbed, decided once at its start.
     grab: Option<Target>,
+    /// When the chart was last redrawn during the drag under way.
+    drag_redrawn: Instant,
     topbar: topbar::Topbar<'ttf>,
     buttombar: buttombar::Buttombar<'ttf>,
     confirm_dialog: confirm_dialog::ConfirmDialog<'ttf>,
+    chart_manager: chart_manager::ChartManager<'ttf>,
+    /// The photo button and the thumbnails it shows.
+    photo_button: photo_button::PhotoButtonView<'ttf>,
+    thumbnails: mbtiles_renderer::Thumbnails,
     pending_waypoint: Option<PendingWaypoint>,
     text_input: sdl2::keyboard::TextInputUtil,
     mouse: Mouse,
@@ -88,35 +99,30 @@ impl<'ttf> Plotter<'ttf> {
             config.signalk.clone(),
         ));
 
-        let charts_path = state::list_maps(&config.charts.directory);
-        let charts_name: Vec<String> = charts_path
-            .iter()
-            .map(|path| {
-                std::path::Path::new(path)
-                    .file_stem()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or(path)
-                    .to_string()
-            })
-            .collect();
+        let catalogue = Catalogue::load(
+            Path::new(&config.charts.directory),
+            Path::new(CHART_SETTINGS),
+        );
+        for line in catalogue.describe() {
+            crate::diagnostics::record("INFO", line);
+        }
         let state = state::State::new(STATE_FILE, config.charts.default.clone())
             .map_err(anyhow::Error::msg)?;
-        let renderer = MBTilesRenderer::new(
-            &state.map,
-            state.zoom,
-            width,
-            height,
-            &config.rendering,
-            &config.charts.default,
-        )?;
+        let renderer =
+            MBTilesRenderer::new(&state.map, state.zoom, width, height, &config.rendering)?;
 
-        let topbar = topbar::Topbar::new(ttf_context, width, charts_name.clone(), &config.fonts)
-            .map_err(anyhow::Error::msg)?;
+        let topbar =
+            topbar::Topbar::new(ttf_context, width, &config.fonts).map_err(anyhow::Error::msg)?;
         let buttombar = buttombar::Buttombar::new(ttf_context, width, height, &config.fonts)
             .expect("failed to build buttombar bar");
         let confirm_dialog =
             confirm_dialog::ConfirmDialog::new(ttf_context, width, height, &config.fonts)
                 .map_err(anyhow::Error::msg)?;
+        let chart_manager =
+            chart_manager::ChartManager::new(ttf_context, width, height, &config.fonts)
+                .map_err(anyhow::Error::msg)?;
+        let photo_button = photo_button::PhotoButtonView::new(ttf_context, height, &config.fonts)
+            .map_err(anyhow::Error::msg)?;
         let route = route::Route::new();
         let track = track::Track::with_checkpoint_interval(
             Path::new(DEFAULT_TRACK_PATH),
@@ -139,7 +145,8 @@ impl<'ttf> Plotter<'ttf> {
             route,
             track,
             waypoints,
-            charts_path,
+            catalogue,
+            config.charts.default.clone(),
             PathBuf::from("export"),
         );
 
@@ -148,9 +155,13 @@ impl<'ttf> Plotter<'ttf> {
             dirty: true,
             gestures: GestureRecognizer::new(LONG_CLICK, MOVE_TOLERANCE),
             grab: None,
+            drag_redrawn: Instant::now(),
             topbar,
             buttombar,
             confirm_dialog,
+            chart_manager,
+            photo_button,
+            thumbnails: mbtiles_renderer::Thumbnails::new(),
             pending_waypoint: None,
             text_input,
             mouse: Mouse::Hand,
@@ -161,9 +172,25 @@ impl<'ttf> Plotter<'ttf> {
         })
     }
 
-    /// Runs an action on the session and schedules a redraw.
+    /// Runs an action on the session and schedules a redraw. Opening the
+    /// chart manager is the shell's: the window holds SDL state.
     fn execute_action(&mut self, action: AppAction) {
-        self.session.execute_action(action);
+        if action == AppAction::OpenChartManager {
+            self.chart_manager.open();
+            self.session.highlight = None;
+            self.topbar.close();
+        } else {
+            self.session.execute_action(action);
+        }
+        self.dirty = true;
+    }
+
+    /// Closes the chart manager.
+    fn close_chart_manager(&mut self) {
+        if self.chart_manager.typing.is_some() {
+            self.text_input.stop();
+        }
+        self.chart_manager.close();
         self.dirty = true;
     }
 

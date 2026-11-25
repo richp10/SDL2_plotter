@@ -140,6 +140,36 @@ impl Session {
         }
     }
 
+    /// The chart has been dragged `total` pixels since the press: pan by
+    /// the part not applied yet, so the chart can be redrawn mid-drag.
+    /// Steps add up to the one pan a release would make.
+    pub fn drag_chart(&mut self, total: (i32, i32)) {
+        let (dx, dy) = self.chart_drag_shift(total);
+        if (dx, dy) != (0, 0) {
+            self.execute_action(crate::action::AppAction::Pan(dx, dy));
+        }
+        self.chart_drag = total;
+    }
+
+    /// A chart drag begins: nothing of it is applied yet, whatever an
+    /// earlier drag that never saw its release left behind.
+    pub fn start_chart_drag(&mut self) {
+        self.chart_drag = (0, 0);
+    }
+
+    /// The chart drag is over at `total`: the rest is applied and the next
+    /// drag starts from nothing.
+    pub fn end_chart_drag(&mut self, total: (i32, i32)) {
+        self.drag_chart(total);
+        self.chart_drag = (0, 0);
+    }
+
+    /// How far the last drawn chart must be shifted to show a drag of
+    /// `total`: the part not yet applied.
+    pub fn chart_drag_shift(&self, total: (i32, i32)) -> (i32, i32) {
+        (total.0 - self.chart_drag.0, total.1 - self.chart_drag.1)
+    }
+
     /// The drag is over: persist what it moved.
     pub fn drag_end(&mut self, target: Target) {
         match target {

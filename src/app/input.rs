@@ -7,13 +7,18 @@
 use sdl2::event::Event;
 use sdl2::keyboard::Mod;
 use sdl2::rect::Point;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use super::chart_manager::{kind_tap, Cell, ChartEdit, Hit, KindTap};
 use super::gesture::Gesture;
 use super::tools::{ClickRequest, Target};
 use super::{AppAction, Mouse, PendingWaypoint, Plotter};
 use crate::screen::Screen;
 use crate::Mode;
+
+/// How often a chart drag redraws the chart under the finger: often
+/// enough that what it uncovers fills in, rarely enough to stay smooth.
+const DRAG_REDRAW_INTERVAL: Duration = Duration::from_millis(100);
 
 impl Plotter<'_> {
     pub(super) fn handle_pending_waypoint_event(&mut self, event: &Event) {
@@ -69,6 +74,100 @@ impl Plotter<'_> {
         }
     }
 
+    /// Every event while the chart manager is open: taps on its cells,
+    /// the wheel for pages, typing a name, Escape to close.
+    pub(super) fn handle_chart_manager_event(&mut self, event: &Event) {
+        let rows = self.session.catalogue.files().len();
+        match event {
+            Event::MouseButtonDown {
+                mouse_btn: sdl2::mouse::MouseButton::Left,
+                x,
+                y,
+                ..
+            } => match self.chart_manager.hit(*x, *y, rows) {
+                Some(hit) => self.chart_manager_hit(hit),
+                None => self.chart_manager.confirm_kind = None,
+            },
+            Event::MouseWheel { y, .. } => self.chart_manager.page(-y.signum(), rows),
+            Event::TextInput { text, .. } => {
+                if let Some((_, buffer)) = self.chart_manager.typing.as_mut() {
+                    for c in text.chars().filter(|c| !c.is_control()) {
+                        if buffer.chars().count() < 64 {
+                            buffer.push(c);
+                        }
+                    }
+                }
+            }
+            Event::KeyDown {
+                keycode: Some(keycode),
+                repeat: false,
+                ..
+            } => match (*keycode, self.chart_manager.typing.is_some()) {
+                (sdl2::keyboard::Keycode::Return | sdl2::keyboard::Keycode::KpEnter, true) => {
+                    if let Some((file, name)) = self.chart_manager.typing.take() {
+                        self.text_input.stop();
+                        self.session.edit_chart(&file, ChartEdit::Rename(name));
+                    }
+                }
+                (sdl2::keyboard::Keycode::Backspace, true) => {
+                    if let Some((_, buffer)) = self.chart_manager.typing.as_mut() {
+                        buffer.pop();
+                    }
+                }
+                (sdl2::keyboard::Keycode::Escape, true) => {
+                    self.chart_manager.typing = None;
+                    self.text_input.stop();
+                }
+                (sdl2::keyboard::Keycode::Escape, false) => self.close_chart_manager(),
+                _ => {}
+            },
+            _ => return,
+        }
+        self.dirty = true;
+    }
+
+    fn chart_manager_hit(&mut self, hit: Hit) {
+        // Any tap but the confirming one drops a pending kind change.
+        let waiting = self.chart_manager.confirm_kind.take().map(|(file, _)| file);
+        let rows = self.session.catalogue.files().len();
+        let (index, cell) = match hit {
+            Hit::Close => return self.close_chart_manager(),
+            Hit::NextPage => return self.chart_manager.page(1, rows),
+            Hit::PreviousPage => return self.chart_manager.page(-1, rows),
+            Hit::Row(index, cell) => (index, cell),
+        };
+        let Some(file) = self.session.catalogue.files().get(index) else {
+            return;
+        };
+        let (name, display, reviewed) = (file.file_name.clone(), file.name.clone(), file.reviewed);
+        let edit = match cell {
+            Cell::Up => ChartEdit::Up,
+            Cell::Down => ChartEdit::Down,
+            Cell::Layer => ChartEdit::NextLayer,
+            Cell::Role => match kind_tap(&self.session.catalogue, &name, waiting.as_deref()) {
+                KindTap::Apply => ChartEdit::CycleRole,
+                KindTap::Ask(prompt) => {
+                    self.chart_manager.confirm_kind = Some((name, prompt));
+                    return;
+                }
+            },
+            Cell::Shown => ChartEdit::ToggleHidden,
+            Cell::Zooms => return,
+            Cell::Name if !reviewed => ChartEdit::Review,
+            Cell::Name => {
+                self.chart_manager.typing = Some((name, display));
+                self.text_input.start();
+                return;
+            }
+            Cell::Where => {
+                self.close_chart_manager();
+                self.session.locate_chart(&name);
+                return;
+            }
+        };
+        self.session.edit_chart(&name, edit);
+    }
+
     pub(super) fn handle_keyboard_event(&mut self, event: &Event) {
         if self.pending_waypoint.is_some() {
             self.handle_pending_waypoint_event(event);
@@ -101,6 +200,9 @@ impl Plotter<'_> {
                 sdl2::keyboard::Keycode::KpPlus => Some(AppAction::ZoomIn),
                 sdl2::keyboard::Keycode::KpMinus => Some(AppAction::ZoomOut),
                 sdl2::keyboard::Keycode::F => Some(AppAction::ToggleFollow),
+                sdl2::keyboard::Keycode::L => Some(AppAction::ToggleLock),
+                sdl2::keyboard::Keycode::I => Some(AppAction::NextPhoto),
+                sdl2::keyboard::Keycode::C => Some(AppAction::OpenChartManager),
                 sdl2::keyboard::Keycode::Tab => Some(AppAction::CycleMode),
                 sdl2::keyboard::Keycode::P => Some(AppAction::PreviousWaypoint),
                 sdl2::keyboard::Keycode::N => Some(AppAction::NextWaypoint),
@@ -122,8 +224,14 @@ impl Plotter<'_> {
         &mut self,
         event: Event,
         screen: &mut Screen<'_>,
-        texture: &sdl2::render::Texture,
+        texture: &mut sdl2::render::Texture,
     ) -> Result<(), String> {
+        if let Event::Quit { .. } = event {
+            // Falls through to the normal handling below.
+        } else if self.chart_manager.is_open() {
+            self.handle_chart_manager_event(&event);
+            return Ok(());
+        }
         if self.session.confirmation.is_open() {
             match event {
                 Event::KeyDown {
@@ -229,7 +337,7 @@ impl Plotter<'_> {
         &mut self,
         event: &Event,
         screen: &mut Screen<'_>,
-        texture: &sdl2::render::Texture,
+        texture: &mut sdl2::render::Texture,
     ) -> Result<(), String> {
         match event {
             Event::MouseButtonDown {
@@ -279,6 +387,13 @@ impl Plotter<'_> {
         } else if self.topbar.is_open() {
             self.topbar.close();
             self.dirty = true;
+        } else if self
+            .photo_button
+            .area()
+            .contains_point((x as i32, y as i32))
+            && self.session.photo_button().is_some()
+        {
+            self.execute_action(AppAction::NextPhoto);
         } else {
             self.gestures
                 .press(Point::new(x as i32, y as i32), Instant::now());
@@ -300,7 +415,8 @@ impl Plotter<'_> {
             Some(Gesture::DragEnd { origin, at }) => {
                 match self.grab.take() {
                     Some(Target::Chart) => {
-                        self.execute_action(AppAction::Pan(at.x - origin.x, at.y - origin.y));
+                        self.session
+                            .end_chart_drag((at.x - origin.x, at.y - origin.y));
                     }
                     Some(target) => self.session.drag_end(target),
                     None => {}
@@ -317,7 +433,7 @@ impl Plotter<'_> {
         x: u32,
         y: u32,
         screen: &mut Screen<'_>,
-        texture: &sdl2::render::Texture,
+        texture: &mut sdl2::render::Texture,
     ) -> Result<(), String> {
         if self.topbar.motion(x, y) {
             self.dirty = true;
@@ -331,6 +447,8 @@ impl Plotter<'_> {
             Some(Gesture::DragStart { origin, at }) => {
                 // The grab is decided once, at the press, and then locked.
                 self.grab = Some(self.session.target_at(origin));
+                self.drag_redrawn = Instant::now();
+                self.session.start_chart_drag();
                 self.drag(origin, at, screen, texture)
             }
             Some(Gesture::DragMove { origin, at }) => self.drag(origin, at, screen, texture),
@@ -352,15 +470,25 @@ impl Plotter<'_> {
         origin: Point,
         at: Point,
         screen: &mut Screen<'_>,
-        texture: &sdl2::render::Texture,
+        texture: &mut sdl2::render::Texture,
     ) -> Result<(), String> {
         match self.grab {
             Some(Target::Chart) => {
-                // The chart is dragged as a texture for immediacy; the pan
-                // becomes an action when the button is released.
+                // The chart is dragged as a texture for immediacy. Every
+                // DRAG_REDRAW_INTERVAL the drag so far becomes a pan and the
+                // texture is redrawn there from loaded tiles, so what the
+                // drag uncovers fills in before the release.
+                let total = (at.x - origin.x, at.y - origin.y);
+                if self.drag_redrawn.elapsed() >= DRAG_REDRAW_INTERVAL
+                    && self.session.chart_drag_shift(total) != (0, 0)
+                {
+                    self.session.drag_chart(total);
+                    self.redraw_chart_texture(texture)?;
+                    self.drag_redrawn = Instant::now();
+                }
                 screen.drag_map(
                     texture,
-                    (at.x - origin.x, at.y - origin.y),
+                    self.session.chart_drag_shift(total),
                     self.session.renderer.placement(),
                 )?;
                 self.mouse = Mouse::Hand;

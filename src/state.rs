@@ -7,6 +7,18 @@ pub struct State {
     pub follow: bool,
     pub goto: bool,
     pub map: String,
+    /// The chart layer the navigator chose; automatic switching stays in it.
+    #[serde(default)]
+    pub layer: Option<String>,
+    /// The chart file the navigator locked against automatic switching.
+    #[serde(default)]
+    pub lock: Option<String>,
+    /// The last chart layer chosen, where "Imagery off" returns.
+    #[serde(default)]
+    pub chart_layer: Option<String>,
+    /// The last imagery layer chosen, where "Imagery on" goes.
+    #[serde(default)]
+    pub imagery_layer: Option<String>,
     pub position: Option<(f64, f64)>,
     pub zoom: i32,
     pub map_offset: (i32, i32),
@@ -58,6 +70,10 @@ impl State {
             follow: false,
             goto: false,
             map: init_map,
+            layer: None,
+            lock: None,
+            chart_layer: None,
+            imagery_layer: None,
             position: None,
             zoom: 8,
             map_offset: (0, 0),
@@ -83,23 +99,6 @@ impl State {
         let json = fs::read_to_string(path)?;
         Ok(serde_json::from_str(&json)?)
     }
-}
-
-/// Liste les fichiers .mbtiles d'un dossier, triés par nom.
-pub fn list_maps(dir: &str) -> Vec<String> {
-    let mut maps: Vec<String> = std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| {
-            p.extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("mbtiles"))
-        })
-        .map(|p| p.to_string_lossy().into_owned())
-        .collect();
-    maps.sort();
-    maps
 }
 
 #[cfg(test)]

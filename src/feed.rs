@@ -74,8 +74,8 @@ pub fn take_change<T: Clone>(
 
 /// For a source that cannot run: logs `reason` as an ERROR, then keeps the
 /// channels open with no data, so the app runs on without a boat.
-pub async fn idle(feed: LiveFeed, reason: &str) {
-    crate::diagnostics::record("ERROR", reason);
+pub async fn idle(feed: LiveFeed, reason: String) {
+    crate::diagnostics::record("ERROR", format!("{reason}; aucune donnée bateau"));
     std::future::pending::<()>().await;
     drop(feed);
 }

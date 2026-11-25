@@ -92,7 +92,7 @@ At first launch, `default/plotter.toml` is created with default values. It can t
 source = "signalk"   # "signalk", "nmea0183" or "nmea2k" (not supported yet)
 ```
 
-The app reads live boat data from one source, chosen at start. With no `[input]` table, it reads Signal K. With `nmea2k`, it logs an ERROR and runs with no live data.
+The app reads live boat data from one source, chosen at start. With no `[input]` table, it reads Signal K. With `nmea2k`, an unknown word, or a bad setting in the chosen source's table (URL, address, talker), it logs an ERROR and runs with no live data: an input setting never stops the start.
 
 ### Signal K
 
@@ -118,7 +118,7 @@ The subscription uses these configured paths for vessel data and AIS targets.
 ```toml
 [nmea0183]
 transport = "tcp"            # "tcp": connect to address; "udp": bind address and listen
-address = "127.0.0.1:10110"  # IP:port; for UDP, for example "0.0.0.0:10110"
+address = "127.0.0.1:10110"  # host:port or IP:port; for UDP, for example "0.0.0.0:10110"
 talker = ""                  # RMC from this talker only, for example "GN"; empty: every talker
 ```
 

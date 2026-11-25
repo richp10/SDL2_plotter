@@ -123,17 +123,22 @@ impl<'ttf> Plotter<'ttf> {
             "INFO",
             format!("Source des données bateau: {:?}", config.input.source),
         );
-        match config.input.source {
-            InputSource::Signalk => {
+        // A bad input setting costs the live data, never the start.
+        match (&config.input.source, config.input_error()) {
+            (_, Some(error)) => {
+                tokio::spawn(crate::feed::idle(feed, error));
+            }
+            (InputSource::Signalk, None) => {
                 tokio::spawn(signalk::run(config.signalk.clone(), feed));
             }
-            InputSource::Nmea0183 => {
+            (InputSource::Nmea0183, None) => {
                 tokio::spawn(crate::nmea0183::run(config.nmea0183.clone(), feed));
             }
-            InputSource::Nmea2k => {
+            // input_error reports these; this arm only keeps the match whole.
+            (source @ (InputSource::Nmea2k | InputSource::Unknown(_)), None) => {
                 tokio::spawn(crate::feed::idle(
                     feed,
-                    "Entrée NMEA 2000 pas encore prise en charge; aucune donnée bateau",
+                    format!("Source non prise en charge: {source:?}"),
                 ));
             }
         }

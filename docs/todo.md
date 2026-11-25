@@ -8,13 +8,6 @@ From the NMEA 0183 work (2026-11-25). See `docs/nmea0183-input-design.md`.
 
 - **Check by eye.** The red and grey boat marker, the track and the AIS
   boat shapes were checked from the log and the unit tests only.
-- **Heading line never seen live.** The simulator sends HDG with no
-  variation and no HDT, so no heading is shown. Only unit tests cover it.
-- **A bad `nmea0183.address` stops the start.** A hostname or a typo fails
-  `AppConfig::validate`, and `main` exits. The Signal K URL has the same
-  rule. This breaks "degrade, never exit".
-- **An unknown `[input] source` word stops the start.** For example
-  `source = "nmea"` is a toml parse error, and the app exits.
 - **UDP broadcast not tested.** Only unicast (`gps-simulator -udp -host
   127.0.0.1`) was tested, not the simulator's default broadcast.
 - **No serial transport.** A USB GPS or a serial multiplexer is not
@@ -26,6 +19,10 @@ From the NMEA 0183 work (2026-11-25). See `docs/nmea0183-input-design.md`.
   Research: `docs/nmea0183-input-research-2026-11-25.md` section 6.
 
 ## Other
+
+- **Other config errors still stop the start.** A toml syntax error, or a
+  bad value outside the input tables (window, appearance, rendering,
+  streaming), fails `AppConfig::load_or_create`, and `main` exits.
 
 - **Flaky test:** `stream::tests::submitted_pixels_are_encoded_off_the_calling_thread`
   asserts `submit` takes under 5 ms, and failed once under a full parallel

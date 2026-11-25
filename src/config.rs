@@ -19,14 +19,39 @@ pub struct AppConfig {
 }
 
 /// Where live boat data comes from. One source at a time, chosen at start.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
+/// Read from a word in the toml; a word the app does not know is kept as
+/// `Unknown`, so a typo never stops the start (see `input_error`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(from = "String", into = "String")]
 pub enum InputSource {
     #[default]
     Signalk,
     Nmea0183,
     /// Accepted, not supported yet: the app runs with no live data.
     Nmea2k,
+    Unknown(String),
+}
+
+impl From<String> for InputSource {
+    fn from(word: String) -> Self {
+        match word.as_str() {
+            "signalk" => Self::Signalk,
+            "nmea0183" => Self::Nmea0183,
+            "nmea2k" => Self::Nmea2k,
+            _ => Self::Unknown(word),
+        }
+    }
+}
+
+impl From<InputSource> for String {
+    fn from(source: InputSource) -> Self {
+        match source {
+            InputSource::Signalk => "signalk".into(),
+            InputSource::Nmea0183 => "nmea0183".into(),
+            InputSource::Nmea2k => "nmea2k".into(),
+            InputSource::Unknown(word) => word,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -177,13 +202,21 @@ impl AppConfig {
         Ok(config)
     }
 
-    fn validate(&self) -> anyhow::Result<()> {
-        match self.input.source {
+    /// Why the live-data source cannot start, if it cannot: a bad Signal K
+    /// URL or path, a bad NMEA 0183 address or talker, an unknown or
+    /// unsupported `[input] source`. The app then logs it as an ERROR and
+    /// runs with no live data; it is never a reason to stop.
+    pub fn input_error(&self) -> Option<String> {
+        match &self.input.source {
             InputSource::Signalk => {
-                let url = url::Url::parse(&self.signalk.url)
-                    .context("signalk.url doit être une URL WebSocket valide")?;
-                if !matches!(url.scheme(), "ws" | "wss") {
-                    bail!("signalk.url doit utiliser le protocole ws:// ou wss://");
+                match url::Url::parse(&self.signalk.url) {
+                    Ok(url) if matches!(url.scheme(), "ws" | "wss") => {}
+                    _ => {
+                        return Some(format!(
+                            "signalk.url doit être une URL WebSocket ws:// ou wss:// valide: {:?}",
+                            self.signalk.url
+                        ))
+                    }
                 }
                 let paths = [
                     &self.signalk.paths.position,
@@ -196,29 +229,35 @@ impl AppConfig {
                     &self.signalk.paths.ais_speed_over_ground,
                 ];
                 if paths.iter().any(|path| path.trim().is_empty()) {
-                    bail!("Les chemins Signal K ne peuvent pas être vides");
+                    return Some("Les chemins Signal K ne peuvent pas être vides".into());
                 }
+                None
             }
             InputSource::Nmea0183 => {
-                if self
-                    .nmea0183
-                    .address
-                    .parse::<std::net::SocketAddr>()
-                    .is_err()
-                {
-                    bail!(
-                        "nmea0183.address doit être une adresse IP:port (par ex. 127.0.0.1:10110)"
-                    );
+                if !is_host_and_port(&self.nmea0183.address) {
+                    return Some(format!(
+                        "nmea0183.address doit être hôte:port (par ex. 127.0.0.1:10110): {:?}",
+                        self.nmea0183.address
+                    ));
                 }
                 let talker = &self.nmea0183.talker;
                 if !talker.is_empty()
                     && !(talker.len() == 2 && talker.bytes().all(|b| b.is_ascii_uppercase()))
                 {
-                    bail!("nmea0183.talker doit être vide ou deux lettres majuscules (par ex. GN)");
+                    return Some(format!(
+                        "nmea0183.talker doit être vide ou deux lettres majuscules (par ex. GN): {talker:?}"
+                    ));
                 }
+                None
             }
-            InputSource::Nmea2k => {}
+            InputSource::Nmea2k => Some("Entrée NMEA 2000 pas encore prise en charge".into()),
+            InputSource::Unknown(word) => Some(format!(
+                "input.source inconnue: {word:?} (signalk, nmea0183 ou nmea2k)"
+            )),
         }
+    }
+
+    fn validate(&self) -> anyhow::Result<()> {
         if self.charts.directory.is_empty() || self.charts.default.is_empty() {
             bail!("charts.directory et charts.default ne peuvent pas être vides");
         }
@@ -268,6 +307,19 @@ impl AppConfig {
         }
         Ok(())
     }
+}
+
+/// `host:port` or `ip:port`, with a port from 1 to 65535. A host name is
+/// looked up when the TCP client connects or the UDP socket binds.
+fn is_host_and_port(address: &str) -> bool {
+    if address.parse::<std::net::SocketAddr>().is_ok() {
+        return true;
+    }
+    address.rsplit_once(':').is_some_and(|(host, port)| {
+        !host.is_empty()
+            && !host.contains([':', ' ', '[', ']'])
+            && port.parse::<u16>().is_ok_and(|port| port > 0)
+    })
 }
 
 impl Default for Nmea0183Config {
@@ -428,21 +480,37 @@ address = \"0.0.0.0:10110\"
     }
 
     #[test]
-    fn a_bad_nmea0183_address_is_rejected_only_when_that_source_is_chosen() {
+    fn a_bad_nmea0183_address_is_an_input_error_not_a_start_error() {
         let mut config = AppConfig::default();
         config.nmea0183.address = "not an address".into();
-        config.validate().unwrap();
+        assert_eq!(config.input_error(), None, "signalk chosen");
         config.input.source = InputSource::Nmea0183;
-        assert!(config.validate().is_err());
+        config.validate().unwrap();
+        assert!(config.input_error().unwrap().contains("nmea0183.address"));
+        for bad in ["", "10110", "host:", ":10110", "host:99999"] {
+            config.nmea0183.address = bad.into();
+            assert!(config.input_error().is_some(), "{bad:?}");
+        }
     }
 
     #[test]
-    fn the_signal_k_url_is_not_checked_when_nmea0183_is_chosen() {
+    fn a_hostname_is_a_valid_nmea0183_address() {
+        let mut config = AppConfig::default();
+        config.input.source = InputSource::Nmea0183;
+        for good in ["gateway.local:10110", "127.0.0.1:10110", "[::1]:10110"] {
+            config.nmea0183.address = good.into();
+            assert_eq!(config.input_error(), None, "{good}");
+        }
+    }
+
+    #[test]
+    fn the_signal_k_url_is_checked_only_when_signal_k_is_chosen() {
         let mut config = AppConfig::default();
         config.signalk.url = "http://wrong".into();
-        assert!(config.validate().is_err());
-        config.input.source = InputSource::Nmea0183;
         config.validate().unwrap();
+        assert!(config.input_error().unwrap().contains("signalk.url"));
+        config.input.source = InputSource::Nmea0183;
+        assert_eq!(config.input_error(), None);
     }
 
     #[test]
@@ -450,25 +518,35 @@ address = \"0.0.0.0:10110\"
         let mut config = AppConfig::default();
         config.input.source = InputSource::Nmea0183;
         assert_eq!(config.nmea0183.talker, "");
-        config.validate().unwrap();
+        assert_eq!(config.input_error(), None);
         config.nmea0183.talker = "GN".into();
-        config.validate().unwrap();
+        assert_eq!(config.input_error(), None);
         for bad in ["gn", "G", "GPS", "G1"] {
             config.nmea0183.talker = bad.into();
-            assert!(config.validate().is_err(), "{bad}");
+            config.validate().unwrap();
+            assert!(config.input_error().is_some(), "{bad}");
         }
     }
 
     #[test]
-    fn nmea2k_is_accepted_by_the_config() {
-        let config: AppConfig = toml::from_str(
-            "[input]
-source = \"nmea2k\"
-",
-        )
-        .unwrap();
+    fn an_unknown_source_word_is_an_input_error_not_a_start_error() {
+        let config: AppConfig = toml::from_str("[input]\nsource = \"nmea\"\n").unwrap();
+        assert_eq!(config.input.source, InputSource::Unknown("nmea".into()));
+        config.validate().unwrap();
+        assert!(config.input_error().unwrap().contains("nmea"));
+        let back = toml::to_string(&config).unwrap();
+        assert!(
+            back.contains("source = \"nmea\""),
+            "kept as written: {back}"
+        );
+    }
+
+    #[test]
+    fn nmea2k_is_not_supported_yet() {
+        let config: AppConfig = toml::from_str("[input]\nsource = \"nmea2k\"\n").unwrap();
         assert_eq!(config.input.source, InputSource::Nmea2k);
         config.validate().unwrap();
+        assert!(config.input_error().unwrap().contains("NMEA 2000"));
     }
 
     #[test]
@@ -488,10 +566,13 @@ source = \"nmea2k\"
     }
 
     #[test]
-    fn invalid_websocket_url_is_rejected() {
+    fn invalid_websocket_url_is_an_input_error() {
         let mut config = AppConfig::default();
         config.signalk.url = "http://localhost".into();
-        assert!(config.validate().is_err());
+        assert!(config.input_error().is_some());
+        config.signalk.url = "ws://192.168.3.2/signalk/v1/stream".into();
+        config.signalk.paths.position = " ".into();
+        assert!(config.input_error().unwrap().contains("chemins"));
     }
 
     #[test]

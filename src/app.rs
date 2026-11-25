@@ -65,9 +65,12 @@ pub(crate) struct Plotter<'ttf> {
     resized: Option<(u32, u32)>,
     /// SDL reported that the render device or its targets were reset.
     device_reset: bool,
-    /// Render and stream-capture errors, logged without flooding the log.
+    /// Errors from each step of the main loop, logged without flooding the
+    /// log. None of them ends the loop.
     render_errors: crate::diagnostics::Repeated,
     capture_errors: crate::diagnostics::Repeated,
+    event_errors: crate::diagnostics::Repeated,
+    resize_errors: crate::diagnostics::Repeated,
     topbar: topbar::Topbar<'ttf>,
     buttombar: buttombar::Buttombar<'ttf>,
     confirm_dialog: confirm_dialog::ConfirmDialog<'ttf>,
@@ -204,6 +207,8 @@ impl<'ttf> Plotter<'ttf> {
             device_reset: false,
             render_errors: crate::diagnostics::Repeated::default(),
             capture_errors: crate::diagnostics::Repeated::default(),
+            event_errors: crate::diagnostics::Repeated::default(),
+            resize_errors: crate::diagnostics::Repeated::default(),
             topbar,
             buttombar,
             confirm_dialog,
@@ -319,13 +324,10 @@ impl<'ttf> Plotter<'ttf> {
                     last_input = Instant::now();
                 }
                 let event_started = Instant::now();
-                self.match_event(event, screen, texture).map_err(|error| {
-                    crate::diagnostics::record(
-                        "ERROR",
-                        format!("Erreur de traitement SDL: {error}"),
-                    );
-                    anyhow::Error::msg(error)
-                })?;
+                // A failed event costs that event, never the app.
+                let handled = self.match_event(event, screen, texture);
+                self.event_errors
+                    .report(handled, "ERROR", "Erreur de traitement SDL");
                 let elapsed = event_started.elapsed();
                 if elapsed >= Duration::from_millis(500) {
                     crate::diagnostics::record(
@@ -337,16 +339,34 @@ impl<'ttf> Plotter<'ttf> {
 
             if std::mem::take(&mut self.device_reset) {
                 // The renderer lost its textures: make the chart texture
-                // again, as a resize to the same size does.
-                let (width, height) = screen.canvas.output_size().map_err(anyhow::Error::msg)?;
-                crate::diagnostics::record(
-                    "WARN",
-                    "Périphérique de rendu réinitialisé; texture refaite",
-                );
-                self.resized.get_or_insert((width, height));
+                // again, as a resize to the same size does. Without a size,
+                // try again next iteration.
+                let size = screen.canvas.output_size();
+                match self
+                    .resize_errors
+                    .report(size, "ERROR", "Taille de la fenêtre inconnue")
+                {
+                    Some(size) => {
+                        crate::diagnostics::record(
+                            "WARN",
+                            "Périphérique de rendu réinitialisé; texture refaite",
+                        );
+                        self.resized.get_or_insert(size);
+                    }
+                    None => self.device_reset = true,
+                }
             }
             if let Some((width, height)) = self.resized.take() {
-                self.resize(screen, texture_creator, texture, width, height)?;
+                // A texture that cannot be made yet keeps the old one and
+                // the old size; the resize is tried again next iteration.
+                let resized = self.resize(screen, texture_creator, texture, width, height);
+                if self
+                    .resize_errors
+                    .report(resized, "ERROR", "Redimensionnement impossible, réessayé")
+                    .is_none()
+                {
+                    self.resized.get_or_insert((width, height));
+                }
             }
 
             // Live data in: drain each channel, hand it to the session, and
@@ -391,20 +411,14 @@ impl<'ttf> Plotter<'ttf> {
                 let display_started = Instant::now();
                 // A frame that fails is logged and tried again next
                 // iteration: the chart must keep drawing.
-                match self.display(screen, texture) {
-                    Ok(()) => {
-                        self.render_errors.clear();
-                        rendered_frames += 1;
-                        self.dirty = false;
-                    }
-                    Err(error) => {
-                        if let Some(line) = self.render_errors.note(&error.to_string()) {
-                            crate::diagnostics::record(
-                                "ERROR",
-                                format!("Erreur de rendu, image réessayée: {line}"),
-                            );
-                        }
-                    }
+                let drawn = self.display(screen, texture);
+                if self
+                    .render_errors
+                    .report(drawn, "ERROR", "Erreur de rendu, image réessayée")
+                    .is_some()
+                {
+                    rendered_frames += 1;
+                    self.dirty = false;
                 }
                 let elapsed = display_started.elapsed();
                 if elapsed >= Duration::from_millis(500) {

@@ -20,12 +20,8 @@ From the NMEA 0183 work (2026-11-25). See `docs/nmea0183-input-design.md`.
   bad value outside the input tables (window, appearance, rendering,
   streaming), fails `AppConfig::load_or_create`, and `main` exits.
 
-- **Flaky test:** `stream::tests::submitted_pixels_are_encoded_off_the_calling_thread`
-  asserts `submit` takes under 5 ms, and failed once under a full parallel
-  test run. It passes alone.
-- **Errors other than drawing still stop the main loop.** A failed SDL
-  event, cursor or texture re-creation (`Plotter::resize`) still reaches
-  `main_loop` through `?`. Drawing and stream capture no longer do.
+- **A panic still stops the app.** No `Err` ends the main loop now, but a
+  panic on the main thread (an index out of range, an `unwrap`) does.
 - **AIS from the simulator lacks edge cases.** It does not send a target
   that goes silent, "not available" values or tag blocks
   (`docs/simulator-ais-request.md`). Unit tests cover them.

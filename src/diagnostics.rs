@@ -157,6 +157,30 @@ impl Repeated {
             .then(|| format!("{message} ({} fois)", self.count))
     }
 
+    /// The result of one step of the main loop: its value, or `None` after
+    /// logging the error (`level`, prefixed with `context`) the way `note`
+    /// allows. A success clears the error. The caller carries on either
+    /// way: the chart must keep drawing.
+    pub fn report<T, E: std::fmt::Display>(
+        &mut self,
+        result: Result<T, E>,
+        level: &str,
+        context: &str,
+    ) -> Option<T> {
+        match result {
+            Ok(value) => {
+                self.clear();
+                Some(value)
+            }
+            Err(error) => {
+                if let Some(line) = self.note(&error.to_string()) {
+                    record(level, format!("{context}: {line}"));
+                }
+                None
+            }
+        }
+    }
+
     /// The operation worked again: the next error is logged at once.
     pub fn clear(&mut self) {
         self.last = None;
@@ -167,6 +191,29 @@ impl Repeated {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn report_passes_a_value_through_and_turns_an_error_into_none() {
+        let mut repeated = Repeated::default();
+        assert_eq!(
+            repeated.report(Ok::<_, String>(5), "ERROR", "étape"),
+            Some(5)
+        );
+        assert_eq!(
+            repeated.report(Err::<i32, _>("lost"), "ERROR", "étape"),
+            None
+        );
+        assert_eq!(repeated.note("lost"), None, "the error was noted");
+        assert_eq!(
+            repeated.report(Ok::<_, String>(6), "ERROR", "étape"),
+            Some(6)
+        );
+        assert_eq!(
+            repeated.note("lost"),
+            Some("lost".to_string()),
+            "a success cleared it"
+        );
+    }
 
     #[test]
     fn a_repeated_error_is_logged_once_then_every_thousandth_time() {

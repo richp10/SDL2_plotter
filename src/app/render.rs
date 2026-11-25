@@ -84,17 +84,11 @@ impl Plotter<'_> {
         // A failed readback (a lost Direct3D device, for one) costs the
         // stream this frame, never the chart.
         if let Some(streamer) = &self.streamer {
-            match streamer.capture(&screen.canvas) {
-                Ok(()) => self.capture_errors.clear(),
-                Err(error) => {
-                    if let Some(line) = self.capture_errors.note(&error) {
-                        crate::diagnostics::record(
-                            "WARN",
-                            format!("Capture du flux impossible, image sautée: {line}"),
-                        );
-                    }
-                }
-            }
+            self.capture_errors.report(
+                streamer.capture(&screen.canvas),
+                "WARN",
+                "Capture du flux impossible, image sautée",
+            );
         }
         if let Some(button) = self.session.photo_button() {
             let (centre, zoom) = self.session.view_centre_and_zoom();

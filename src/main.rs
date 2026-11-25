@@ -13,6 +13,7 @@ mod buttombar;
 mod catalogue;
 mod config;
 mod diagnostics;
+mod feed;
 mod geo_data;
 mod gps;
 mod gpx;

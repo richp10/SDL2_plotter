@@ -5,7 +5,6 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
-use tokio::sync::watch;
 use tokio_tungstenite::{
     connect_async, tungstenite::Error as WsError, tungstenite::Message, MaybeTlsStream,
     WebSocketStream,
@@ -14,17 +13,8 @@ use tokio_tungstenite::{
 use crate::ais::AisTarget;
 use crate::boat::BoatState;
 use crate::config::{SignalKConfig, SignalKPaths};
+use crate::feed::LiveFeed;
 pub type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
-
-/// Les donnees SignalK collectees au fil de l'eau
-#[derive(Debug, Default, Clone)]
-pub struct SignalKData {
-    pub latitude: f64,
-    pub longitude: f64,
-    pub position_valid: bool,
-    pub cog: f64,
-    pub sog: f64,
-}
 
 /// What one Signal K delta message changed, so the task only forwards the
 /// data that actually moved.
@@ -42,7 +32,7 @@ pub struct DeltaSummary {
 pub struct SignalKClient {
     write: SplitSink<WsStream, Message>,
     read: SplitStream<WsStream>,
-    pub data: SignalKData,
+    pub data: BoatState,
     pub targets: HashMap<String, AisTarget>,
     self_context: Option<String>,
     url: String,
@@ -58,7 +48,7 @@ impl SignalKClient {
         SignalKClient {
             write,
             read,
-            data: SignalKData::default(),
+            data: BoatState::default(),
             targets: HashMap::new(),
             self_context: None,
             url: config.url,
@@ -154,6 +144,7 @@ impl SignalKClient {
             self.paths.position.as_str(),
             self.paths.course_over_ground.as_str(),
             self.paths.speed_over_ground.as_str(),
+            self.paths.heading.as_str(),
         ];
         let deltas: Vec<Delta> = self_paths
             .iter()
@@ -202,6 +193,7 @@ impl SignalKClient {
             &self.paths,
             self.self_context.as_deref(),
             v,
+            Instant::now(),
         )
     }
 }
@@ -209,11 +201,12 @@ impl SignalKClient {
 /// Applies one Signal K delta message to the own-vessel data and the AIS
 /// target map, and reports what changed.
 fn apply_delta(
-    data: &mut SignalKData,
+    data: &mut BoatState,
     targets: &mut HashMap<String, AisTarget>,
     paths: &SignalKPaths,
     self_context: Option<&str>,
     v: &Value,
+    now: Instant,
 ) -> DeltaSummary {
     let mut summary = DeltaSummary::default();
     let Some(updates) = v["updates"].as_array() else {
@@ -245,18 +238,25 @@ fn apply_delta(
                             data.latitude = latitude;
                             data.longitude = longitude;
                             data.position_valid = true;
+                            data.fixed_at = Some(now);
                             summary.self_position = true;
                             summary.self_changed = true;
                         }
                     }
                 } else if path == paths.course_over_ground {
                     if let Some(cog) = val.as_f64() {
-                        data.cog = cog;
+                        data.course_over_ground = cog;
                         summary.self_changed = true;
                     }
                 } else if path == paths.speed_over_ground {
                     if let Some(sog) = val.as_f64() {
-                        data.sog = sog;
+                        data.speed_over_ground = sog;
+                        summary.self_changed = true;
+                    }
+                } else if path == paths.heading {
+                    if let Some(heading) = val.as_f64().filter(|h| h.is_finite()) {
+                        data.heading = Some(heading);
+                        data.heading_at = Some(now);
                         summary.self_changed = true;
                     }
                 }
@@ -368,12 +368,7 @@ async fn wait_for_signalk_connection(url: &str) -> WsStream {
 // Tache dediee a signalk : connexion, souscription, reception des deltas,
 // et reconnexion automatique en cas de coupure. Tourne independamment de
 // la boucle SDL, ne bloque donc jamais le rendu / les events clavier-souris.
-pub async fn signalk_task(
-    state_tx: watch::Sender<BoatState>,
-    track_tx: tokio::sync::mpsc::UnboundedSender<(f64, f64)>,
-    ais_tx: watch::Sender<Vec<AisTarget>>,
-    config: SignalKConfig,
-) {
+pub async fn run(config: SignalKConfig, feed: LiveFeed) {
     crate::diagnostics::record(
         "INFO",
         format!("Tâche SignalK démarrée, serveur={}", config.url),
@@ -392,19 +387,12 @@ pub async fn signalk_task(
         let mut last_eviction = Instant::now();
         while let Some(summary) = signalk.next_update().await {
             if summary.self_changed {
-                let _ = state_tx.send(BoatState {
-                    longitude: signalk.data.longitude,
-                    latitude: signalk.data.latitude,
-                    position_valid: signalk.data.position_valid,
-                    course_over_ground: signalk.data.cog,
-                    speed_over_ground: signalk.data.sog,
-                    heading: None,
-                    fixed_at: signalk.data.position_valid.then(Instant::now),
-                    heading_at: None,
-                });
+                let _ = feed.boat.send(signalk.data);
             }
             if summary.self_position {
-                let _ = track_tx.send((signalk.data.longitude, signalk.data.latitude));
+                let _ = feed
+                    .track
+                    .send((signalk.data.longitude, signalk.data.latitude));
             }
 
             // Targets that have gone quiet are dropped here, so the map does
@@ -416,7 +404,7 @@ pub async fn signalk_task(
                 last_eviction = now;
             }
             if ais_changed {
-                let _ = ais_tx.send(signalk.targets.values().cloned().collect());
+                let _ = feed.ais.send(signalk.targets.values().cloned().collect());
             }
         }
 
@@ -497,15 +485,59 @@ mod tests {
     }
 
     #[test]
+    fn own_heading_is_read_in_radians_and_stamped() {
+        let paths = SignalKPaths::default();
+        let mut boat = BoatState::default();
+        let mut targets = HashMap::new();
+        let now = Instant::now();
+        let heading = json!({"context": "vessels.self", "updates": [{"values": [
+            {"path": "navigation.headingTrue", "value": 1.25}
+        ]}]});
+        let summary = apply_delta(&mut boat, &mut targets, &paths, None, &heading, now);
+        assert!(summary.self_changed);
+        assert!(!summary.self_position);
+        assert_eq!(boat.heading, Some(1.25));
+        assert_eq!(boat.heading_at, Some(now));
+        assert_eq!(boat.fixed_at, None, "a heading is not a fix");
+    }
+
+    #[test]
+    fn a_course_update_does_not_refresh_the_fix_time() {
+        let paths = SignalKPaths::default();
+        let mut boat = BoatState::default();
+        let mut targets = HashMap::new();
+        let t0 = Instant::now();
+        let own = json!({"context": "vessels.self", "updates": [{"values": [
+            {"path": "navigation.position", "value": {"latitude": 36.95, "longitude": 26.98}}
+        ]}]});
+        apply_delta(&mut boat, &mut targets, &paths, None, &own, t0);
+        assert_eq!(boat.fixed_at, Some(t0));
+        let course = json!({"context": "vessels.self", "updates": [{"values": [
+            {"path": "navigation.courseOverGroundLastMinute", "value": 1.5}
+        ]}]});
+        apply_delta(
+            &mut boat,
+            &mut targets,
+            &paths,
+            None,
+            &course,
+            t0 + std::time::Duration::from_secs(5),
+        );
+        assert_eq!(boat.fixed_at, Some(t0));
+        assert_eq!(boat.course_over_ground, 1.5);
+    }
+
+    #[test]
     fn delta_summary_tells_own_position_apart_from_ais_updates() {
         let paths = SignalKPaths::default();
-        let mut data = SignalKData::default();
+        let mut data = BoatState::default();
         let mut targets = HashMap::new();
+        let now = Instant::now();
 
         let own = json!({"context": "vessels.self", "updates": [{"values": [
             {"path": "navigation.position", "value": {"latitude": 36.95, "longitude": 26.98}}
         ]}]});
-        let summary = apply_delta(&mut data, &mut targets, &paths, None, &own);
+        let summary = apply_delta(&mut data, &mut targets, &paths, None, &own, now);
         assert!(summary.self_position);
         assert!(summary.self_changed);
         assert!(!summary.ais_changed);
@@ -513,7 +545,7 @@ mod tests {
         let course = json!({"context": "vessels.self", "updates": [{"values": [
             {"path": "navigation.courseOverGroundLastMinute", "value": 1.5}
         ]}]});
-        let summary = apply_delta(&mut data, &mut targets, &paths, None, &course);
+        let summary = apply_delta(&mut data, &mut targets, &paths, None, &course, now);
         assert_eq!(
             summary,
             DeltaSummary {
@@ -522,14 +554,14 @@ mod tests {
                 ais_changed: false
             }
         );
-        assert_eq!(data.cog, 1.5);
+        assert_eq!(data.course_over_ground, 1.5);
         assert_eq!((data.longitude, data.latitude), (26.98, 36.95));
         assert!(targets.is_empty());
 
         let other = json!({"context": "vessels.urn:mrn:imo:mmsi:123456789", "updates": [{"values": [
             {"path": "navigation.position", "value": {"latitude": 37.0, "longitude": 27.0}}
         ]}]});
-        let summary = apply_delta(&mut data, &mut targets, &paths, None, &other);
+        let summary = apply_delta(&mut data, &mut targets, &paths, None, &other, now);
         assert!(!summary.self_position);
         assert!(summary.ais_changed);
         assert_eq!(targets.len(), 1);
@@ -537,7 +569,7 @@ mod tests {
         let unrelated = json!({"context": "vessels.self", "updates": [{"values": [
             {"path": "environment.depth.belowKeel", "value": 12.5}
         ]}]});
-        let summary = apply_delta(&mut data, &mut targets, &paths, None, &unrelated);
+        let summary = apply_delta(&mut data, &mut targets, &paths, None, &unrelated, now);
         assert!(!summary.self_position);
         assert!(!summary.ais_changed);
     }

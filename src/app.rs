@@ -1,8 +1,9 @@
 use crate::boat::BoatState;
 use crate::catalogue::Catalogue;
 use crate::{
-    ais, buttombar, config::AppConfig, mbtiles_renderer, route, screen, signalk, state, topbar,
-    track, waypoints,
+    buttombar,
+    config::{AppConfig, InputSource},
+    mbtiles_renderer, route, screen, signalk, state, topbar, track, waypoints,
 };
 use mbtiles_renderer::MBTilesRenderer;
 use sdl2::event::Event;
@@ -11,7 +12,6 @@ use sdl2::ttf::Sdl2TtfContext;
 use sdl2::video::WindowContext;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
-use tokio::sync::watch;
 
 mod actions;
 mod chart_manager;
@@ -73,9 +73,11 @@ pub(crate) struct Plotter<'ttf> {
     pending_waypoint: Option<PendingWaypoint>,
     text_input: sdl2::keyboard::TextInputUtil,
     mouse: Mouse,
-    state_rx: watch::Receiver<BoatState>,
-    track_rx: tokio::sync::mpsc::UnboundedReceiver<(f64, f64)>,
-    ais_rx: watch::Receiver<Vec<ais::AisTarget>>,
+    /// The live-data source's channels.
+    live: crate::feed::LiveReceivers,
+    /// The source's boat or AIS channel closed and that was logged.
+    boat_closed: bool,
+    ais_closed: bool,
     streamer: Option<crate::stream::Streamer>,
 }
 
@@ -111,16 +113,28 @@ impl<'ttf> Plotter<'ttf> {
             .video()
             .map_err(anyhow::Error::msg)?
             .text_input();
-        let boat = BoatState::default();
-        let (state_tx, state_rx) = watch::channel(boat);
-        let (track_tx, track_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (ais_tx, ais_rx) = watch::channel(Vec::new());
-        tokio::spawn(signalk::signalk_task(
-            state_tx,
-            track_tx,
-            ais_tx,
-            config.signalk.clone(),
-        ));
+        let (feed, live) = crate::feed::channels();
+        crate::diagnostics::record(
+            "INFO",
+            format!("Source des données bateau: {:?}", config.input.source),
+        );
+        match config.input.source {
+            InputSource::Signalk => {
+                tokio::spawn(signalk::run(config.signalk.clone(), feed));
+            }
+            InputSource::Nmea0183 => {
+                tokio::spawn(crate::feed::idle(
+                    feed,
+                    "Entrée NMEA 0183 pas encore prise en charge; aucune donnée bateau",
+                ));
+            }
+            InputSource::Nmea2k => {
+                tokio::spawn(crate::feed::idle(
+                    feed,
+                    "Entrée NMEA 2000 pas encore prise en charge; aucune donnée bateau",
+                ));
+            }
+        }
 
         let catalogue = Catalogue::load(
             Path::new(&config.charts.directory),
@@ -164,7 +178,7 @@ impl<'ttf> Plotter<'ttf> {
         let session = Session::new(
             renderer,
             state,
-            boat,
+            BoatState::default(),
             route,
             track,
             waypoints,
@@ -189,9 +203,9 @@ impl<'ttf> Plotter<'ttf> {
             pending_waypoint: None,
             text_input,
             mouse: Mouse::Hand,
-            state_rx,
-            track_rx,
-            ais_rx,
+            live,
+            boat_closed: false,
+            ais_closed: false,
             streamer,
         })
     }
@@ -318,7 +332,7 @@ impl<'ttf> Plotter<'ttf> {
             // Live data in: drain each channel, hand it to the session, and
             // redraw when it says so. The rules live on Track and Session.
             let now = Instant::now();
-            while let Ok(position) = self.track_rx.try_recv() {
+            while let Ok(position) = self.live.track.try_recv() {
                 if self.session.track.record(position, now) {
                     track_updates += 1;
                     self.dirty = true;
@@ -326,8 +340,9 @@ impl<'ttf> Plotter<'ttf> {
             }
             self.session.track.tick(now);
 
-            if self.state_rx.has_changed()? {
-                let boat = *self.state_rx.borrow_and_update();
+            if let Some(boat) =
+                crate::feed::take_change(&mut self.live.boat, &mut self.boat_closed, "bateau")
+            {
                 self.session.on_boat(boat);
                 self.dirty = true;
             }
@@ -338,9 +353,10 @@ impl<'ttf> Plotter<'ttf> {
             self.fire_long_press();
 
             if self.session.state.display_ais {
-                if self.ais_rx.has_changed().unwrap_or(false) {
-                    self.session
-                        .set_ais(self.ais_rx.borrow_and_update().clone());
+                if let Some(targets) =
+                    crate::feed::take_change(&mut self.live.ais, &mut self.ais_closed, "AIS")
+                {
+                    self.session.set_ais(targets);
                     self.dirty = true;
                 }
                 if self.session.expire_ais(now) {

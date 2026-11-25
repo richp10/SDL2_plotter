@@ -28,8 +28,6 @@ mod topbar;
 mod track;
 mod waypoints;
 
-use sdl2::pixels::PixelFormatEnum;
-
 const DEFAULT_PLOTTER: &str = "default/plotter.toml";
 
 #[derive(Debug, PartialEq, Clone, Copy, Default)]
@@ -80,14 +78,9 @@ async fn run() -> anyhow::Result<()> {
     diagnostics::record("INFO", "Fenêtre SDL initialisée");
 
     let texture_creator = screen.canvas.texture_creator();
-    let (texture_width, texture_height) = mbtiles_renderer::MBTilesRenderer::texture_dimensions(
-        screen.screen_width,
-        screen.screen_height,
-    );
-    let mut texture = texture_creator
-        .create_texture_streaming(PixelFormatEnum::RGBA32, texture_width, texture_height)
-        .map_err(anyhow::Error::msg)?;
-    texture.set_scale_mode(sdl2::render::ScaleMode::Linear);
+    let mut texture =
+        app::chart_texture(&texture_creator, screen.screen_width, screen.screen_height)
+            .map_err(anyhow::Error::msg)?;
     let streamer = stream::Streamer::start_or_disable(&config.streaming);
     let mut plotter = app::Plotter::new(
         &sdl.context,
@@ -98,5 +91,10 @@ async fn run() -> anyhow::Result<()> {
         streamer,
     )?;
     diagnostics::record("INFO", "Application initialisée");
-    plotter.main_loop(&mut sdl.event_pump, &mut screen, &mut texture)
+    plotter.main_loop(
+        &mut sdl.event_pump,
+        &mut screen,
+        &texture_creator,
+        &mut texture,
+    )
 }

@@ -6,7 +6,9 @@ use crate::{
 };
 use mbtiles_renderer::MBTilesRenderer;
 use sdl2::event::Event;
+use sdl2::render::{Texture, TextureCreator};
 use sdl2::ttf::Sdl2TtfContext;
+use sdl2::video::WindowContext;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
@@ -59,6 +61,8 @@ pub(crate) struct Plotter<'ttf> {
     grab: Option<Target>,
     /// When the chart was last redrawn during the drag under way.
     drag_redrawn: Instant,
+    /// The size the window changed to, applied before the next frame.
+    resized: Option<(u32, u32)>,
     topbar: topbar::Topbar<'ttf>,
     buttombar: buttombar::Buttombar<'ttf>,
     confirm_dialog: confirm_dialog::ConfirmDialog<'ttf>,
@@ -73,6 +77,25 @@ pub(crate) struct Plotter<'ttf> {
     track_rx: tokio::sync::mpsc::UnboundedReceiver<(f64, f64)>,
     ais_rx: watch::Receiver<Vec<ais::AisTarget>>,
     streamer: Option<crate::stream::Streamer>,
+}
+
+/// The streaming texture the chart is drawn into, for a window of
+/// `width` x `height` (room for any rotation).
+pub(crate) fn chart_texture(
+    texture_creator: &TextureCreator<WindowContext>,
+    width: u32,
+    height: u32,
+) -> Result<Texture, String> {
+    let (texture_width, texture_height) = MBTilesRenderer::texture_dimensions(width, height);
+    let mut texture = texture_creator
+        .create_texture_streaming(
+            sdl2::pixels::PixelFormatEnum::RGBA32,
+            texture_width,
+            texture_height,
+        )
+        .map_err(|error| error.to_string())?;
+    texture.set_scale_mode(sdl2::render::ScaleMode::Linear);
+    Ok(texture)
 }
 
 impl<'ttf> Plotter<'ttf> {
@@ -156,6 +179,7 @@ impl<'ttf> Plotter<'ttf> {
             gestures: GestureRecognizer::new(LONG_CLICK, MOVE_TOLERANCE),
             grab: None,
             drag_redrawn: Instant::now(),
+            resized: None,
             topbar,
             buttombar,
             confirm_dialog,
@@ -170,6 +194,30 @@ impl<'ttf> Plotter<'ttf> {
             ais_rx,
             streamer,
         })
+    }
+
+    /// The window was resized or maximised: everything that holds its size
+    /// follows, and the chart texture is made again for the new size.
+    fn resize(
+        &mut self,
+        screen: &mut screen::Screen<'_>,
+        texture_creator: &TextureCreator<WindowContext>,
+        texture: &mut Texture,
+        width: u32,
+        height: u32,
+    ) -> anyhow::Result<()> {
+        *texture = chart_texture(texture_creator, width, height).map_err(anyhow::Error::msg)?;
+        screen.resize(width, height);
+        self.session.renderer.resize(width, height);
+        self.session.sync_view();
+        self.topbar.resize(width);
+        self.buttombar.resize(width, height);
+        self.confirm_dialog.resize(width, height);
+        self.chart_manager.resize(width, height);
+        self.photo_button.resize(height);
+        self.dirty = true;
+        crate::diagnostics::record("INFO", format!("Fenêtre redimensionnée: {width}x{height}"));
+        Ok(())
     }
 
     /// Runs an action on the session and schedules a redraw. Opening the
@@ -204,7 +252,8 @@ impl<'ttf> Plotter<'ttf> {
         &mut self,
         event_pump: &mut sdl2::EventPump,
         screen: &mut screen::Screen<'_>,
-        texture: &mut sdl2::render::Texture,
+        texture_creator: &TextureCreator<WindowContext>,
+        texture: &mut Texture,
     ) -> anyhow::Result<()> {
         let mut last_diagnostics = Instant::now();
         let mut loop_count: u64 = 0;
@@ -260,6 +309,10 @@ impl<'ttf> Plotter<'ttf> {
                         format!("Traitement d'un événement SDL lent: {elapsed:?}"),
                     );
                 }
+            }
+
+            if let Some((width, height)) = self.resized.take() {
+                self.resize(screen, texture_creator, texture, width, height)?;
             }
 
             // Live data in: drain each channel, hand it to the session, and

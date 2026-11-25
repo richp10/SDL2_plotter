@@ -327,6 +327,13 @@ impl Plotter<'_> {
                     "DEBUG",
                     format!("Événement fenêtre SDL: {win_event:?}"),
                 );
+                // Maximised, restored or dragged to a new size; a minimised
+                // window reports nothing worth drawing for.
+                if let sdl2::event::WindowEvent::SizeChanged(width, height) = *win_event {
+                    if width > 0 && height > 0 {
+                        self.resized = Some((width as u32, height as u32));
+                    }
+                }
             }
             _ => {}
         }

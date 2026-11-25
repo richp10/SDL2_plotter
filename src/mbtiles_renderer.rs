@@ -158,6 +158,13 @@ impl MBTilesRenderer {
         self.center_world = (x, y);
     }
 
+    /// The window is now `width` x `height`: the view and the frame follow.
+    /// The caller gives the chart texture `texture_dimensions` of it.
+    pub fn resize(&mut self, width: u32, height: u32) {
+        (self.width, self.height) = (width, height);
+        (self.render_width, self.render_height) = Self::texture_dimensions(width, height);
+    }
+
     pub fn texture_dimensions(width: u32, height: u32) -> (u32, u32) {
         let side = ((width as f64).hypot(height as f64)).ceil() as u32 + ROTATION_MARGIN;
         let scaled_side = side * 2 + ROTATION_MARGIN;
@@ -907,6 +914,25 @@ mod tests {
         for path in [chart, first, world] {
             std::fs::remove_file(path).unwrap();
         }
+    }
+
+    #[test]
+    fn after_a_resize_the_frame_fills_the_new_window() {
+        let chart = fixture_chart_with(&[2], Rgba([200, 0, 0, 255]));
+        let mut renderer = renderer_for(&chart, 2);
+        renderer.look_at(0.0, 0.0, (0, 0));
+        renderer.resize(800, 600);
+        let placement = renderer.placement();
+        assert_eq!(
+            (placement.display_width, placement.display_height),
+            (800, 600)
+        );
+        assert_eq!(renderer.view().to_pixel((0.0, 0.0)), Point::new(400, 300));
+        let (_, rect) = renderer.render_frame();
+        let (texture_width, texture_height) = MBTilesRenderer::texture_dimensions(800, 600);
+        assert!(rect.right() <= texture_width as i32 && rect.bottom() <= texture_height as i32);
+        drop(renderer);
+        std::fs::remove_file(chart).unwrap();
     }
 
     #[test]

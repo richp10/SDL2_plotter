@@ -229,6 +229,11 @@ impl<'ttf> Topbar<'ttf> {
         })
     }
 
+    /// The window is now `width` wide.
+    pub fn resize(&mut self, width: u32) {
+        self.width = width;
+    }
+
     pub fn event(&mut self, x: u32, y: u32) -> Option<AppAction> {
         self.bar.event(x, y)
     }

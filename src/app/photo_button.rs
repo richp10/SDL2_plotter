@@ -61,6 +61,11 @@ impl<'ttf> PhotoButtonView<'ttf> {
         area(self.height)
     }
 
+    /// The window is now `height` high.
+    pub(super) fn resize(&mut self, height: u32) {
+        self.height = height;
+    }
+
     /// The thumbnail (or a plain square naming where a tap goes), its
     /// border, and "k/n" while a photo is shown.
     pub(super) fn show(

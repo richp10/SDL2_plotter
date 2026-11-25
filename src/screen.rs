@@ -119,6 +119,7 @@ impl<'ttf> Screen<'ttf> {
                     window_config.height,
                 )
                 .position_centered()
+                .resizable()
                 .build(),
             true => video_subsystem
                 .window(
@@ -166,6 +167,11 @@ impl<'ttf> Screen<'ttf> {
             cursor_size,
             appearance: appearance.clone(),
         })
+    }
+
+    /// The window is now `width` x `height`.
+    pub fn resize(&mut self, width: u32, height: u32) {
+        (self.screen_width, self.screen_height) = (width, height);
     }
 
     /// Executes a plan from `overlay::plan`. Decorations (track, handles,

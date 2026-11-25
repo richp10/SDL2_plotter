@@ -86,6 +86,11 @@ impl<'ttf> ConfirmDialog<'ttf> {
         })
     }
 
+    /// The window is now `width` x `height`.
+    pub fn resize(&mut self, width: u32, height: u32) {
+        (self.screen_width, self.screen_height) = (width, height);
+    }
+
     /// Which button a click lands on while a confirmation is open:
     /// `Some(true)` confirm, `Some(false)` cancel, `None` neither.
     pub fn handle_click(&self, x: i32, y: i32) -> Option<bool> {

@@ -30,6 +30,11 @@ impl<'ttf> Buttombar<'ttf> {
         })
     }
 
+    /// The window is now `width` x `height`.
+    pub fn resize(&mut self, width: u32, height: u32) {
+        (self.width, self.height) = (width, height);
+    }
+
     /// The bar with a message on the left, one in the centre (the chart
     /// shown) and one on the right.
     pub fn show(

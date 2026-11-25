@@ -135,9 +135,59 @@ pub fn record(level: &str, message: impl std::fmt::Display) {
     }
 }
 
+/// An error that can repeat every frame: the first time it is logged, then
+/// only every thousandth time, so a lasting fault cannot fill the log.
+#[derive(Default)]
+pub struct Repeated {
+    last: Option<String>,
+    count: u64,
+}
+
+impl Repeated {
+    /// The line to log for this error, if any.
+    pub fn note(&mut self, message: &str) -> Option<String> {
+        if self.last.as_deref() != Some(message) {
+            self.last = Some(message.to_string());
+            self.count = 1;
+            return Some(message.to_string());
+        }
+        self.count += 1;
+        self.count
+            .is_multiple_of(1000)
+            .then(|| format!("{message} ({} fois)", self.count))
+    }
+
+    /// The operation worked again: the next error is logged at once.
+    pub fn clear(&mut self) {
+        self.last = None;
+        self.count = 0;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_repeated_error_is_logged_once_then_every_thousandth_time() {
+        let mut repeated = Repeated::default();
+        assert_eq!(repeated.note("lost"), Some("lost".to_string()));
+        for _ in 2..1000 {
+            assert_eq!(repeated.note("lost"), None);
+        }
+        assert_eq!(repeated.note("lost"), Some("lost (1000 fois)".to_string()));
+        assert_eq!(
+            repeated.note("other"),
+            Some("other".to_string()),
+            "a new message"
+        );
+        repeated.clear();
+        assert_eq!(
+            repeated.note("other"),
+            Some("other".to_string()),
+            "after a success"
+        );
+    }
 
     fn temp_log(tag: &str) -> std::path::PathBuf {
         let unique = std::time::SystemTime::now()

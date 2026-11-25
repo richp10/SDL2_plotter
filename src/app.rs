@@ -63,6 +63,11 @@ pub(crate) struct Plotter<'ttf> {
     drag_redrawn: Instant,
     /// The size the window changed to, applied before the next frame.
     resized: Option<(u32, u32)>,
+    /// SDL reported that the render device or its targets were reset.
+    device_reset: bool,
+    /// Render and stream-capture errors, logged without flooding the log.
+    render_errors: crate::diagnostics::Repeated,
+    capture_errors: crate::diagnostics::Repeated,
     topbar: topbar::Topbar<'ttf>,
     buttombar: buttombar::Buttombar<'ttf>,
     confirm_dialog: confirm_dialog::ConfirmDialog<'ttf>,
@@ -191,6 +196,9 @@ impl<'ttf> Plotter<'ttf> {
             grab: None,
             drag_redrawn: Instant::now(),
             resized: None,
+            device_reset: false,
+            render_errors: crate::diagnostics::Repeated::default(),
+            capture_errors: crate::diagnostics::Repeated::default(),
             topbar,
             buttombar,
             confirm_dialog,
@@ -322,6 +330,16 @@ impl<'ttf> Plotter<'ttf> {
                 }
             }
 
+            if std::mem::take(&mut self.device_reset) {
+                // The renderer lost its textures: make the chart texture
+                // again, as a resize to the same size does.
+                let (width, height) = screen.canvas.output_size().map_err(anyhow::Error::msg)?;
+                crate::diagnostics::record(
+                    "WARN",
+                    "Périphérique de rendu réinitialisé; texture refaite",
+                );
+                self.resized.get_or_insert((width, height));
+            }
             if let Some((width, height)) = self.resized.take() {
                 self.resize(screen, texture_creator, texture, width, height)?;
             }
@@ -366,13 +384,27 @@ impl<'ttf> Plotter<'ttf> {
             //////////////////////   Display /////////////////////////
             if self.dirty && !self.dragging_chart() {
                 let display_started = Instant::now();
-                self.display(screen, texture).map_err(anyhow::Error::msg)?;
-                rendered_frames += 1;
+                // A frame that fails is logged and tried again next
+                // iteration: the chart must keep drawing.
+                match self.display(screen, texture) {
+                    Ok(()) => {
+                        self.render_errors.clear();
+                        rendered_frames += 1;
+                        self.dirty = false;
+                    }
+                    Err(error) => {
+                        if let Some(line) = self.render_errors.note(&error.to_string()) {
+                            crate::diagnostics::record(
+                                "ERROR",
+                                format!("Erreur de rendu, image réessayée: {line}"),
+                            );
+                        }
+                    }
+                }
                 let elapsed = display_started.elapsed();
                 if elapsed >= Duration::from_millis(500) {
                     crate::diagnostics::record("WARN", format!("Rendu lent: {elapsed:?}"));
                 }
-                self.dirty = false;
             }
 
             /////////////////  Mouse //////////////////////////////////

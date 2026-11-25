@@ -322,6 +322,10 @@ impl Plotter<'_> {
                 crate::diagnostics::record("INFO", "Événement SDL Quit reçu");
                 self.session.running = false;
             }
+            Event::RenderTargetsReset { .. } | Event::RenderDeviceReset { .. } => {
+                self.device_reset = true;
+                self.dirty = true;
+            }
             Event::Window { win_event, .. } => {
                 crate::diagnostics::record(
                     "DEBUG",

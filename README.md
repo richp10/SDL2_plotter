@@ -119,10 +119,10 @@ The subscription uses these configured paths for vessel data and AIS targets.
 [nmea0183]
 transport = "tcp"            # "tcp": connect to address; "udp": bind address and listen
 address = "127.0.0.1:10110"  # host:port or IP:port; for UDP, for example "0.0.0.0:10110"
-talker = ""                  # RMC from this talker only, for example "GN"; empty: every talker
+talker = ""                  # position sentences from this talker only, for example "GN"; empty: every talker
 ```
 
-Used when `source = "nmea0183"`. To test with `go-gps-simulator`: run `gps-simulator -tcp` with `transport = "tcp"`, `address = "127.0.0.1:10110"`, or `gps-simulator -udp -host 127.0.0.1` with `transport = "udp"`, `address = "0.0.0.0:10110"`. The app reads RMC (position, speed, course), HDT and HDG (heading; HDG only with a magnetic variation). It also reads AIS targets from `!AIVDM` (message types 1, 2, 3, 5, 18, 19 and 24).
+Used when `source = "nmea0183"`. To test with `go-gps-simulator`: run `gps-simulator -tcp` with `transport = "tcp"`, `address = "127.0.0.1:10110"`, or `gps-simulator -udp -host 127.0.0.1` with `transport = "udp"`, `address = "0.0.0.0:10110"`. The app reads RMC (position, speed, course), HDT and HDG (heading; HDG only with a magnetic variation). When no RMC comes for 5 s, it uses GGA or GLL for the position and VTG for speed and course. It also reads AIS targets from `!AIVDM` (message types 1, 2, 3, 5, 18, 19 and 24).
 
 ### Charts
 

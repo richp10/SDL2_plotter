@@ -12,8 +12,8 @@ From the NMEA 0183 work (2026-11-25). See `docs/nmea0183-input-design.md`.
   127.0.0.1`) was tested, not the simulator's default broadcast.
 - **No serial transport.** A USB GPS or a serial multiplexer is not
   supported (`tokio-serial` would be needed).
-- **No GGA or GLL fallback.** A device that sends no RMC gives no
-  position.
+- **Old VTG form not read.** A VTG with no unit letters (before NMEA 2.3:
+  `$--VTG,054.7,034.4,005.5,010.2`) gives no speed or course.
 - **NMEA 2000 path not decided.** SocketCAN on the Pi, or a gateway over
   IP (Yacht Devices RAW, Actisense W2K-1). `nmea2k` now logs an ERROR.
   Research: `docs/nmea0183-input-research-2026-11-25.md` section 6.

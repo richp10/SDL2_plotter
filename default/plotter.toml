@@ -19,7 +19,7 @@ ais_speed_over_ground = "navigation.speedOverGround"
 # "tcp": connect to address; "udp": bind address and listen
 transport = "tcp"
 address = "127.0.0.1:10110"
-# RMC from this talker only (for example "GN"); empty: every talker
+# position sentences (RMC, GGA, GLL, VTG) from this talker only (for example "GN"); empty: every talker
 talker = ""
 
 [charts]

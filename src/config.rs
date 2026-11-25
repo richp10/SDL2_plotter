@@ -75,7 +75,8 @@ pub enum Transport {
 pub struct Nmea0183Config {
     pub transport: Transport,
     pub address: String,
-    /// Read RMC from this talker only (for example "GN"), for a
+    /// Read position sentences (RMC, GGA, GLL, VTG) from this talker only
+    /// (for example "GN"), for a
     /// multiplexer that mixes two GPS receivers. Empty: every talker.
     pub talker: String,
 }

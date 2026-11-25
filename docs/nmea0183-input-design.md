@@ -24,7 +24,7 @@ behaviour is the same as now.
 | 5 | `AppConfig::validate` checks only the table of the selected source. |
 | 6 | `nmea2k` is accepted by the config. At start the app logs an ERROR ("not supported yet") and runs with no live data. |
 | 7 | AIS (Automatic Identification System) over NMEA 0183 was not in the first version. Added later: `!AIVDM` types 1, 2, 3, 5, 18, 19 and 24 (`nmea0183/aivdm.rs`). |
-| 8 | RMC is the only source of position, COG and SOG. GGA, GLL and VTG are ignored. One RMC with a fix = one track point at most. |
+| 8 | RMC is the source of position, COG and SOG. Added later: when no RMC comes for 5 s (`RMC_SILENCE`), GGA and GLL give the position and VTG the COG and SOG. GGA quality 0 or 6, and GLL status `V` or mode `N` or `E`, are no fix. The track drops a second point closer than 20 m, so GGA and GLL for the same fix add one point. |
 | 9 | A fix is RMC status `A` with a mode indicator that is not `N` (or no mode field, NMEA before 2.3). Anything else, mode `E` (dead reckoning) included, is no fix. A no-fix RMC does not change the position. |
 | 10 | Heading: HDT (true) first. Else HDG converted to true with the variation in HDG, else the variation in the last RMC. With no variation, no heading. A magnetic value is never shown as true. |
 | 11 | Heading draws a heading line on the boat marker. The COG vector stays. Course-up rotation stays on COG. |

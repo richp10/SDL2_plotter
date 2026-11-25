@@ -5,7 +5,7 @@
 mod aivdm;
 mod transport;
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use std::collections::HashMap;
 
@@ -13,6 +13,10 @@ use crate::ais::AisTarget;
 use crate::boat::{BoatState, HEADING_TIMEOUT};
 use crate::config::{Nmea0183Config, Transport};
 use crate::feed::LiveFeed;
+
+/// With no RMC for this long, GGA and GLL give the position and VTG the
+/// speed and course.
+const RMC_SILENCE: Duration = Duration::from_secs(5);
 
 /// 1 knot = 1852 m per hour.
 const METRES_PER_SECOND_PER_KNOT: f64 = 1852.0 / 3600.0;
@@ -74,8 +78,11 @@ pub struct Decoder {
     variation: Option<f64>,
     /// When the last HDT came. HDG is ignored while it is fresh.
     hdt_at: Option<Instant>,
-    /// When set, RMC from other talkers is ignored.
+    /// When set, position sentences (RMC, GGA, GLL, VTG) from other
+    /// talkers are ignored.
     talker: Option<String>,
+    /// When the last RMC came. GGA, GLL and VTG are used only without one.
+    rmc_at: Option<Instant>,
     /// AIS fragments waiting for the rest of their message.
     assembler: aivdm::Assembler,
     /// AIS targets by context (`vessels.urn:mrn:imo:mmsi:<MMSI>`, as Signal
@@ -90,6 +97,7 @@ impl Decoder {
             variation: None,
             hdt_at: None,
             talker: None,
+            rmc_at: None,
             assembler: aivdm::Assembler::default(),
             targets: HashMap::new(),
         }
@@ -128,6 +136,16 @@ impl Decoder {
         // optional RMC filter.
         match fields[0].get(2..) {
             Some("RMC") if self.talker_allowed(fields[0]) => self.rmc(&fields, now),
+            // Fallbacks for a device that sends no RMC.
+            Some("GGA") if self.talker_allowed(fields[0]) && self.rmc_silent(now) => {
+                self.gga(&fields, now)
+            }
+            Some("GLL") if self.talker_allowed(fields[0]) && self.rmc_silent(now) => {
+                self.gll(&fields, now)
+            }
+            Some("VTG") if self.talker_allowed(fields[0]) && self.rmc_silent(now) => {
+                self.vtg(&fields)
+            }
             Some("HDT") => {
                 let update = self.heading(field(&fields, 1).and_then(degrees), now);
                 if update.boat_changed {
@@ -156,11 +174,56 @@ impl Decoder {
     }
 
     fn rmc(&mut self, fields: &[&str], now: Instant) -> Update {
+        self.rmc_at = Some(now);
         if let Some(variation) = offset(field(fields, 10), field(fields, 11)) {
             self.variation = Some(variation);
         }
-        let mode_ok = !matches!(field(fields, 12), Some("N" | "E"));
-        if field(fields, 2) != Some("A") || !mode_ok {
+        let valid = field(fields, 2) == Some("A") && mode_ok(field(fields, 12));
+        let update = self.position(valid, fields, 3, now);
+        if update.track_point.is_some() {
+            self.motion(field(fields, 7), field(fields, 8));
+        }
+        update
+    }
+
+    /// GGA, used while no RMC comes: quality 0 is no fix, 6 is dead
+    /// reckoning (no fix either, as RMC mode E).
+    fn gga(&mut self, fields: &[&str], now: Instant) -> Update {
+        let valid = field(fields, 6).is_some_and(|quality| quality != "0" && quality != "6");
+        self.position(valid, fields, 2, now)
+    }
+
+    /// GLL, used while no RMC comes: status A and a mode that is not N or E.
+    fn gll(&mut self, fields: &[&str], now: Instant) -> Update {
+        let valid = field(fields, 6) == Some("A") && mode_ok(field(fields, 7));
+        self.position(valid, fields, 1, now)
+    }
+
+    /// VTG, used while no RMC comes: true course and speed in knots.
+    fn vtg(&mut self, fields: &[&str]) -> Update {
+        if !mode_ok(field(fields, 9)) {
+            return Update::default();
+        }
+        let course = (field(fields, 2) == Some("T"))
+            .then(|| field(fields, 1))
+            .flatten();
+        let speed = (field(fields, 6) == Some("N"))
+            .then(|| field(fields, 5))
+            .flatten();
+        if !self.motion(speed, course) {
+            return Update::default();
+        }
+        Update {
+            boat_changed: true,
+            ..Update::default()
+        }
+    }
+
+    /// A position from `fields[at..at + 4]` (lat, N/S, lon, E/W). When the
+    /// sentence says there is no fix, the fix is lost and the position
+    /// kept; a bad coordinate changes nothing.
+    fn position(&mut self, valid: bool, fields: &[&str], at: usize, now: Instant) -> Update {
+        if !valid {
             self.boat.position_valid = false;
             return Update {
                 boat_changed: true,
@@ -168,8 +231,8 @@ impl Decoder {
             };
         }
         let (Some(lat), Some(lon)) = (
-            coordinate(field(fields, 3), field(fields, 4), 2, 'N', 'S'),
-            coordinate(field(fields, 5), field(fields, 6), 3, 'E', 'W'),
+            coordinate(field(fields, at), field(fields, at + 1), 2, 'N', 'S'),
+            coordinate(field(fields, at + 2), field(fields, at + 3), 3, 'E', 'W'),
         ) else {
             return Update::default();
         };
@@ -180,20 +243,32 @@ impl Decoder {
         self.boat.longitude = lon;
         self.boat.position_valid = true;
         self.boat.fixed_at = Some(now);
-        if let Some(knots) = field(fields, 7)
-            .and_then(number)
-            .filter(|knots| *knots >= 0.0)
-        {
-            self.boat.speed_over_ground = knots * METRES_PER_SECOND_PER_KNOT;
-        }
-        if let Some(course) = field(fields, 8).and_then(degrees) {
-            self.boat.course_over_ground = course.to_radians();
-        }
         Update {
             boat_changed: true,
             track_point: Some((lon, lat)),
             ..Update::default()
         }
+    }
+
+    /// Speed in knots and true course in degrees; an empty or bad field
+    /// keeps the last value. Returns true when either changed.
+    fn motion(&mut self, knots: Option<&str>, course: Option<&str>) -> bool {
+        let mut changed = false;
+        if let Some(knots) = knots.and_then(number).filter(|knots| *knots >= 0.0) {
+            self.boat.speed_over_ground = knots * METRES_PER_SECOND_PER_KNOT;
+            changed = true;
+        }
+        if let Some(course) = course.and_then(degrees) {
+            self.boat.course_over_ground = course.to_radians();
+            changed = true;
+        }
+        changed
+    }
+
+    /// True when no RMC came for `RMC_SILENCE`: GGA, GLL and VTG are used.
+    fn rmc_silent(&self, now: Instant) -> bool {
+        self.rmc_at
+            .is_none_or(|at| now.saturating_duration_since(at) >= RMC_SILENCE)
     }
 
     /// One `!AIVDM` fragment. The target is changed when a whole message
@@ -310,6 +385,12 @@ fn signed(
         c if c == negative => Some(-value),
         _ => None,
     }
+}
+
+/// A mode indicator (NMEA 2.3 and later) that allows a fix: anything but
+/// N (not valid) and E (estimated, dead reckoning). No field: allowed.
+fn mode_ok(mode: Option<&str>) -> bool {
+    !matches!(mode, Some("N" | "E"))
 }
 
 /// A magnetic variation or deviation in degrees, east positive, at most
@@ -635,17 +716,112 @@ mod tests {
         assert_eq!(d.boat().heading, None);
     }
 
+    const GGA: &str = "GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,";
+    const GLL: &str = "GPGLL,4916.45,N,12311.12,W,225444,A,A";
+    const VTG: &str = "GPVTG,054.7,T,034.4,M,005.5,N,010.2,K,A";
+
     #[test]
-    fn gga_gll_and_vtg_give_no_update() {
-        let mut d = Decoder::new();
-        for body in [
-            "GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,",
-            "GPGLL,4916.45,N,12311.12,W,225444,A",
-            "GPVTG,054.7,T,034.4,M,005.5,N,010.2,K",
-        ] {
-            assert_eq!(d.apply(&sentence(body), Instant::now()), Update::default());
+    fn gga_gll_and_vtg_are_ignored_while_rmc_comes() {
+        let now = Instant::now();
+        let mut d = fixed_decoder(now);
+        let soon = now + Duration::from_secs(4);
+        for body in [GGA, GLL, VTG] {
+            assert_eq!(d.apply(&sentence(body), soon), Update::default(), "{body}");
         }
-        assert_eq!(d.boat().fixed_at, None);
+        assert_eq!(d.boat().fixed_at, Some(now));
+    }
+
+    #[test]
+    fn gga_gives_the_fix_when_no_rmc_comes() {
+        let now = Instant::now();
+        let mut d = Decoder::new();
+        let u = d.apply(&sentence(GGA), now);
+        let b = d.boat();
+        assert!(b.position_valid);
+        assert_eq!(b.fixed_at, Some(now));
+        assert!((b.latitude - 48.1173).abs() < 1e-6);
+        assert!((b.longitude - 11.516_666_7).abs() < 1e-6);
+        assert_eq!(u.track_point, Some((b.longitude, b.latitude)));
+    }
+
+    #[test]
+    fn the_fallback_starts_five_seconds_after_the_last_rmc() {
+        let now = Instant::now();
+        let mut d = fixed_decoder(now);
+        let late = now + RMC_SILENCE;
+        let u = d.apply(&sentence(GLL), late);
+        assert!(u.track_point.is_some());
+        let b = d.boat();
+        assert!((b.latitude - (49.0 + 16.45 / 60.0)).abs() < 1e-9);
+        assert!((b.longitude + (123.0 + 11.12 / 60.0)).abs() < 1e-9);
+        assert_eq!(b.fixed_at, Some(late));
+    }
+
+    #[test]
+    fn vtg_gives_speed_and_course_when_no_rmc_comes() {
+        let mut d = Decoder::new();
+        let u = d.apply(&sentence(VTG), Instant::now());
+        assert!(u.boat_changed);
+        assert_eq!(u.track_point, None);
+        let b = d.boat();
+        assert!((b.speed_over_ground - 5.5 * 0.514_444).abs() < 1e-3);
+        assert!((b.course_over_ground - 54.7_f64.to_radians()).abs() < 1e-9);
+        assert_eq!(b.fixed_at, None, "VTG is not a fix");
+        let no_fix = d.apply(
+            &sentence("GPVTG,054.7,T,,M,005.5,N,010.2,K,N"),
+            Instant::now(),
+        );
+        assert_eq!(no_fix, Update::default(), "mode N");
+    }
+
+    #[test]
+    fn gga_without_a_fix_or_estimated_is_no_fix() {
+        for quality in ["0", "6"] {
+            let mut d = Decoder::new();
+            let body = GGA.replace(",E,1,08,", &format!(",E,{quality},08,"));
+            let u = d.apply(&sentence(&body), Instant::now());
+            assert!(u.boat_changed, "quality {quality}");
+            assert_eq!(u.track_point, None, "quality {quality}");
+            assert!(!d.boat().position_valid);
+        }
+        let mut d = Decoder::new();
+        let u = d.apply(
+            &sentence("GPGGA,120000.00,,,,,0,00,,,,,,,,,"),
+            Instant::now(),
+        );
+        assert_eq!(u.track_point, None, "the simulator's no-fix GGA");
+    }
+
+    #[test]
+    fn gll_status_v_or_mode_n_or_e_is_no_fix() {
+        for body in [
+            "GPGLL,4916.45,N,12311.12,W,225444,V,A",
+            "GPGLL,4916.45,N,12311.12,W,225444,A,N",
+            "GPGLL,4916.45,N,12311.12,W,225444,A,E",
+        ] {
+            let mut d = Decoder::new();
+            let u = d.apply(&sentence(body), Instant::now());
+            assert_eq!(u.track_point, None, "{body}");
+            assert!(!d.boat().position_valid, "{body}");
+        }
+        let mut d = Decoder::new();
+        let old = d.apply(
+            &sentence("GPGLL,4916.45,N,12311.12,W,225444,A"),
+            Instant::now(),
+        );
+        assert!(old.track_point.is_some(), "no mode field (before NMEA 2.3)");
+    }
+
+    #[test]
+    fn the_talker_filter_covers_gga_and_gll() {
+        let mut d = Decoder::with_talker("GN");
+        assert_eq!(d.apply(&sentence(GGA), Instant::now()), Update::default());
+        assert_eq!(d.apply(&sentence(GLL), Instant::now()), Update::default());
+        let gn = GGA.replacen("GP", "GN", 1);
+        assert!(d
+            .apply(&sentence(&gn), Instant::now())
+            .track_point
+            .is_some());
     }
 
     /// `!body*hh`, as `sentence` does for `$`.

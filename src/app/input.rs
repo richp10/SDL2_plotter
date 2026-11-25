@@ -184,6 +184,11 @@ impl Plotter<'_> {
             let fast = keymod.intersects(Mod::LSHIFTMOD | Mod::RSHIFTMOD);
             let distance = if fast { 1000 } else { 100 };
             let action = match *keycode {
+                sdl2::keyboard::Keycode::Escape if self.session.selected_ais.is_some() => {
+                    self.session.selected_ais = None;
+                    self.dirty = true;
+                    None
+                }
                 sdl2::keyboard::Keycode::Escape => match self.session.mode {
                     Mode::Measurement => {
                         self.session.mesure.clear();
@@ -389,6 +394,11 @@ impl Plotter<'_> {
     }
 
     fn handle_mouse_down(&mut self, x: u32, y: u32) {
+        // An open AIS details window takes the next tap, anywhere, to close.
+        if self.session.selected_ais.take().is_some() {
+            self.dirty = true;
+            return;
+        }
         if self.topbar.mouse(x, y) {
             self.handle_topbar_event(x, y);
             // Opening, switching or closing a menu changes the frame even
@@ -423,6 +433,12 @@ impl Plotter<'_> {
     fn handle_mouse_up(&mut self, at: Point) {
         match self.gestures.release(at) {
             Some(Gesture::Click(at)) => {
+                // A tap on an AIS target opens its details, in any mode.
+                if let Some(context) = self.session.ais_at(at) {
+                    self.session.selected_ais = Some(context);
+                    self.dirty = true;
+                    return;
+                }
                 if let Some(ClickRequest::NameWaypoint(position)) = self.session.click(at) {
                     self.pending_waypoint = Some(PendingWaypoint {
                         position,

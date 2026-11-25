@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 mod actions;
+mod ais_info;
 mod centre_button;
 mod chart_manager;
 mod confirm_dialog;
@@ -79,6 +80,8 @@ pub(crate) struct Plotter<'ttf> {
     photo_button: photo_button::PhotoButtonView<'ttf>,
     /// The button that centres the chart on the boat.
     centre_button: centre_button::CentreButtonView,
+    /// The details window of the AIS target tapped.
+    ais_info: ais_info::AisInfoView<'ttf>,
     thumbnails: mbtiles_renderer::Thumbnails,
     pending_waypoint: Option<PendingWaypoint>,
     text_input: sdl2::keyboard::TextInputUtil,
@@ -220,6 +223,8 @@ impl<'ttf> Plotter<'ttf> {
                 .map_err(anyhow::Error::msg)?;
         let photo_button = photo_button::PhotoButtonView::new(ttf_context, height, &config.fonts)
             .map_err(anyhow::Error::msg)?;
+        let ais_info = ais_info::AisInfoView::new(ttf_context, height, &config.fonts)
+            .map_err(anyhow::Error::msg)?;
         let route = route::Route::load(&files.route);
         let track = track::Track::with_checkpoint_interval(
             &files.track,
@@ -266,6 +271,7 @@ impl<'ttf> Plotter<'ttf> {
             chart_manager,
             photo_button,
             centre_button: centre_button::CentreButtonView::new(width, height),
+            ais_info,
             thumbnails: mbtiles_renderer::Thumbnails::new(),
             pending_waypoint: None,
             text_input,
@@ -297,6 +303,7 @@ impl<'ttf> Plotter<'ttf> {
         self.chart_manager.resize(width, height);
         self.photo_button.resize(height);
         self.centre_button.resize(width, height);
+        self.ais_info.resize(height);
         self.dirty = true;
         crate::diagnostics::record("INFO", format!("Fenêtre redimensionnée: {width}x{height}"));
         Ok(())
@@ -627,6 +634,20 @@ mod tests {
         step(&mut plotter, &mut screen);
         assert_eq!(plotter.resized, None);
         assert_eq!((screen.screen_width, screen.screen_height), (800, 600));
+
+        // The AIS details window draws with a frame.
+        let centre = plotter.session.state.position.unwrap_or((0.0, 0.0));
+        let mut ship = crate::ais::AisTarget::new("vessels.urn:mrn:imo:mmsi:232001001".into());
+        ship.position = Some(centre);
+        ship.name = Some("SEA SPIRIT".into());
+        ship.ship_type = Some(70);
+        ship.nav_status = Some(7);
+        plotter.session.set_ais(vec![ship]);
+        plotter.session.selected_ais = Some("vessels.urn:mrn:imo:mmsi:232001001".into());
+        plotter.dirty = true;
+        step(&mut plotter, &mut screen);
+        assert!(!plotter.dirty, "the frame with the window was drawn");
+        assert!(plotter.session.selected_ais_target().is_some());
 
         drop(plotter);
         drop(screen);

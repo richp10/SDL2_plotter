@@ -424,7 +424,7 @@ impl<'ttf> Screen<'ttf> {
     }
 
     /// The colour for an AIS target's category.
-    fn ais_colour(&self, category: Category) -> Color {
+    pub fn ais_colour(&self, category: Category) -> Color {
         let a = &self.appearance;
         configured_color(match category {
             Category::Cargo => a.ais_cargo_color,

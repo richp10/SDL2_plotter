@@ -113,6 +113,25 @@ impl Plotter<'_> {
         screen
             .night_rect(self.centre_button.area(), NIGHT_OPACITY)
             .map_err(anyhow::Error::msg)?;
+        if let Some(target) = self.session.selected_ais_target() {
+            let boat = &self.session.boat;
+            let own = boat.fixed_at.map(|_| boat.position());
+            let rows = crate::ais::details(target, own, std::time::Instant::now());
+            let style = crate::ais::shapes(std::slice::from_ref(target))
+                .first()
+                .and_then(|shape| match shape {
+                    crate::overlay::Shape::Ais { style, .. } => Some(*style),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            let colour = screen.ais_colour(style.category);
+            self.ais_info
+                .show(&mut screen.canvas, &rows, colour)
+                .map_err(anyhow::Error::msg)?;
+            screen
+                .night_rect(self.ais_info.area(rows.len()), NIGHT_OPACITY)
+                .map_err(anyhow::Error::msg)?;
+        }
         self.topbar.show(&mut screen.canvas);
         if let Some(action) = self.session.confirmation.pending() {
             self.confirm_dialog

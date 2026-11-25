@@ -40,6 +40,8 @@ pub(crate) struct Session {
     /// task and thinned by `expire_ais`.
     pub ais_targets: Vec<AisTarget>,
     last_ais_expiry: Instant,
+    /// The AIS target whose details window is open, by context.
+    pub selected_ais: Option<String>,
     pub route: Route,
     pub mesure: Mesure,
     pub track: Track,
@@ -86,6 +88,7 @@ impl Session {
             running: true,
             boat,
             ais_targets: Vec::new(),
+            selected_ais: None,
             last_ais_expiry: Instant::now(),
             route,
             mesure: Mesure::new(),
@@ -150,6 +153,32 @@ impl Session {
     /// The AIS list as the Signal K task last published it.
     pub fn set_ais(&mut self, targets: Vec<AisTarget>) {
         self.ais_targets = targets;
+        self.forget_missing_selection();
+    }
+
+    /// The AIS target within a tap of `pixel` (20 px), by context.
+    pub fn ais_at(&self, pixel: sdl2::rect::Point) -> Option<String> {
+        let placed: Vec<&AisTarget> = self
+            .ais_targets
+            .iter()
+            .filter(|target| target.position.is_some())
+            .collect();
+        let view = self.renderer.view();
+        let index = view.nearest(placed.iter().filter_map(|t| t.position), pixel, 20)?;
+        Some(placed[index].context.clone())
+    }
+
+    /// The target whose details window is open, while it is still heard.
+    pub fn selected_ais_target(&self) -> Option<&AisTarget> {
+        let context = self.selected_ais.as_deref()?;
+        self.ais_targets.iter().find(|t| t.context == context)
+    }
+
+    /// A target that expired closes its details window.
+    fn forget_missing_selection(&mut self) {
+        if self.selected_ais.is_some() && self.selected_ais_target().is_none() {
+            self.selected_ais = None;
+        }
     }
 
     /// Drops targets silent for longer than `ais::TARGET_TIMEOUT`, checking
@@ -163,7 +192,9 @@ impl Session {
             return false;
         }
         self.last_ais_expiry = now;
-        crate::ais::expire(&mut self.ais_targets, now)
+        let changed = crate::ais::expire(&mut self.ais_targets, now);
+        self.forget_missing_selection();
+        changed
     }
 
     /// The position at the centre of the screen: the boat while following,
@@ -631,6 +662,50 @@ mod tests {
         assert!(!fx.session.boat.position_valid, "the old fix stays lost");
         assert_eq!(fx.session.boat.heading, Some(1.0));
         assert!(!fx.session.expire_boat(now + Duration::from_secs(12)));
+        fx.finish();
+    }
+
+    #[test]
+    fn a_tap_on_an_ais_target_finds_it_and_a_tap_elsewhere_does_not() {
+        let mut fx = session(&[2]);
+        fx.session.state.position = Some((0.0, 0.0));
+        fx.session.sync_view();
+        let mut ship = AisTarget::new("vessels.urn:mrn:imo:mmsi:232001001".to_string());
+        ship.position = Some((0.0, 0.0));
+        let mut far = AisTarget::new("vessels.urn:mrn:imo:mmsi:232002002".to_string());
+        far.position = Some((60.0, 0.0));
+        let mut unplaced = AisTarget::new("vessels.urn:mrn:imo:mmsi:232003003".to_string());
+        unplaced.position = None;
+        fx.session.set_ais(vec![far, unplaced, ship]);
+        let view = fx.session.renderer.view();
+        let on = view.to_pixel((0.0, 0.0));
+        assert_eq!(
+            fx.session
+                .ais_at(sdl2::rect::Point::new(on.x + 10, on.y - 8))
+                .as_deref(),
+            Some("vessels.urn:mrn:imo:mmsi:232001001")
+        );
+        assert_eq!(
+            fx.session.ais_at(sdl2::rect::Point::new(on.x + 80, on.y)),
+            None
+        );
+        fx.finish();
+    }
+
+    #[test]
+    fn the_selected_target_closes_when_it_expires() {
+        let mut fx = session(&[2]);
+        let mut ship = AisTarget::new("vessels.urn:mrn:imo:mmsi:232001001".to_string());
+        ship.position = Some((0.0, 0.0));
+        fx.session.set_ais(vec![ship]);
+        fx.session.selected_ais = Some("vessels.urn:mrn:imo:mmsi:232001001".to_string());
+        assert!(fx.session.selected_ais_target().is_some());
+        fx.session.set_ais(Vec::new());
+        assert!(fx.session.selected_ais_target().is_none());
+        assert_eq!(
+            fx.session.selected_ais, None,
+            "closed, not left pointing at nothing"
+        );
         fx.finish();
     }
 

@@ -97,6 +97,15 @@ impl AisTarget {
         self.last_update = Instant::now();
     }
 
+    /// The MMSI, the last part of the context.
+    fn label_mmsi(&self) -> String {
+        self.context
+            .rsplit(':')
+            .next()
+            .unwrap_or(&self.context)
+            .to_string()
+    }
+
     fn label(&self) -> String {
         self.name.clone().unwrap_or_else(|| {
             self.context
@@ -105,6 +114,154 @@ impl AisTarget {
                 .unwrap_or(&self.context)
                 .to_string()
         })
+    }
+}
+
+/// The rows of a target's details window, label and value, in reading
+/// order. A value the target has not sent is left out; the MMSI, class,
+/// and time since the last report always show. `own` is the own boat's
+/// position, for range and bearing.
+pub fn details(
+    target: &AisTarget,
+    own: Option<(f64, f64)>,
+    now: Instant,
+) -> Vec<(&'static str, String)> {
+    let degrees = |radians: f64| (radians.to_degrees().rem_euclid(360.0).round() as u32) % 360;
+    let size = match (target.length_m, target.beam_m) {
+        (Some(length), Some(beam)) => Some(format!("{length} × {beam} m")),
+        (Some(length), None) => Some(format!("{length} m long")),
+        _ => None,
+    };
+    let range = own.zip(target.position).map(|(own, at)| {
+        let (distance, bearing) = crate::gps::distance_bearing_nm(own, at);
+        format!(
+            "{distance:.2} NM, bearing {:03}°",
+            (bearing.round() as u32) % 360
+        )
+    });
+    let rows: [(&'static str, Option<String>); 15] = [
+        ("Name", target.name.clone()),
+        ("MMSI", Some(target.label_mmsi())),
+        ("Call sign", target.call_sign.clone()),
+        (
+            "Type",
+            target
+                .ship_type
+                .map(|kind| format!("{} ({kind})", ship_type_name(kind))),
+        ),
+        (
+            "Class",
+            Some(if target.class_b { "B" } else { "A" }.to_string()),
+        ),
+        (
+            "Status",
+            target
+                .nav_status
+                .map(|status| nav_status_name(status).to_string()),
+        ),
+        ("Position", target.position.map(format_position)),
+        (
+            "Speed",
+            target
+                .speed_over_ground
+                .map(|speed| format!("{:.1} kn", speed * 3600.0 / 1852.0)),
+        ),
+        (
+            "Course",
+            target
+                .course_over_ground
+                .map(|course| format!("{:03}°", degrees(course))),
+        ),
+        (
+            "Heading",
+            target
+                .heading
+                .map(|heading| format!("{:03}°", degrees(heading))),
+        ),
+        ("Size", size),
+        ("Draught", target.draught_m.map(|d| format!("{d:.1} m"))),
+        ("Destination", target.destination.clone()),
+        ("Range", range),
+        (
+            "Last report",
+            Some(ago(now.saturating_duration_since(target.last_update))),
+        ),
+    ];
+    rows.into_iter()
+        .filter_map(|(label, value)| value.map(|value| (label, value)))
+        .collect()
+}
+
+/// `51° 29.700' N  000° 32.766' E`: degrees and decimal minutes.
+fn format_position((lon, lat): (f64, f64)) -> String {
+    // In thousandths of a minute, so 59.9996' rounds up to the next degree.
+    let split = |value: f64| {
+        let thousandths = (value.abs() * 60_000.0).round() as u64;
+        (thousandths / 60_000, (thousandths % 60_000) as f64 / 1000.0)
+    };
+    let (lat_deg, lat_min) = split(lat);
+    let (lon_deg, lon_min) = split(lon);
+    format!(
+        "{lat_deg:02}° {lat_min:06.3}' {}  {lon_deg:03}° {lon_min:06.3}' {}",
+        if lat < 0.0 { 'S' } else { 'N' },
+        if lon < 0.0 { 'W' } else { 'E' },
+    )
+}
+
+fn ago(elapsed: Duration) -> String {
+    let seconds = elapsed.as_secs();
+    match seconds {
+        0..60 => format!("{seconds} s ago"),
+        60..3600 => format!("{} min {} s ago", seconds / 60, seconds % 60),
+        _ => format!("{} h {} min ago", seconds / 3600, seconds % 3600 / 60),
+    }
+}
+
+/// The ITU-R M.1371 name of an AIS ship type.
+pub fn ship_type_name(kind: u8) -> String {
+    match kind {
+        20..=29 => "Wing in ground",
+        30 => "Fishing",
+        31 | 32 => "Towing",
+        33 => "Dredging",
+        34 => "Diving",
+        35 => "Military",
+        36 => "Sailing",
+        37 => "Pleasure craft",
+        40..=49 => "High-speed craft",
+        50 => "Pilot",
+        51 => "Search and rescue",
+        52 => "Tug",
+        53 => "Port tender",
+        54 => "Anti-pollution",
+        55 => "Law enforcement",
+        58 => "Medical transport",
+        59 => "Non-combatant",
+        60..=69 => "Passenger",
+        70..=79 => "Cargo",
+        80..=89 => "Tanker",
+        90..=99 => "Other",
+        _ => return format!("Type {kind}"),
+    }
+    .to_string()
+}
+
+/// The ITU-R M.1371 name of an AIS navigational status.
+pub fn nav_status_name(status: u8) -> &'static str {
+    match status {
+        0 => "Under way using engine",
+        1 => "At anchor",
+        2 => "Not under command",
+        3 => "Restricted manoeuvrability",
+        4 => "Constrained by draught",
+        5 => "Moored",
+        6 => "Aground",
+        7 => "Engaged in fishing",
+        8 => "Under way sailing",
+        11 => "Towing astern",
+        12 => "Pushing ahead or towing alongside",
+        14 => "AIS-SART active",
+        _ => "Reserved",
     }
 }
 
@@ -187,6 +344,100 @@ mod tests {
                 },
             }]
         );
+    }
+
+    fn sea_spirit(now: Instant) -> AisTarget {
+        let mut t = AisTarget::new("vessels.urn:mrn:imo:mmsi:232001001".to_string());
+        t.name = Some("SEA SPIRIT".into());
+        t.call_sign = Some("ABCD123".into());
+        t.ship_type = Some(70);
+        t.nav_status = Some(0);
+        t.position = Some((0.5461, 51.4950));
+        t.speed_over_ground = Some(12.3 * 1852.0 / 3600.0);
+        t.course_over_ground = Some(90.0_f64.to_radians());
+        t.heading = Some(91.0_f64.to_radians());
+        t.length_m = Some(70);
+        t.beam_m = Some(10);
+        t.draught_m = Some(4.5);
+        t.destination = Some("LONDON".into());
+        t.last_update = now - Duration::from_secs(5);
+        t
+    }
+
+    #[test]
+    fn the_details_window_shows_every_value_carefully_formatted() {
+        let now = Instant::now();
+        // One nautical mile due south of the target: one minute of latitude.
+        let own = (0.5461, 51.4950 - 1.0 / 60.0);
+        let rows = details(&sea_spirit(now), Some(own), now);
+        let expected = [
+            ("Name", "SEA SPIRIT"),
+            ("MMSI", "232001001"),
+            ("Call sign", "ABCD123"),
+            ("Type", "Cargo (70)"),
+            ("Class", "A"),
+            ("Status", "Under way using engine"),
+            ("Position", "51° 29.700' N  000° 32.766' E"),
+            ("Speed", "12.3 kn"),
+            ("Course", "090°"),
+            ("Heading", "091°"),
+            ("Size", "70 × 10 m"),
+            ("Draught", "4.5 m"),
+            ("Destination", "LONDON"),
+            ("Range", "1.00 NM, bearing 000°"),
+            ("Last report", "5 s ago"),
+        ];
+        let rows: Vec<(&str, &str)> = rows.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        assert_eq!(rows, expected);
+    }
+
+    #[test]
+    fn values_not_known_are_left_out_and_the_mmsi_always_shows() {
+        let now = Instant::now();
+        let mut t = AisTarget::new("vessels.urn:mrn:imo:mmsi:244123456".to_string());
+        t.position = Some((-4.5, -33.25));
+        t.class_b = true;
+        t.last_update = now - Duration::from_secs(125);
+        let rows = details(&t, None, now);
+        let rows: Vec<(&str, &str)> = rows.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        assert_eq!(
+            rows,
+            [
+                ("MMSI", "244123456"),
+                ("Class", "B"),
+                ("Position", "33° 15.000' S  004° 30.000' W"),
+                ("Last report", "2 min 5 s ago"),
+            ]
+        );
+    }
+
+    #[test]
+    fn ship_types_and_statuses_have_names() {
+        for (kind, name) in [
+            (30, "Fishing"),
+            (31, "Towing"),
+            (36, "Sailing"),
+            (37, "Pleasure craft"),
+            (45, "High-speed craft"),
+            (50, "Pilot"),
+            (51, "Search and rescue"),
+            (52, "Tug"),
+            (55, "Law enforcement"),
+            (65, "Passenger"),
+            (80, "Tanker"),
+            (12, "Type 12"),
+        ] {
+            assert_eq!(ship_type_name(kind), name, "{kind}");
+        }
+        for (status, name) in [
+            (1, "At anchor"),
+            (5, "Moored"),
+            (7, "Engaged in fishing"),
+            (8, "Under way sailing"),
+            (14, "AIS-SART active"),
+        ] {
+            assert_eq!(nav_status_name(status), name, "{status}");
+        }
     }
 
     #[test]

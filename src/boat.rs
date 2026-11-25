@@ -82,6 +82,8 @@ impl BoatState {
 const MAX_SPEED: f64 = 50.0 * 1852.0 / 3600.0;
 /// GPS noise allowed on top of `MAX_SPEED`, in metres.
 const JUMP_ALLOWANCE_METERS: f64 = 50.0;
+/// A minute with no rejected fix ends an episode: the next one is logged.
+const REJECTION_QUIET: Duration = Duration::from_secs(60);
 /// Fixes in a row that agree with each other, but not with the boat,
 /// before the boat moves to them.
 const AGREEING_FIXES: u32 = 3;
@@ -98,6 +100,7 @@ pub struct FixGuard {
     last: Option<((f64, f64), Instant)>,
     candidate: Option<((f64, f64), Instant, u32)>,
     rejected: crate::diagnostics::Repeated,
+    last_rejection: Option<Instant>,
 }
 
 impl FixGuard {
@@ -111,7 +114,6 @@ impl FixGuard {
         if plausible(last, last_at, position, now) {
             self.last = Some((position, now));
             self.candidate = None;
-            self.rejected.clear();
             return true;
         }
         let in_a_row = match self.candidate {
@@ -127,17 +129,29 @@ impl FixGuard {
             );
             self.last = Some((position, now));
             self.candidate = None;
-            self.rejected.clear();
             return true;
         }
         self.candidate = Some((position, now, in_a_row));
-        if let Some(line) = self
-            .rejected
-            .note("Position improbable ignorée (plus de 50 nœuds depuis la précédente; deux GPS ?)")
-        {
+        if let Some(line) = self.rejection_line(now) {
             crate::diagnostics::record("WARN", line);
         }
         false
+    }
+
+    /// The log line for a rejection at `now`, if any. Two GPS streams give
+    /// a rejection every second for as long as they run, with good fixes
+    /// between: logged once, then every thousandth time, and again at once
+    /// after a minute with no rejection (a new episode).
+    fn rejection_line(&mut self, now: Instant) -> Option<String> {
+        if self
+            .last_rejection
+            .is_some_and(|at| now.saturating_duration_since(at) >= REJECTION_QUIET)
+        {
+            self.rejected.clear();
+        }
+        self.last_rejection = Some(now);
+        self.rejected
+            .note("Position improbable ignorée (plus de 50 nœuds depuis la précédente; deux GPS ?)")
     }
 }
 
@@ -281,6 +295,19 @@ mod tests {
         assert!(!guard.accept(at(2.0014), t + Duration::from_secs(2)));
         assert!(guard.accept(at(2.0028), t + Duration::from_secs(3)));
         assert!(guard.accept(at(2.0042), t + Duration::from_secs(4)));
+    }
+
+    #[test]
+    fn a_lasting_rejection_is_logged_once_and_again_after_a_quiet_minute() {
+        let t = Instant::now();
+        let mut guard = FixGuard::default();
+        assert!(guard.rejection_line(t).is_some());
+        for second in 1..600u64 {
+            let now = t + Duration::from_secs(second);
+            assert!(guard.rejection_line(now).is_none(), "second {second}");
+        }
+        let after_quiet = t + Duration::from_secs(599 + 61);
+        assert!(guard.rejection_line(after_quiet).is_some(), "a new episode");
     }
 
     #[test]

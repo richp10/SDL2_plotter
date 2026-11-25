@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 mod actions;
+mod centre_button;
 mod chart_manager;
 mod confirm_dialog;
 mod gesture;
@@ -76,6 +77,8 @@ pub(crate) struct Plotter<'ttf> {
     chart_manager: chart_manager::ChartManager<'ttf>,
     /// The photo button and the thumbnails it shows.
     photo_button: photo_button::PhotoButtonView<'ttf>,
+    /// The button that centres the chart on the boat.
+    centre_button: centre_button::CentreButtonView,
     thumbnails: mbtiles_renderer::Thumbnails,
     pending_waypoint: Option<PendingWaypoint>,
     text_input: sdl2::keyboard::TextInputUtil,
@@ -262,6 +265,7 @@ impl<'ttf> Plotter<'ttf> {
             confirm_dialog,
             chart_manager,
             photo_button,
+            centre_button: centre_button::CentreButtonView::new(width, height),
             thumbnails: mbtiles_renderer::Thumbnails::new(),
             pending_waypoint: None,
             text_input,
@@ -292,6 +296,7 @@ impl<'ttf> Plotter<'ttf> {
         self.confirm_dialog.resize(width, height);
         self.chart_manager.resize(width, height);
         self.photo_button.resize(height);
+        self.centre_button.resize(width, height);
         self.dirty = true;
         crate::diagnostics::record("INFO", format!("Fenêtre redimensionnée: {width}x{height}"));
         Ok(())

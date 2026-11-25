@@ -21,6 +21,15 @@ use crate::track::Track;
 use crate::waypoints::Waypoints;
 use crate::Mode;
 
+/// What the centre button shows. See `Session::centre_button`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CentreButton {
+    /// A tap centres on the boat; greyed and inert before the first fix.
+    pub enabled: bool,
+    /// The view follows the boat with no pan offset: the button is filled.
+    pub centred: bool,
+}
+
 pub(crate) struct Session {
     pub renderer: MBTilesRenderer,
     pub state: State,
@@ -239,6 +248,16 @@ impl Session {
             None => 0,
         };
         sources.get(next).map(|f| f.layer.clone())
+    }
+
+    /// The centre button: usable once the boat has had a fix; shown as
+    /// centred while the view follows the boat with no pan offset.
+    pub fn centre_button(&self) -> CentreButton {
+        let enabled = self.boat.fixed_at.is_some();
+        CentreButton {
+            enabled,
+            centred: enabled && self.state.follow && self.state.map_offset == (0, 0),
+        }
     }
 
     /// The photo button, while a photo source is available here or a photo

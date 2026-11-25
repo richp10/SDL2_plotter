@@ -399,6 +399,15 @@ impl Plotter<'_> {
             self.topbar.close();
             self.dirty = true;
         } else if self
+            .centre_button
+            .area()
+            .contains_point((x as i32, y as i32))
+        {
+            // The button takes the tap even while greyed (no fix yet).
+            if self.session.centre_button().enabled {
+                self.execute_action(AppAction::CentreOnBoat);
+            }
+        } else if self
             .photo_button
             .area()
             .contains_point((x as i32, y as i32))

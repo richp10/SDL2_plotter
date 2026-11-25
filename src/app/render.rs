@@ -107,6 +107,12 @@ impl Plotter<'_> {
                 .night_rect(self.photo_button.area(), NIGHT_OPACITY)
                 .map_err(anyhow::Error::msg)?;
         }
+        self.centre_button
+            .show(&mut screen.canvas, self.session.centre_button())
+            .map_err(anyhow::Error::msg)?;
+        screen
+            .night_rect(self.centre_button.area(), NIGHT_OPACITY)
+            .map_err(anyhow::Error::msg)?;
         self.topbar.show(&mut screen.canvas);
         if let Some(action) = self.session.confirmation.pending() {
             self.confirm_dialog

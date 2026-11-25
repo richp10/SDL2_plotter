@@ -43,6 +43,9 @@ pub enum AppAction {
     SetCourseUp(bool),
     /// The chart turns to the boat's heading; north up while there is none.
     SetHeadingUp,
+    /// Centre the chart on the boat (its last position when the fix is
+    /// stale) and follow it. Nothing before the first fix.
+    CentreOnBoat,
 }
 
 impl AppAction {
@@ -79,6 +82,7 @@ impl AppAction {
             Self::HideAis => "HideAis",
             Self::SetCourseUp(_) => "SetCourseUp",
             Self::SetHeadingUp => "SetHeadingUp",
+            Self::CentreOnBoat => "CentreOnBoat",
         }
     }
 }

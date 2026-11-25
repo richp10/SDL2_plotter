@@ -32,6 +32,15 @@ impl Session {
                 None if self.showing_photo() => self.choose_layer(self.state.chart_layer.clone()),
                 None => crate::diagnostics::record("INFO", "Aucune photo ici"),
             },
+            AppAction::CentreOnBoat => {
+                if self.boat.fixed_at.is_none() {
+                    crate::diagnostics::record("INFO", "Pas encore de position du bateau");
+                } else {
+                    self.state.follow = true;
+                    self.state.map_offset = (0, 0);
+                    self.state.position = Some(self.boat.position());
+                }
+            }
             AppAction::ToggleFollow => {
                 self.state.follow = !self.state.follow;
                 self.center_map_on_visible_center();
@@ -365,6 +374,60 @@ mod tests {
         fx.session.execute_action(AppAction::Pan(30, -10));
         fx.session.execute_action(AppAction::Pan(5, 5));
         assert_eq!(fx.session.state.map_offset, (35, -5));
+        fx.finish();
+    }
+
+    #[test]
+    fn centre_on_boat_follows_the_boat_from_wherever_the_chart_was() {
+        let mut fx = session(&[2]);
+        fx.session.boat = crate::boat::BoatState {
+            longitude: 10.0,
+            latitude: 20.0,
+            ..valid_boat()
+        };
+        fx.session.state.follow = false;
+        fx.session.state.position = Some((0.0, 0.0));
+        fx.session.state.map_offset = (40, -30);
+        assert!(!fx.session.centre_button().centred);
+
+        fx.session.execute_action(AppAction::CentreOnBoat);
+        assert!(fx.session.state.follow);
+        assert_eq!(fx.session.state.map_offset, (0, 0));
+        let (lon, lat) = visible_centre(&fx.session);
+        assert!((lon - 10.0).abs() < 1e-6 && (lat - 20.0).abs() < 1e-6);
+        assert!(fx.session.centre_button().centred);
+        fx.finish();
+    }
+
+    #[test]
+    fn centre_on_boat_with_a_stale_fix_goes_to_the_last_position() {
+        let mut fx = session(&[2]);
+        fx.session.boat = crate::boat::BoatState {
+            longitude: 10.0,
+            latitude: 20.0,
+            position_valid: false,
+            ..valid_boat()
+        };
+        fx.session.state.follow = false;
+        fx.session.state.position = Some((0.0, 0.0));
+        assert!(fx.session.centre_button().enabled);
+        fx.session.execute_action(AppAction::CentreOnBoat);
+        assert!(fx.session.state.follow);
+        let (lon, lat) = visible_centre(&fx.session);
+        assert!((lon - 10.0).abs() < 1e-6 && (lat - 20.0).abs() < 1e-6);
+        fx.finish();
+    }
+
+    #[test]
+    fn centre_on_boat_does_nothing_before_the_first_fix() {
+        let mut fx = session(&[2]);
+        fx.session.boat = crate::boat::BoatState::default();
+        fx.session.state.follow = false;
+        fx.session.state.position = Some((0.0, 0.0));
+        assert!(!fx.session.centre_button().enabled);
+        fx.session.execute_action(AppAction::CentreOnBoat);
+        assert!(!fx.session.state.follow);
+        assert_eq!(fx.session.state.position, Some((0.0, 0.0)));
         fx.finish();
     }
 

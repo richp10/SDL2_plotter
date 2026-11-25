@@ -31,10 +31,12 @@ pub enum Shape {
         heading: Option<f64>,
         fix: bool,
     },
-    /// An AIS target with its label; `course` is a true course in radians.
+    /// An AIS target with its label; `course` and `heading` are true, in
+    /// radians.
     Ais {
         at: (f64, f64),
         course: Option<f64>,
+        heading: Option<f64>,
         label: String,
     },
     Waypoint {
@@ -71,6 +73,7 @@ pub enum Draw {
     Ais {
         at: Point,
         course: Option<f64>,
+        heading: Option<f64>,
     },
     Waypoint(Point),
     Mark(Point),
@@ -134,14 +137,23 @@ pub fn plan(view: &ChartView, shapes: &[Shape]) -> Vec<Draw> {
                     });
                 }
             }
-            Shape::Ais { at, course, label } => {
+            Shape::Ais {
+                at,
+                course,
+                heading,
+                label,
+            } => {
                 let at = view.to_pixel(*at);
                 if visible(at) {
+                    let screen = |angle: &Option<f64>| {
+                        angle
+                            .filter(|a| a.is_finite())
+                            .map(|a| view.course_to_screen(a))
+                    };
                     draws.push(Draw::Ais {
                         at,
-                        course: course
-                            .filter(|c| c.is_finite())
-                            .map(|c| view.course_to_screen(c)),
+                        course: screen(course),
+                        heading: screen(heading),
                     });
                     draws.push(Draw::Text {
                         at: Point::new(at.x + 10, at.y - 10),
@@ -189,6 +201,28 @@ pub fn plan(view: &ChartView, shapes: &[Shape]) -> Vec<Draw> {
     draws
 }
 
+/// The outline of an AIS target's hull around `at`: the bow first, then
+/// the other corners. `angle` is a screen angle (clockwise from up) and
+/// `half_length` the distance from the centre to the bow, in pixels.
+pub fn ais_hull(at: Point, angle: f64, half_length: f64) -> [Point; 5] {
+    // Bow, shoulders and stern corners, with the bow towards -y.
+    const HULL: [(f64, f64); 5] = [
+        (0.0, -1.0),
+        (0.45, -0.3),
+        (0.4, 0.9),
+        (-0.4, 0.9),
+        (-0.45, -0.3),
+    ];
+    let (sin, cos) = angle.sin_cos();
+    HULL.map(|(x, y)| {
+        let (x, y) = (x * half_length, y * half_length);
+        Point::new(
+            at.x + (x * cos - y * sin).round() as i32,
+            at.y + (x * sin + y * cos).round() as i32,
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,6 +264,39 @@ mod tests {
             }
         );
         assert!(matches!(draws[1], Draw::Mark(_)));
+    }
+
+    #[test]
+    fn the_ais_heading_is_rotated_into_a_screen_angle() {
+        let rotated = ChartView::centred_on((0.0, 0.0), 4.0, 1.0, 512, 256);
+        let draws = plan(
+            &rotated,
+            &[Shape::Ais {
+                at: (0.0, 0.0),
+                course: None,
+                heading: Some(2.0),
+                label: "Ship".into(),
+            }],
+        );
+        let Draw::Ais {
+            heading: Some(heading),
+            ..
+        } = &draws[0]
+        else {
+            panic!("{draws:?}");
+        };
+        assert!((heading - rotated.course_to_screen(2.0)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn the_ais_hull_points_its_bow_along_the_direction() {
+        let centre = Point::new(100, 100);
+        let north = ais_hull(centre, 0.0, 10.0);
+        assert_eq!(north[0], Point::new(100, 90), "bow up");
+        assert!(north.iter().skip(1).all(|p| p.y > 90));
+        let east = ais_hull(centre, std::f64::consts::FRAC_PI_2, 10.0);
+        assert_eq!(east[0], Point::new(110, 100), "bow right");
+        assert!(east.iter().skip(1).all(|p| p.x < 110));
     }
 
     #[test]
@@ -292,6 +359,7 @@ mod tests {
                 Shape::Ais {
                     at: (1.0, 0.0),
                     course: Some(f64::NAN),
+                    heading: None,
                     label: "Ship".into(),
                 },
             ],

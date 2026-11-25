@@ -97,6 +97,7 @@ pub fn shapes(targets: &[AisTarget]) -> Vec<Shape> {
             target.position.map(|at| Shape::Ais {
                 at,
                 course: target.course_over_ground,
+                heading: target.heading,
                 label: target.label(),
             })
         })
@@ -137,6 +138,23 @@ mod tests {
 
         assert!(!retain_fresh(&mut targets, now));
         assert_eq!(targets.len(), 1);
+    }
+
+    #[test]
+    fn a_target_shape_carries_its_course_and_heading() {
+        let mut target = AisTarget::new("vessels.urn:mrn:imo:mmsi:232001001".to_string());
+        target.position = Some((0.5, 51.5));
+        target.course_over_ground = Some(1.0);
+        target.heading = Some(1.5);
+        assert_eq!(
+            shapes(&[target]),
+            vec![Shape::Ais {
+                at: (0.5, 51.5),
+                course: Some(1.0),
+                heading: Some(1.5),
+                label: "232001001".into(),
+            }]
+        );
     }
 
     #[test]

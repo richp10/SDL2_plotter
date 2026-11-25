@@ -201,7 +201,11 @@ impl<'ttf> Screen<'ttf> {
                         self.show_heading(*heading, *at)?;
                     }
                 }
-                Draw::Ais { at, course } => self.show_ais_target(at.x, at.y, *course)?,
+                Draw::Ais {
+                    at,
+                    course,
+                    heading,
+                } => self.show_ais_target(at.x, at.y, *course, *heading)?,
                 Draw::Waypoint(at) => self.show_waypoint(*at)?,
                 Draw::Mark(at) => self.show_mark(at.x, at.y)?,
                 Draw::Line(a, b) => self.show_line(*a, *b)?,
@@ -374,6 +378,7 @@ impl<'ttf> Screen<'ttf> {
         x: i32,
         y: i32,
         course_over_ground: Option<f64>,
+        heading: Option<f64>,
     ) -> Result<(), String> {
         let clip = self.clip();
         let Some((x16, y16)) = clip.point_i16(Point::new(x, y)) else {
@@ -397,18 +402,38 @@ impl<'ttf> Screen<'ttf> {
                 );
             }
         }
-        self.canvas.filled_circle(
-            x16,
-            y16,
-            self.appearance.ais_size,
-            configured_color(self.appearance.ais_color),
-        )?;
-        self.canvas.circle(
-            x16,
-            y16,
-            self.appearance.ais_outline_size,
-            configured_color(self.appearance.ais_outline_color),
-        )?;
+        // A hull along the heading, else along the course; with neither the
+        // direction is unknown, so a round marker.
+        let direction = heading.or(course_over_ground.filter(|c| c.is_finite()));
+        let hull = direction.and_then(|angle| {
+            let half_length = 2.0 * f64::from(self.appearance.ais_outline_size);
+            let corners = crate::overlay::ais_hull(Point::new(x, y), angle, half_length);
+            let xs: Option<Vec<i16>> = corners.iter().map(|p| i16::try_from(p.x).ok()).collect();
+            let ys: Option<Vec<i16>> = corners.iter().map(|p| i16::try_from(p.y).ok()).collect();
+            xs.zip(ys)
+        });
+        if let Some((xs, ys)) = hull {
+            self.canvas
+                .filled_polygon(&xs, &ys, configured_color(self.appearance.ais_color))?;
+            self.canvas.polygon(
+                &xs,
+                &ys,
+                configured_color(self.appearance.ais_outline_color),
+            )?;
+        } else {
+            self.canvas.filled_circle(
+                x16,
+                y16,
+                self.appearance.ais_size,
+                configured_color(self.appearance.ais_color),
+            )?;
+            self.canvas.circle(
+                x16,
+                y16,
+                self.appearance.ais_outline_size,
+                configured_color(self.appearance.ais_outline_color),
+            )?;
+        }
         Ok(())
     }
 

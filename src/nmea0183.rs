@@ -199,17 +199,23 @@ impl Decoder {
         self.position(valid, fields, 1, now)
     }
 
-    /// VTG, used while no RMC comes: true course and speed in knots.
+    /// VTG, used while no RMC comes: true course and speed in knots. The
+    /// NMEA 2.3 form has unit letters (`054.7,T,034.4,M,005.5,N,010.2,K`);
+    /// the older one has only the four values (`054.7,034.4,005.5,010.2`).
     fn vtg(&mut self, fields: &[&str]) -> Update {
-        if !mode_ok(field(fields, 9)) {
+        let (course, speed) = if fields.get(2) == Some(&"T") {
+            if !mode_ok(field(fields, 9)) {
+                return Update::default();
+            }
+            let speed = (field(fields, 6) == Some("N"))
+                .then(|| field(fields, 5))
+                .flatten();
+            (field(fields, 1), speed)
+        } else if fields.len() == 5 {
+            (field(fields, 1), field(fields, 3))
+        } else {
             return Update::default();
-        }
-        let course = (field(fields, 2) == Some("T"))
-            .then(|| field(fields, 1))
-            .flatten();
-        let speed = (field(fields, 6) == Some("N"))
-            .then(|| field(fields, 5))
-            .flatten();
+        };
         if !self.motion(speed, course) {
             return Update::default();
         }
@@ -772,6 +778,19 @@ mod tests {
             Instant::now(),
         );
         assert_eq!(no_fix, Update::default(), "mode N");
+    }
+
+    #[test]
+    fn the_old_vtg_form_without_unit_letters_is_read() {
+        // Before NMEA 2.3: true course, magnetic course, knots, km/h.
+        let mut d = Decoder::new();
+        let u = d.apply(&sentence("GPVTG,054.7,034.4,005.5,010.2"), Instant::now());
+        assert!(u.boat_changed);
+        let b = d.boat();
+        assert!((b.speed_over_ground - 5.5 * 0.514_444).abs() < 1e-3);
+        assert!((b.course_over_ground - 54.7_f64.to_radians()).abs() < 1e-9);
+        let odd = d.apply(&sentence("GPVTG,054.7,034.4,005.5"), Instant::now());
+        assert_eq!(odd, Update::default(), "neither form: nothing read");
     }
 
     #[test]

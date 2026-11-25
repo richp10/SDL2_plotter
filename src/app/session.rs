@@ -112,10 +112,13 @@ impl Session {
         session
     }
 
-    /// A new fix from the Signal K task. While following, the view moves
-    /// with a valid fix; an invalid fix is kept (the marker hides) but never
-    /// followed. Logs when the fix becomes valid or invalid.
-    pub fn on_boat(&mut self, boat: BoatState) {
+    /// A new boat state from the source task, received at `now`. While
+    /// following, the view moves with a valid fix; an invalid fix is kept
+    /// (the marker goes grey) but never followed. Logs when the fix becomes valid or invalid.
+    pub fn on_boat(&mut self, boat: BoatState, now: Instant) {
+        // The source does not clear an old fix itself: apply the timeouts
+        // first, so an update with no new position cannot revive it.
+        let boat = boat.expired(now);
         log_fix_change(self.boat.position_valid, boat.position_valid);
         self.boat = boat;
         if self.state.follow && valid_boat_position(&boat) {
@@ -593,12 +596,30 @@ mod tests {
     }
 
     #[test]
+    fn an_update_without_a_new_position_does_not_revive_a_stale_fix() {
+        let mut fx = session(&[2]);
+        let now = Instant::now();
+        let mut boat = boat_at(10.0, 20.0);
+        boat.fixed_at = Some(now);
+        fx.session.on_boat(boat, now);
+        assert!(fx.session.expire_boat(now + Duration::from_secs(11)));
+        // A heading arrives; the source still says the old fix is valid.
+        boat.heading = Some(1.0);
+        boat.heading_at = Some(now + Duration::from_secs(12));
+        fx.session.on_boat(boat, now + Duration::from_secs(12));
+        assert!(!fx.session.boat.position_valid, "the old fix stays lost");
+        assert_eq!(fx.session.boat.heading, Some(1.0));
+        assert!(!fx.session.expire_boat(now + Duration::from_secs(12)));
+        fx.finish();
+    }
+
+    #[test]
     fn the_boat_goes_grey_once_when_its_fix_is_stale() {
         let mut fx = session(&[2]);
         let now = Instant::now();
         let mut boat = boat_at(10.0, 20.0);
         boat.fixed_at = Some(now);
-        fx.session.on_boat(boat);
+        fx.session.on_boat(boat, now);
         assert!(!fx.session.expire_boat(now + Duration::from_secs(5)));
         assert!(
             fx.session.expire_boat(now + Duration::from_secs(10)),
@@ -617,17 +638,17 @@ mod tests {
         let mut fx = session(&[2]);
         fx.session.state.follow = false;
         fx.session.state.position = Some((0.0, 0.0));
-        fx.session.on_boat(boat_at(10.0, 20.0));
+        fx.session.on_boat(boat_at(10.0, 20.0), Instant::now());
         assert_eq!(fx.session.boat.longitude, 10.0);
         assert_eq!(fx.session.state.position, Some((0.0, 0.0)), "not following");
 
         fx.session.state.follow = true;
-        fx.session.on_boat(boat_at(11.0, 21.0));
+        fx.session.on_boat(boat_at(11.0, 21.0), Instant::now());
         assert_eq!(fx.session.state.position, Some((11.0, 21.0)));
 
         let mut invalid = boat_at(12.0, 22.0);
         invalid.position_valid = false;
-        fx.session.on_boat(invalid);
+        fx.session.on_boat(invalid, Instant::now());
         assert_eq!(
             fx.session.state.position,
             Some((11.0, 21.0)),

@@ -340,7 +340,7 @@ impl<'ttf> Plotter<'ttf> {
             if let Some(boat) =
                 crate::feed::take_change(&mut self.live.boat, &mut self.boat_closed, "bateau")
             {
-                self.session.on_boat(boat);
+                self.session.on_boat(boat, now);
                 self.dirty = true;
             }
             if self.session.expire_boat(now) {

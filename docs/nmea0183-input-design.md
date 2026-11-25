@@ -54,7 +54,7 @@ config ─► Plotter::new ─match source─► signalk::run(config, feed)
   - **Transport** (async, no tests without a socket): the TCP client
     reconnects with the same back-off as Signal K and has a read timeout of
     30 s, after which it reconnects. The UDP listener only receives. Both
-    give lines of text, at most 100 bytes; a longer line is dropped.
+    give lines of text, at most 256 bytes (an 82-character sentence plus a tag block); a longer line is dropped.
   - **Decoder** (pure, tested): `Nmea0183::apply(line) -> Update`. It skips
     a tag block (`\...\`), checks the start character and the `*hh` XOR
     checksum, and rejects a line with no checksum. It decodes RMC, HDT and

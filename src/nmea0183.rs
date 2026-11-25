@@ -6,7 +6,7 @@ mod transport;
 
 use std::time::Instant;
 
-use crate::boat::BoatState;
+use crate::boat::{BoatState, HEADING_TIMEOUT};
 use crate::config::{Nmea0183Config, Transport};
 use crate::feed::LiveFeed;
 
@@ -55,6 +55,8 @@ pub struct Decoder {
     /// The magnetic variation from the last RMC that had one, in degrees,
     /// east positive. HDG uses it when it has none of its own.
     variation: Option<f64>,
+    /// When the last HDT came. HDG is ignored while it is fresh.
+    hdt_at: Option<Instant>,
 }
 
 impl Decoder {
@@ -62,6 +64,7 @@ impl Decoder {
         Self {
             boat: BoatState::default(),
             variation: None,
+            hdt_at: None,
         }
     }
 
@@ -79,7 +82,14 @@ impl Decoder {
         // The talker (first two characters) is ignored.
         match fields[0].get(2..) {
             Some("RMC") => self.rmc(&fields, now),
-            Some("HDT") => self.heading(field(&fields, 1).and_then(degrees), now),
+            Some("HDT") => {
+                let update = self.heading(field(&fields, 1).and_then(degrees), now);
+                if update.boat_changed {
+                    self.hdt_at = Some(now);
+                }
+                update
+            }
+            Some("HDG") if self.hdt_is_fresh(now) => Update::default(),
             Some("HDG") => {
                 let variation =
                     signed(field(&fields, 4), field(&fields, 5), 'E', 'W').or(self.variation);
@@ -131,6 +141,12 @@ impl Decoder {
             boat_changed: true,
             track_point: Some((lon, lat)),
         }
+    }
+
+    /// HDT is true heading, so it wins over HDG while it comes in.
+    fn hdt_is_fresh(&self, now: Instant) -> bool {
+        self.hdt_at
+            .is_some_and(|at| now.saturating_duration_since(at) < HEADING_TIMEOUT)
     }
 
     /// A true heading in degrees, or nothing to change.
@@ -414,6 +430,27 @@ mod tests {
         assert!((b.heading.unwrap() - 274.07_f64.to_radians()).abs() < 1e-9);
         assert_eq!(b.heading_at, Some(now));
         assert_eq!(b.fixed_at, None, "a heading is not a fix");
+    }
+
+    #[test]
+    fn hdt_wins_over_hdg_while_it_is_fresh() {
+        let mut d = Decoder::new();
+        let now = Instant::now();
+        d.apply(&sentence("HEHDT,10.0,T"), now);
+        let u = d.apply(
+            &sentence("HCHDG,100.0,,,0.0,E"),
+            now + Duration::from_secs(1),
+        );
+        assert_eq!(u, Update::default());
+        assert!((d.boat().heading.unwrap() - 10.0_f64.to_radians()).abs() < 1e-9);
+        d.apply(
+            &sentence("HCHDG,100.0,,,0.0,E"),
+            now + crate::boat::HEADING_TIMEOUT,
+        );
+        assert!(
+            (d.boat().heading.unwrap() - 100.0_f64.to_radians()).abs() < 1e-9,
+            "HDG once HDT has stopped"
+        );
     }
 
     #[test]

@@ -6,8 +6,9 @@ use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpStream, UdpSocket};
 
-/// A sentence is at most 82 characters; a longer line is not NMEA 0183.
-pub(super) const MAX_LINE: usize = 100;
+/// A sentence is at most 82 characters, and a gateway can put a tag block
+/// (`\...\`) before it. A longer line is not NMEA 0183.
+pub(super) const MAX_LINE: usize = 256;
 /// No data on a TCP connection for this long: connect again.
 pub(super) const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -175,8 +176,15 @@ mod tests {
     #[test]
     fn a_line_longer_than_the_limit_is_dropped() {
         let mut s = LineSplitter::default();
-        assert!(s.push(&[b'x'; 150]).is_empty());
+        assert!(s.push(&[b'x'; 300]).is_empty());
         assert_eq!(s.push(b"yyy\n$OK\n"), vec!["$OK".to_string()]);
+    }
+
+    #[test]
+    fn a_tag_block_does_not_make_a_full_sentence_too_long() {
+        let line = format!("\\s:sim,c:1764000000*00\\${}*00", "x".repeat(79));
+        let mut s = LineSplitter::default();
+        assert_eq!(s.push(format!("{line}\r\n").as_bytes()).len(), 1);
     }
 
     #[test]

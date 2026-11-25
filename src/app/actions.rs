@@ -688,6 +688,11 @@ mod tests {
             .renderer
             .path()
             .ends_with("Ocean_Navionics.mbtiles"));
+        assert_eq!(fx.session.state.zoom, 3, "back at the level it left");
+        assert!(
+            fx.session.state.map.ends_with("Ocean_Navionics.mbtiles"),
+            "the state records the detail chart again"
+        );
         fx.finish();
     }
 

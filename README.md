@@ -121,7 +121,7 @@ transport = "tcp"            # "tcp": connect to address; "udp": bind address an
 address = "127.0.0.1:10110"  # IP:port; for UDP, for example "0.0.0.0:10110"
 ```
 
-Used when `source = "nmea0183"`. The app reads RMC (position, speed, course), HDT and HDG (heading; HDG only with a magnetic variation). AIS over NMEA 0183 is not read yet.
+Used when `source = "nmea0183"`. To test with `go-gps-simulator`: run `gps-simulator -tcp` with `transport = "tcp"`, `address = "127.0.0.1:10110"`, or `gps-simulator -udp -host 127.0.0.1` with `transport = "udp"`, `address = "0.0.0.0:10110"`. The app reads RMC (position, speed, course), HDT and HDG (heading; HDG only with a magnetic variation). AIS over NMEA 0183 is not read yet.
 
 ### Charts
 
@@ -231,6 +231,8 @@ Only `default/plotter.toml` is part of the repository. Everything else below is 
 - `src/app/render.rs`: chart and overlay assembly
 - `src/mbtiles_renderer.rs`: projection, tiles, zoom and cache
 - `src/signalk.rs`: Signal K connection and decoding
+- `src/nmea0183.rs`, `src/nmea0183/transport.rs`: NMEA 0183 decoding, TCP and UDP input
+- `src/feed.rs`: the channels every input source publishes on
 - `src/screen.rs`: SDL2 rendering
 - `src/stream.rs`: network MJPEG server
 - `src/config.rs`: `plotter.toml` loading and validation

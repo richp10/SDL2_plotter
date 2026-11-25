@@ -123,10 +123,7 @@ impl<'ttf> Plotter<'ttf> {
                 tokio::spawn(signalk::run(config.signalk.clone(), feed));
             }
             InputSource::Nmea0183 => {
-                tokio::spawn(crate::feed::idle(
-                    feed,
-                    "Entrée NMEA 0183 pas encore prise en charge; aucune donnée bateau",
-                ));
+                tokio::spawn(crate::nmea0183::run(config.nmea0183.clone(), feed));
             }
             InputSource::Nmea2k => {
                 tokio::spawn(crate::feed::idle(

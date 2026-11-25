@@ -19,6 +19,7 @@ mod gps;
 mod gpx;
 mod mbtiles_renderer;
 mod mesure;
+mod nmea0183;
 mod overlay;
 mod route;
 mod screen;

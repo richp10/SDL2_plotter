@@ -178,12 +178,17 @@ fn checked_body(line: &str) -> Option<&str> {
     }
     let line = line.strip_prefix('$')?;
     let (body, checksum) = line.rsplit_once('*')?;
-    if checksum.len() != 2 {
-        return None;
-    }
-    let expected = u8::from_str_radix(checksum, 16).ok()?;
+    let expected = hex_byte(checksum)?;
     let actual = body.bytes().fold(0u8, |acc, b| acc ^ b);
     (actual == expected && body.len() >= 5).then_some(body)
+}
+
+/// Exactly two hex digits. (`u8::from_str_radix` alone also takes a sign.)
+fn hex_byte(text: &str) -> Option<u8> {
+    if text.len() != 2 || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    u8::from_str_radix(text, 16).ok()
 }
 
 /// Field `index`, or `None` when it is missing or empty.
@@ -338,6 +343,16 @@ mod tests {
         let bad = GPSD_RMC.replace("*6A", "*6B");
         assert_eq!(d.apply(&bad, Instant::now()), Update::default());
         assert_eq!(d.boat().fixed_at, None);
+    }
+
+    #[test]
+    fn a_checksum_is_exactly_two_hex_digits() {
+        assert_eq!(hex_byte("6A"), Some(0x6A));
+        assert_eq!(hex_byte("6a"), Some(0x6A));
+        assert_eq!(hex_byte("+A"), None);
+        assert_eq!(hex_byte("-0"), None);
+        assert_eq!(hex_byte("A"), None);
+        assert_eq!(hex_byte("6A0"), None);
     }
 
     #[test]

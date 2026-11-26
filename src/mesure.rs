@@ -95,7 +95,8 @@ impl Mesure {
     }
 
     /// The marks, the line between them and the readout at the second mark.
-    pub fn shapes(&self) -> Vec<Shape> {
+    /// Bearings are magnetic with a `variation`, else true.
+    pub fn shapes(&self, variation: Option<f64>) -> Vec<Shape> {
         let mut shapes = Vec::new();
         let Some(mark1) = self.mark1 else {
             return shapes;
@@ -104,9 +105,9 @@ impl Mesure {
         if let Some(mark2) = self.mark2 {
             shapes.push(Shape::Mark(mark2));
             shapes.push(Shape::MeasureLine(mark1, mark2));
-            let mut text = readout(self.distance, self.bearing);
+            let mut text = readout(self.distance, self.bearing, variation);
             if let Some((distance, bearing)) = self.rhumb {
-                text += &format!(" / RL {}", readout(distance, bearing));
+                text += &format!(" / RL {}", readout(distance, bearing, variation));
             }
             shapes.push(Shape::Label {
                 at: mark2,
@@ -118,12 +119,13 @@ impl Mesure {
     }
 }
 
-/// `12.3 Mn 45°`, or metres below one nautical mile.
-fn readout(distance: f64, bearing: f64) -> String {
+/// `12.3 Mn 045°T`, or metres below one nautical mile.
+fn readout(distance: f64, bearing: f64, variation: Option<f64>) -> String {
+    let bearing = crate::magnetic::bearing_text(bearing, variation);
     if distance >= 1.0 {
-        format!("{distance:.1} Mn {bearing:.0}°")
+        format!("{distance:.1} Mn {bearing}")
     } else {
-        format!("{:.0} m {bearing:.0}°", distance * 1852.0)
+        format!("{:.0} m {bearing}", distance * 1852.0)
     }
 }
 
@@ -135,21 +137,31 @@ mod tests {
     fn two_marks_give_two_marks_a_line_and_a_readout_in_nautical_miles() {
         let view = ChartView::centred_on((0.0, 0.0), 6.0, 0.0, 512, 256);
         let mut mesure = Mesure::new();
-        assert!(mesure.shapes().is_empty());
+        assert!(mesure.shapes(None).is_empty());
         mesure.add_mark(&view, view.to_pixel((0.0, 0.0)));
-        assert_eq!(mesure.shapes(), vec![Shape::Mark((0.0, 0.0))]);
+        assert_eq!(mesure.shapes(None), vec![Shape::Mark((0.0, 0.0))]);
 
         mesure.add_mark(&view, view.to_pixel((0.0, 1.0)));
-        let shapes = mesure.shapes();
+        let shapes = mesure.shapes(None);
         assert_eq!(shapes.len(), 4, "{shapes:?}");
         assert!(matches!(shapes[2], Shape::MeasureLine(..)));
         let Shape::Label { text, .. } = &shapes[3] else {
             panic!("{shapes:?}");
         };
-        assert!(
-            text.ends_with("Mn 0°") || text.ends_with("Mn 360°"),
-            "{text}"
-        );
+        assert!(text.ends_with("Mn 000°T"), "{text}");
+    }
+
+    #[test]
+    fn with_a_variation_the_readout_is_magnetic() {
+        let view = ChartView::centred_on((0.0, 0.0), 6.0, 0.0, 512, 256);
+        let mut mesure = Mesure::new();
+        mesure.add_mark(&view, view.to_pixel((0.0, 0.0)));
+        mesure.add_mark(&view, view.to_pixel((0.0, 1.0)));
+        let shapes = mesure.shapes(Some(-5.0));
+        let Some(Shape::Label { text, .. }) = shapes.last() else {
+            panic!("{shapes:?}");
+        };
+        assert!(text.ends_with("Mn 005°M"), "{text}");
     }
 
     fn readout(a: (f64, f64), b: (f64, f64)) -> String {
@@ -157,7 +169,7 @@ mod tests {
         let mut mesure = Mesure::new();
         mesure.add_mark(&view, view.to_pixel(a));
         mesure.add_mark(&view, view.to_pixel(b));
-        let shapes = mesure.shapes();
+        let shapes = mesure.shapes(None);
         let Some(Shape::Label { text, .. }) = shapes.last() else {
             panic!("{shapes:?}");
         };
@@ -171,8 +183,8 @@ mod tests {
         let text = readout((0.0, 60.0), (10.0, 60.0));
         // The marks snap to pixels, so only the bearings are exact here;
         // gps.rs tests the distances.
-        assert!(text.contains(" Mn 86° / RL "), "{text}");
-        assert!(text.ends_with(" Mn 90°"), "{text}");
+        assert!(text.contains(" Mn 086°T / RL "), "{text}");
+        assert!(text.ends_with(" Mn 090°T"), "{text}");
     }
 
     #[test]

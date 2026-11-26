@@ -96,6 +96,10 @@ pub struct SignalKPaths {
     pub course_over_ground: String,
     pub speed_over_ground: String,
     pub heading: String,
+    /// Radians, east positive.
+    pub magnetic_variation: String,
+    /// ISO 8601 UTC date and time from the GPS, for the magnetic model.
+    pub datetime: String,
     pub ais_position: String,
     pub ais_name: String,
     pub ais_course_over_ground: String,
@@ -396,6 +400,8 @@ impl Default for SignalKPaths {
             course_over_ground: "navigation.courseOverGroundLastMinute".into(),
             speed_over_ground: "navigation.speedOverGroundLastMinute".into(),
             heading: "navigation.headingTrue".into(),
+            magnetic_variation: "navigation.magneticVariation".into(),
+            datetime: "navigation.datetime".into(),
             ais_position: "navigation.position".into(),
             ais_name: "name".into(),
             ais_course_over_ground: "navigation.courseOverGroundTrue".into(),

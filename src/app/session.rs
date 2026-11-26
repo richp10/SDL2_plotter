@@ -139,13 +139,55 @@ impl Session {
     pub fn on_boat(&mut self, boat: BoatState, now: Instant) {
         // The source does not clear an old fix itself: apply the timeouts
         // first, so an update with no new position cannot revive it.
-        let boat = boat.expired(now);
+        let mut boat = boat.expired(now);
         log_fix_change(self.boat.position_valid, boat.position_valid);
         self.boat = boat;
+        // A compass heading becomes true here, where the variation source
+        // is chosen: the live one, else the magnetic model.
+        if boat.heading.is_none() {
+            if let Some(magnetic) = boat.magnetic_heading {
+                boat.heading = self.variation().map(|variation| {
+                    (magnetic + variation.degrees.to_radians()).rem_euclid(std::f64::consts::TAU)
+                });
+                self.boat = boat;
+            }
+        }
         self.update_collision_risks();
         if self.state.follow && valid_boat_position(&boat) {
             self.state.position = Some((boat.longitude, boat.latitude));
         }
+    }
+
+    /// The variation in use: the live one, else the magnetic model's at the
+    /// boat (or, before the first fix, at the chart centre). The model's
+    /// date is the GPS date while the fix is valid, else the system clock.
+    pub fn variation(&self) -> Option<crate::magnetic::Variation> {
+        let position = if self.boat.fixed_at.is_some() {
+            Some(self.boat.position())
+        } else {
+            self.state.position
+        };
+        let date = self
+            .boat
+            .gps_date
+            .filter(|_| self.boat.position_valid)
+            .unwrap_or_else(|| chrono::Utc::now().date_naive());
+        crate::magnetic::in_use(
+            self.boat.variation,
+            position,
+            crate::magnetic::decimal_year(date),
+        )
+    }
+
+    /// The variation to show own-boat bearings in magnetic, or `None` for
+    /// true bearings: the toggle is off, or there is no variation (near a
+    /// magnetic pole).
+    pub fn shown_variation(&self) -> Option<f64> {
+        self.state
+            .magnetic
+            .then(|| self.variation())
+            .flatten()
+            .map(|variation| variation.degrees)
     }
 
     /// Applies the fix and heading timeouts (`BoatState::expired`) to the
@@ -691,6 +733,7 @@ mod tests {
             heading: None,
             fixed_at: Some(Instant::now()),
             heading_at: None,
+            ..BoatState::default()
         }
     }
 
@@ -709,6 +752,47 @@ mod tests {
         assert!(!fx.session.boat.position_valid, "the old fix stays lost");
         assert_eq!(fx.session.boat.heading, Some(1.0));
         assert!(!fx.session.expire_boat(now + Duration::from_secs(12)));
+        fx.finish();
+    }
+
+    /// A boat at 13 S 59 W on 2 July 2027 (2027.4986), where NOAA gives a
+    /// variation of 17.49 W at 2027.5, with a compass reading 100 degrees.
+    fn compass_boat(now: Instant) -> BoatState {
+        BoatState {
+            fixed_at: Some(now),
+            magnetic_heading: Some(100.0_f64.to_radians()),
+            heading_at: Some(now),
+            gps_date: chrono::NaiveDate::from_ymd_opt(2027, 7, 2),
+            ..boat_at(-59.0, -13.0)
+        }
+    }
+
+    #[test]
+    fn a_compass_heading_is_corrected_by_the_live_variation() {
+        let mut fx = session(&[2]);
+        let now = Instant::now();
+        let boat = BoatState {
+            variation: Some(-5.0),
+            variation_at: Some(now),
+            ..compass_boat(now)
+        };
+        fx.session.on_boat(boat, now);
+        let heading = fx.session.boat.heading.unwrap().to_degrees();
+        assert!((heading - 95.0).abs() < 1e-9, "{heading}");
+        let variation = fx.session.variation().unwrap();
+        assert_eq!(variation.source, crate::magnetic::Source::Live);
+        fx.finish();
+    }
+
+    #[test]
+    fn a_compass_heading_with_no_live_variation_is_corrected_by_the_model() {
+        let mut fx = session(&[2]);
+        let now = Instant::now();
+        fx.session.on_boat(compass_boat(now), now);
+        let heading = fx.session.boat.heading.unwrap().to_degrees();
+        assert!((heading - (100.0 - 17.49)).abs() < 0.02, "{heading}");
+        let variation = fx.session.variation().unwrap();
+        assert_eq!(variation.source, crate::magnetic::Source::Model);
         fx.finish();
     }
 

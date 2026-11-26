@@ -200,9 +200,9 @@ On first launch after upgrading, an existing `default/route.gpx` or `default/tra
 
 Route legs, and the bearing from the boat to the next waypoint, are rhumb lines: a constant bearing that a helmsman can hold. The measure tool shows the great circle, and adds the rhumb line ("RL") when the two differ by more than 0.5 degrees or 0.1 %.
 
-Each bearing has a T (true) or M (magnetic) mark. "Orientation > Magnetic bearings" switches own-boat bearings to magnetic; it is saved in `state.json`. AIS course and heading stay true. While it is on, the bottom bar shows the variation in use and its source:
+The bottom bar shows `COG 057°T  HDG 095°T`. The COG shows only with a fix and above 1 m/s (about 2 kn); a missing value shows as `--`. Each bearing has a T (true) or M (magnetic) mark. "Orientation > Magnetic bearings" switches own-boat bearings to magnetic; it is saved in `state.json`. AIS course and heading stay true. While it is on, the bottom bar shows the variation in use and its source:
 
-- `GPS`: the variation from RMC, HDG or the Signal K `magnetic_variation` path, at most 10 s old.
+- `GPS`: any live variation (from RMC, HDG or the Signal K `magnetic_variation` path), at most 10 s old.
 - `WMM`: the World Magnetic Model WMM2025, built into the app, at the boat position and the GPS date (the system date with no fix).
 - `WMM expired`: the same model after 2029. NOAA publishes a new model every five years.
 - `Var --`: near a magnetic pole, where the model is not reliable. Bearings stay true.

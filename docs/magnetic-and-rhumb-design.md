@@ -55,14 +55,14 @@ Also, many fluxgate compasses send an HDG sentence with no variation field. The 
 19. "Magnetic bearings" is one toggle in the menu, with one `AppAction`. It is saved in `state.json`, and it is off by default.
 20. With the toggle on, each own-boat bearing shows magnetic with an M mark. These bearings are:
     - the measure tool
-    - the route leg bearings
     - the bearing to the active waypoint
     - the COG and heading in the bottom bar
     - the bearing from the boat to an AIS target
 
     With the toggle off, each shows true with a T mark.
-21. The COG and heading that an AIS target sends stay true, because they describe another vessel.
-22. With the toggle on, the bottom bar shows the variation in use and its source, for example "Var 2°06'W (GPS)" or "Var 1°54'W (WMM)". With the toggle off, it shows no variation, and the layout is as today.
+    The route has no label for the bearing of each leg, so there is none to mark. The bottom bar read-out is `COG 057°T  HDG 095°T`. The COG shows only with a valid fix and above 1 m/s, the same rule as the course line on the boat marker. The heading also shows with no fix, because a compass works without a GPS. A missing value shows as `--`.
+21. The COG and heading that an AIS target sends stay true, because they describe another vessel. They carry a T mark.
+22. With the toggle on, the bottom bar shows the variation in use and its source, for example "Var 2°06'W (GPS)" or "Var 1°54'W (WMM)". "GPS" is the label for every live variation, also one from a compass HDG sentence or from Signal K. With the toggle off, it shows no variation, and the layout is as today.
 23. The MJPEG stream shows exactly what the bottom bar shows, with no special case.
 
 ## Tests

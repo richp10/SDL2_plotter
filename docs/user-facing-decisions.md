@@ -20,9 +20,10 @@ From `docs/magnetic-and-rhumb-design.md`:
 
 - Route legs are rhumb lines: the bearing is constant along the leg, and it is the course to steer, before variation, deviation, leeway and current.
 - The measure tool shows the great-circle distance and bearing. If the rhumb values differ, it adds them.
+- The bottom bar shows the COG and the heading. The COG shows only with a fix and above about 2 kn, because below that the GPS course is noise. A heading from a compass shows also with no fix.
 - Each bearing carries a T (true) or M (magnetic) mark. The "Magnetic bearings" toggle switches all own-boat bearings at once.
 - The COG and heading that an AIS target sends are always true.
-- If the GPS or the Signal K server sends a variation, the plotter uses it. If not, it uses the World Magnetic Model. The bottom bar names the source.
+- If the GPS or the Signal K server sends a variation, the plotter uses it. If not, it uses the World Magnetic Model. The bottom bar names the source. "GPS" means any live source, also a compass or the Signal K server.
 - After 2029 the built-in model is out of date. The plotter keeps using it and marks the source "WMM expired".
 - Near the magnetic poles the model is not reliable. The plotter then shows "Var --" and true bearings only.
 - A compass that sends a magnetic heading with no variation gets its true heading from the model variation. The source label shows this.

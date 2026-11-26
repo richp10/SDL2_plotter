@@ -70,8 +70,7 @@ impl BoatState {
             // The hull points along the heading, else the course while
             // moving; it keeps that direction when the fix is lost.
             bow: self.heading.or(moving.then_some(self.course_over_ground)),
-            course: (fix && self.speed_over_ground > MINIMUM_SPEED)
-                .then_some(self.course_over_ground),
+            course: self.course(),
             heading: self.heading.filter(|_| fix),
             fix,
         })
@@ -98,6 +97,13 @@ impl BoatState {
                 .filter(|_| fresh(self.variation_at, VARIATION_TIMEOUT)),
             ..self
         }
+    }
+
+    /// The course over ground in radians, when it means something: a valid
+    /// fix and more than `MINIMUM_SPEED`.
+    pub fn course(&self) -> Option<f64> {
+        (self.position_valid && self.speed_over_ground > MINIMUM_SPEED)
+            .then_some(self.course_over_ground)
     }
 
     pub fn position(self) -> (f64, f64) {

@@ -193,6 +193,21 @@ impl Session {
             .map(|variation| variation.degrees)
     }
 
+    /// The bottom bar's `COG 057°T  HDG 095°T`: magnetic with the toggle on,
+    /// `--` for a course that is noise (no fix, too slow) or no heading.
+    pub fn motion_text(&self) -> String {
+        let variation = self.bearing_variation();
+        let text = |radians: Option<f64>| match radians {
+            Some(radians) => crate::magnetic::bearing_text(radians.to_degrees(), variation),
+            None => "--".to_string(),
+        };
+        format!(
+            "COG {}  HDG {}",
+            text(self.boat.course()),
+            text(self.boat.heading)
+        )
+    }
+
     /// Applies the fix, heading and variation timeouts
     /// (`BoatState::expired`) to the boat. Returns true when the fix, the
     /// heading or the live variation was lost, so the frame is redrawn.
@@ -797,6 +812,47 @@ mod tests {
         assert!((heading - (100.0 - 17.49)).abs() < 0.02, "{heading}");
         let variation = fx.session.variation().unwrap();
         assert_eq!(variation.source, crate::magnetic::Source::Model);
+        fx.finish();
+    }
+
+    #[test]
+    fn the_bar_shows_cog_and_heading_true_or_magnetic() {
+        let mut fx = session(&[2]);
+        let now = Instant::now();
+        // COG 1 rad = 057.3 T; heading from the compass, 100 M + 5 W = 095 T.
+        let boat = BoatState {
+            variation: Some(-5.0),
+            variation_at: Some(now),
+            ..compass_boat(now)
+        };
+        fx.session.on_boat(boat, now);
+        assert_eq!(fx.session.motion_text(), "COG 057°T  HDG 095°T");
+        fx.session
+            .execute_action(crate::action::AppAction::ToggleMagnetic);
+        assert_eq!(fx.session.motion_text(), "COG 062°M  HDG 100°M");
+        fx.finish();
+    }
+
+    #[test]
+    fn the_bar_hides_a_cog_that_is_noise_and_a_heading_that_is_missing() {
+        let mut fx = session(&[2]);
+        let now = Instant::now();
+        // Below 1 m/s the GPS course is noise.
+        let slow = BoatState {
+            speed_over_ground: 0.5,
+            ..boat_at(10.0, 20.0)
+        };
+        fx.session.on_boat(slow, now);
+        assert_eq!(fx.session.motion_text(), "COG --  HDG --");
+        // No fix: no course, but a compass heading still shows.
+        let lost = BoatState {
+            position_valid: false,
+            heading: Some(0.0),
+            heading_at: Some(now),
+            ..boat_at(10.0, 20.0)
+        };
+        fx.session.on_boat(lost, now);
+        assert_eq!(fx.session.motion_text(), "COG --  HDG 000°T");
         fx.finish();
     }
 

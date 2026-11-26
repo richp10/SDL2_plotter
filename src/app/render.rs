@@ -247,10 +247,11 @@ impl Plotter<'_> {
             None => self.session.route.show_route_len(),
         };
 
-        let mut message_right = match self.session.mode {
-            Mode::EditRoute => "Mode Edit Route".to_string(),
-            Mode::EditWaypoint => "Mode Edit Waypoint".to_string(),
-            Mode::Measurement => "Mode Measurement".to_string(),
+        let mut message_right = self.session.motion_text() + " / ";
+        message_right += match self.session.mode {
+            Mode::EditRoute => "Mode Edit Route",
+            Mode::EditWaypoint => "Mode Edit Waypoint",
+            Mode::Measurement => "Mode Measurement",
         };
 
         message_right += if self.session.state.follow {

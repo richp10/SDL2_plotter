@@ -139,17 +139,17 @@ impl Session {
     pub fn on_boat(&mut self, boat: BoatState, now: Instant) {
         // The source does not clear an old fix itself: apply the timeouts
         // first, so an update with no new position cannot revive it.
-        let mut boat = boat.expired(now);
+        let boat = boat.expired(now);
         log_fix_change(self.boat.position_valid, boat.position_valid);
         self.boat = boat;
         // A compass heading becomes true here, where the variation source
         // is chosen: the live one, else the magnetic model.
         if boat.heading.is_none() {
             if let Some(magnetic) = boat.magnetic_heading {
-                boat.heading = self.variation().map(|variation| {
+                let variation = self.variation();
+                self.boat.heading = variation.map(|variation| {
                     (magnetic + variation.degrees.to_radians()).rem_euclid(std::f64::consts::TAU)
                 });
-                self.boat = boat;
             }
         }
         self.update_collision_risks();
@@ -162,6 +162,11 @@ impl Session {
     /// boat (or, before the first fix, at the chart centre). The model's
     /// date is the GPS date while the fix is valid, else the system clock.
     pub fn variation(&self) -> Option<crate::magnetic::Variation> {
+        self.variation_on(chrono::Utc::now().date_naive())
+    }
+
+    /// `variation` with the system clock's date given as `today`.
+    pub fn variation_on(&self, today: chrono::NaiveDate) -> Option<crate::magnetic::Variation> {
         let position = if self.boat.fixed_at.is_some() {
             Some(self.boat.position())
         } else {
@@ -171,18 +176,16 @@ impl Session {
             .boat
             .gps_date
             .filter(|_| self.boat.position_valid)
-            .unwrap_or_else(|| chrono::Utc::now().date_naive());
-        crate::magnetic::in_use(
-            self.boat.variation,
-            position,
-            crate::magnetic::decimal_year(date),
-        )
+            .unwrap_or(today);
+        let year = crate::magnetic::decimal_year(date);
+        crate::magnetic::warn_once_outside_model(year);
+        crate::magnetic::in_use(self.boat.variation, position, year)
     }
 
     /// The variation to show own-boat bearings in magnetic, or `None` for
     /// true bearings: the toggle is off, or there is no variation (near a
     /// magnetic pole).
-    pub fn shown_variation(&self) -> Option<f64> {
+    pub fn bearing_variation(&self) -> Option<f64> {
         self.state
             .magnetic
             .then(|| self.variation())
@@ -190,13 +193,14 @@ impl Session {
             .map(|variation| variation.degrees)
     }
 
-    /// Applies the fix and heading timeouts (`BoatState::expired`) to the
-    /// boat. Returns true when the fix or the heading was lost, so the
-    /// frame is redrawn.
+    /// Applies the fix, heading and variation timeouts
+    /// (`BoatState::expired`) to the boat. Returns true when the fix, the
+    /// heading or the live variation was lost, so the frame is redrawn.
     pub fn expire_boat(&mut self, now: Instant) -> bool {
         let expired = self.boat.expired(now);
         let changed = expired.position_valid != self.boat.position_valid
-            || expired.heading.is_some() != self.boat.heading.is_some();
+            || expired.heading.is_some() != self.boat.heading.is_some()
+            || expired.variation.is_some() != self.boat.variation.is_some();
         log_fix_change(self.boat.position_valid, expired.position_valid);
         self.boat = expired;
         if changed {
@@ -793,6 +797,43 @@ mod tests {
         assert!((heading - (100.0 - 17.49)).abs() < 0.02, "{heading}");
         let variation = fx.session.variation().unwrap();
         assert_eq!(variation.source, crate::magnetic::Source::Model);
+        fx.finish();
+    }
+
+    #[test]
+    fn the_screen_is_redrawn_when_the_live_variation_expires() {
+        let mut fx = session(&[2]);
+        let now = Instant::now();
+        let boat = BoatState {
+            variation: Some(-5.0),
+            variation_at: Some(now),
+            heading_at: Some(now + Duration::from_secs(5)),
+            fixed_at: Some(now + Duration::from_secs(5)),
+            ..compass_boat(now)
+        };
+        fx.session.on_boat(boat, now + Duration::from_secs(5));
+        assert!(!fx.session.expire_boat(now + Duration::from_secs(9)));
+        assert!(
+            fx.session.expire_boat(now + Duration::from_secs(10)),
+            "the bar must drop the old GPS variation"
+        );
+        assert_eq!(fx.session.boat.variation, None);
+        fx.finish();
+    }
+
+    #[test]
+    fn the_model_uses_the_gps_date_with_a_fix_and_the_clock_without() {
+        let mut fx = session(&[2]);
+        let now = Instant::now();
+        fx.session.on_boat(compass_boat(now), now);
+        let clock = chrono::NaiveDate::from_ymd_opt(2031, 1, 1).unwrap();
+        // With a valid fix the GPS date (2027) wins over the clock (2031).
+        let source = fx.session.variation_on(clock).unwrap().source;
+        assert_eq!(source, crate::magnetic::Source::Model);
+        // With the fix lost the clock gives the date: past the model.
+        fx.session.boat.position_valid = false;
+        let source = fx.session.variation_on(clock).unwrap().source;
+        assert_eq!(source, crate::magnetic::Source::ModelExpired);
         fx.finish();
     }
 

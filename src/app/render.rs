@@ -45,7 +45,7 @@ impl Plotter<'_> {
         // coordinates; the plan projects, culls and styles it; the screen paints.
         let mut shapes = Vec::new();
         if self.session.mode == Mode::Measurement {
-            shapes.extend(self.session.mesure.shapes(self.session.shown_variation()));
+            shapes.extend(self.session.mesure.shapes(self.session.bearing_variation()));
         }
         if self.session.state.display_route {
             let navigation = self
@@ -176,7 +176,7 @@ impl Plotter<'_> {
             let rows = crate::ais::details(
                 target,
                 own,
-                self.session.shown_variation(),
+                self.session.bearing_variation(),
                 std::time::Instant::now(),
             );
             let style = crate::ais::shapes(std::slice::from_ref(target))
@@ -241,7 +241,7 @@ impl Plotter<'_> {
             Some((dist_wp, bearing_wp, dist_total)) => format!(
                 "From Boat to Next Waypoint :  {:.1} Mn   {} / DTD : {:.1} Mn",
                 dist_wp,
-                crate::magnetic::bearing_text(bearing_wp, self.session.shown_variation()),
+                crate::magnetic::bearing_text(bearing_wp, self.session.bearing_variation()),
                 dist_total
             ),
             None => self.session.route.show_route_len(),

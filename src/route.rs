@@ -147,11 +147,7 @@ impl Route {
         self.distance.clear();
 
         for w in self.track.windows(2) {
-            // A rhumb line, the leg a helmsman steers; a great circle only
-            // where a rhumb line has no value (a pole).
-            let leg =
-                gps::rhumb_distance_nm(w[0], w[1]).unwrap_or_else(|| gps::distance_nm(w[0], w[1]));
-            self.distance.push(leg);
+            self.distance.push(gps::leg_nm(w[0], w[1]).0);
         }
 
         self.longueur = self.distance.iter().sum();
@@ -169,8 +165,7 @@ impl Route {
     /// route is empty.
     pub fn calc_route_mn_from_boat(&self, id: usize, boat: (f64, f64)) -> Option<(f64, f64, f64)> {
         let id = self.active_waypoint(id)?;
-        let (dist_wp, bearing_wp) = gps::rhumb_distance_bearing_nm(boat, self.track[id])
-            .unwrap_or_else(|| gps::distance_bearing_nm(boat, self.track[id]));
+        let (dist_wp, bearing_wp) = gps::leg_nm(boat, self.track[id]);
         let dist_total = dist_wp + self.restante[id];
         Some((dist_wp, bearing_wp, dist_total))
     }

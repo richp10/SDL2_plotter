@@ -13,10 +13,11 @@ pub struct Mesure {
     rhumb: Option<(f64, f64)>,
 }
 
-/// The rhumb line is shown when its bearing differs from the great circle
-/// by more than this many degrees...
+/// The rhumb line shows when its bearing differs from the great circle by
+/// more than this many degrees.
 const RHUMB_BEARING_DIFFERENCE: f64 = 0.5;
-/// ...or its distance by more than this fraction.
+/// The rhumb line also shows when its distance differs from the great
+/// circle by more than this fraction.
 const RHUMB_DISTANCE_DIFFERENCE: f64 = 0.001;
 
 impl Mesure {

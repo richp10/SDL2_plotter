@@ -128,7 +128,6 @@ pub fn details(
     variation: Option<f64>,
     now: Instant,
 ) -> Vec<(&'static str, String)> {
-    let degrees = |radians: f64| (radians.to_degrees().rem_euclid(360.0).round() as u32) % 360;
     let size = match (target.length_m, target.beam_m) {
         (Some(length), Some(beam)) => Some(format!("{length} × {beam} m")),
         (Some(length), None) => Some(format!("{length} m long")),
@@ -172,13 +171,13 @@ pub fn details(
             "Course",
             target
                 .course_over_ground
-                .map(|course| format!("{:03}°T", degrees(course))),
+                .map(|course| crate::magnetic::bearing_text(course.to_degrees(), None)),
         ),
         (
             "Heading",
             target
                 .heading
-                .map(|heading| format!("{:03}°T", degrees(heading))),
+                .map(|heading| crate::magnetic::bearing_text(heading.to_degrees(), None)),
         ),
         ("Size", size),
         ("Draught", target.draught_m.map(|d| format!("{d:.1} m"))),

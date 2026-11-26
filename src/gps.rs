@@ -65,10 +65,10 @@ pub fn wrap180(degrees: f64) -> f64 {
 }
 
 /// Below this difference of Mercator latitude a leg runs along a parallel.
-const EAST_WEST: f64 = 1e-12;
+const ALONG_PARALLEL: f64 = 1e-12;
 
 /// Mercator ("stretched") latitude in radians of a latitude in degrees.
-fn stretched(lat: f64) -> f64 {
+fn mercator_latitude(lat: f64) -> f64 {
     (std::f64::consts::FRAC_PI_4 + lat.to_radians() / 2.0)
         .tan()
         .ln()
@@ -83,7 +83,7 @@ fn rhumb_parts(a: (f64, f64), b: (f64, f64)) -> Option<(f64, f64, f64)> {
         return None;
     }
     let dlat = (b.1 - a.1).to_radians();
-    let dpsi = stretched(b.1) - stretched(a.1);
+    let dpsi = mercator_latitude(b.1) - mercator_latitude(a.1);
     let dlon = wrap180(b.0 - a.0).to_radians();
     Some((dlat, dpsi, dlon))
 }
@@ -93,7 +93,7 @@ fn rhumb_parts(a: (f64, f64), b: (f64, f64)) -> Option<(f64, f64, f64)> {
 pub fn rhumb_distance_nm(a: (f64, f64), b: (f64, f64)) -> Option<f64> {
     let (dlat, dpsi, dlon) = rhumb_parts(a, b)?;
     // Along a parallel dlat / dpsi is 0 / 0: use its limit, cos(lat).
-    let q = if dpsi.abs() > EAST_WEST {
+    let q = if dpsi.abs() > ALONG_PARALLEL {
         dlat / dpsi
     } else {
         a.1.to_radians().cos()
@@ -114,14 +114,21 @@ pub fn rhumb_distance_bearing_nm(a: (f64, f64), b: (f64, f64)) -> Option<(f64, f
     rhumb_distance_nm(a, b).zip(rhumb_bearing_deg(a, b))
 }
 
+/// Distance in nautical miles and true bearing in degrees of a leg that a
+/// helmsman steers: the rhumb line, or the great circle where a rhumb line
+/// has no value (a pole).
+pub fn leg_nm(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
+    rhumb_distance_bearing_nm(a, b).unwrap_or_else(|| distance_bearing_nm(a, b))
+}
+
 /// The point at `fraction` (0 to 1) of the distance along the rhumb line
 /// from `a` to `b`. `None` at a pole.
 pub fn rhumb_point(a: (f64, f64), b: (f64, f64), fraction: f64) -> Option<(f64, f64)> {
     let (_, dpsi, dlon) = rhumb_parts(a, b)?;
     let lat = a.1 + fraction * (b.1 - a.1);
     // The longitude moves in step with the Mercator latitude.
-    let part = if dpsi.abs() > EAST_WEST {
-        (stretched(lat) - stretched(a.1)) / dpsi
+    let part = if dpsi.abs() > ALONG_PARALLEL {
+        (mercator_latitude(lat) - mercator_latitude(a.1)) / dpsi
     } else {
         fraction
     };

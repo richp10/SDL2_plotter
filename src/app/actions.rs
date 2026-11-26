@@ -313,12 +313,12 @@ mod tests {
         };
         fx.session.on_boat(boat, now);
         assert!(!fx.session.state.magnetic, "off by default");
-        assert_eq!(fx.session.shown_variation(), None, "true bearings");
+        assert_eq!(fx.session.bearing_variation(), None, "true bearings");
         fx.session.execute_action(AppAction::ToggleMagnetic);
         assert!(fx.session.state.magnetic);
-        assert_eq!(fx.session.shown_variation(), Some(-3.1));
+        assert_eq!(fx.session.bearing_variation(), Some(-3.1));
         fx.session.execute_action(AppAction::ToggleMagnetic);
-        assert_eq!(fx.session.shown_variation(), None);
+        assert_eq!(fx.session.bearing_variation(), None);
         fx.finish();
     }
 

@@ -1,13 +1,15 @@
 //! Magnetic variation from the World Magnetic Model (WMM2025).
 //!
-//! The WMM2025 coefficients in `magnetic/WMM.COF` are a work of the US
-//! Government (NOAA National Centers for Environmental Information), not
-//! subject to copyright protection in the United States (17 U.S.C. 105).
+//! Notice under 17 U.S.C. 403: the WMM2025 coefficients in
+//! `magnetic/WMM.COF` are a work of the US Government (NOAA National
+//! Centers for Environmental Information), not subject to copyright
+//! protection in the United States (17 U.S.C. 105).
 //!
 //! Variation (declination) is in degrees, east positive:
 //! `magnetic = true - variation`. Design: `docs/magnetic-and-rhumb-design.md`.
 //! The equations are those of the WMM2025 technical report (NOAA NCEI).
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
 /// The coefficient file as NOAA publishes it.
@@ -16,7 +18,7 @@ const COEFFICIENTS: &str = include_str!("magnetic/WMM.COF");
 const DEGREE: usize = 12;
 /// The first and last valid years: 2025.0 up to the end of 2029.
 const EPOCH: f64 = 2025.0;
-const END: f64 = 2030.0;
+const MODEL_END: f64 = 2030.0;
 /// Below this horizontal field (nT) NOAA calls the declination unreliable:
 /// the Blackout Zone around each magnetic pole.
 const BLACKOUT_NT: f64 = 2000.0;
@@ -39,7 +41,7 @@ pub enum Status {
 pub fn status(year: f64) -> Status {
     if year < EPOCH {
         Status::BeforeModel
-    } else if year >= END {
+    } else if year >= MODEL_END {
         Status::Expired
     } else {
         Status::Valid
@@ -57,6 +59,17 @@ pub fn start_warning(year: f64) -> Option<String> {
         Status::BeforeModel => Some(format!(
             "Horloge système en {year:.1}, avant le modèle WMM2025 : la variation utilise le 1er janvier 2025 jusqu'à une date GPS"
         )),
+    }
+}
+
+/// Logs `start_warning` the first time a date in use is outside the model:
+/// a GPS date after a week rollover, or a clock past 2029.
+pub fn warn_once_outside_model(year: f64) {
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if let Some(warning) = start_warning(year) {
+        if !WARNED.swap(true, Ordering::Relaxed) {
+            crate::diagnostics::record("WARN", warning);
+        }
     }
 }
 

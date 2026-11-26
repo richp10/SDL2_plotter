@@ -157,10 +157,13 @@ impl Decoder {
                 update
             }
             Some("VDM") => self.ais(&fields),
-            Some("HDG") if self.hdt_is_fresh(now) => Update::default(),
             Some("HDG") => {
+                // The variation is kept even when HDT gives the heading.
                 if let Some(variation) = offset(field(&fields, 4), field(&fields, 5)) {
                     self.set_variation(variation, now);
+                }
+                if self.hdt_is_fresh(now) {
+                    return Update::default();
                 }
                 // Deviation is optional; when it is given it must be valid.
                 let deviation = match field(&fields, 2) {
@@ -750,6 +753,16 @@ mod tests {
         assert_eq!(d.boat().heading_at, Some(later));
         d.apply(&sentence("HEHDT,20.0,T"), later);
         assert_eq!(d.boat().magnetic_heading, None, "and back to HDT");
+    }
+
+    #[test]
+    fn hdg_variation_is_kept_while_hdt_gives_the_heading() {
+        let mut d = Decoder::new();
+        let now = Instant::now();
+        d.apply(&sentence("HEHDT,10.0,T"), now);
+        d.apply(&sentence("HCHDG,100.0,,,4.0,E"), now);
+        assert_eq!(d.boat().variation, Some(4.0));
+        assert!((d.boat().heading.unwrap() - 10.0_f64.to_radians()).abs() < 1e-9);
     }
 
     #[test]

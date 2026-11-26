@@ -209,7 +209,7 @@ Each bearing has a T (true) or M (magnetic) mark. "Orientation > Magnetic bearin
 
 Deviation is not applied: a magnetic bearing is not a compass bearing.
 
-The WMM2025 coefficients (`src/magnetic/WMM.COF`) are a work of the US Government (NOAA National Centers for Environmental Information) and are not subject to copyright protection in the United States.
+Notice under 17 U.S.C. 403: the WMM2025 coefficients (`src/magnetic/WMM.COF`) are a work of the US Government (NOAA National Centers for Environmental Information) and are not subject to copyright protection in the United States.
 
 ### Collision alarm
 

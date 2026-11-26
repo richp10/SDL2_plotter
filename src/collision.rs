@@ -97,8 +97,10 @@ fn closest_approach(
     target_speed_mps: f64,
 ) -> Option<(f64, f64)> {
     let latitude = own_position.1.to_radians();
+    // Across the antimeridian 179.9 E to 179.9 W is 0.2 degrees, not 359.8.
+    let east_degrees = (target_position.0 - own_position.0 + 180.0).rem_euclid(360.0) - 180.0;
     let relative_position = (
-        (target_position.0 - own_position.0) * latitude.cos() * 60.0,
+        east_degrees * latitude.cos() * 60.0,
         (target_position.1 - own_position.1) * 60.0,
     );
     let own_velocity = velocity(own_course, own_speed_mps);
@@ -153,6 +155,7 @@ mod tests {
             position_valid: true,
             speed_over_ground: 5.144,
             course_over_ground: 0.0,
+            ..BoatState::default()
         };
         let target = target((0.0, 0.03), 0.0, 0.0);
         let risks = risks(
@@ -177,6 +180,7 @@ mod tests {
             position_valid: true,
             speed_over_ground: 5.144,
             course_over_ground: 0.0,
+            ..BoatState::default()
         };
         let target = target((0.0, -0.1), 0.0, 5.144);
         assert!(risks(
@@ -192,6 +196,36 @@ mod tests {
     }
 
     #[test]
+    fn a_target_across_the_antimeridian_is_near_not_half_a_world_away() {
+        let boat = BoatState {
+            longitude: 179.99,
+            latitude: 0.0,
+            position_valid: true,
+            speed_over_ground: 0.0,
+            course_over_ground: 0.0,
+            ..BoatState::default()
+        };
+        // 0.02 degrees east at the equator: 1.2 NM, closing at 6 knots.
+        let target = target(
+            (-179.99, 0.0),
+            -std::f64::consts::FRAC_PI_2,
+            6.0 * 1852.0 / 3600.0,
+        );
+        let risks = risks(
+            boat,
+            &[target],
+            CollisionThresholds {
+                cpa_nm: 0.5,
+                tcpa_minutes: 15.0,
+                proximity_nm: 2.0,
+            },
+        );
+        assert_eq!(risks.len(), 1, "{risks:?}");
+        assert!(risks[0].cpa_nm < 0.01);
+        assert!((risks[0].tcpa_minutes - 12.0).abs() < 0.1, "{risks:?}");
+    }
+
+    #[test]
     fn warns_about_a_close_target_without_motion_data() {
         let boat = BoatState {
             longitude: 0.0,
@@ -199,6 +233,7 @@ mod tests {
             position_valid: true,
             speed_over_ground: 0.0,
             course_over_ground: 0.0,
+            ..BoatState::default()
         };
         let mut target = AisTarget::new("vessels.unknown".into());
         target.position = Some((0.0, 0.01));

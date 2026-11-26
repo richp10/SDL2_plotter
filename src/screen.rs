@@ -1,5 +1,5 @@
 use crate::config::{AppearanceConfig, FontConfig, WindowConfig};
-use crate::overlay::Draw;
+use crate::overlay::{AisStyle, Category, Draw, Mark};
 use sdl2::gfx::primitives::DrawRenderer;
 use sdl2::mouse::{Cursor, SystemCursor};
 use sdl2::pixels::Color;
@@ -88,13 +88,17 @@ impl MoteurSdl {
 /// canvas directly because they are chrome, not chart content.
 pub struct Screen<'ttf> {
     font: Font<'ttf, 'static>,
+    /// The smaller font of AIS target names.
+    label_font: Font<'ttf, 'static>,
     pub canvas: WindowCanvas,
     pub screen_width: u32,
     pub screen_height: u32,
-    pub cursor_hand: Cursor,
-    pub cursor_cross: Cursor,
-    pub cursor_arrow: Cursor,
-    pub cursor_size: Cursor,
+    /// The pointer shapes, when the system has them (a kiosk display or
+    /// SDL's dummy driver may not): `None` keeps the default pointer.
+    pub cursor_hand: Option<Cursor>,
+    pub cursor_cross: Option<Cursor>,
+    pub cursor_arrow: Option<Cursor>,
+    pub cursor_size: Option<Cursor>,
     appearance: AppearanceConfig,
 }
 
@@ -107,6 +111,7 @@ impl<'ttf> Screen<'ttf> {
         appearance: &AppearanceConfig,
     ) -> Result<Self, String> {
         let font = ttf_context.load_font(&font_config.file, font_config.window_size)?;
+        let label_font = ttf_context.load_font(&font_config.file, font_config.label_size)?;
 
         let video_subsystem = context
             .video()
@@ -119,6 +124,7 @@ impl<'ttf> Screen<'ttf> {
                     window_config.height,
                 )
                 .position_centered()
+                .resizable()
                 .build(),
             true => video_subsystem
                 .window(
@@ -145,18 +151,42 @@ impl<'ttf> Screen<'ttf> {
             true => (display_mode.w as u32, display_mode.h as u32),
         };
 
+        // No renderer flag: SDL tries its hardware renderers first and falls
+        // back to software, so a machine with no working GPU driver still
+        // draws the chart.
         let canvas = window
             .into_canvas()
-            .accelerated()
             .build()
-            .map_err(|e| format!("Impossible de créer le canvas accéléré : {e}"))?;
-        let cursor_hand = Cursor::from_system(SystemCursor::Hand)?;
-        let cursor_cross = Cursor::from_system(SystemCursor::Crosshair)?;
-        let cursor_arrow = Cursor::from_system(SystemCursor::Arrow)?;
-        let cursor_size = Cursor::from_system(SystemCursor::SizeAll)?;
-        cursor_hand.set();
+            .map_err(|e| format!("Impossible de créer le canvas : {e}"))?;
+        let renderer = canvas.info();
+        crate::diagnostics::record(
+            if renderer.flags & sdl2::sys::SDL_RendererFlags::SDL_RENDERER_ACCELERATED as u32 != 0 {
+                "INFO"
+            } else {
+                "WARN"
+            },
+            format!("Rendu SDL: {} (flags {:#x})", renderer.name, renderer.flags),
+        );
+        let cursor = |shape| match Cursor::from_system(shape) {
+            Ok(cursor) => Some(cursor),
+            Err(error) => {
+                crate::diagnostics::record(
+                    "WARN",
+                    format!("Curseur {shape:?} indisponible, curseur par défaut: {error}"),
+                );
+                None
+            }
+        };
+        let cursor_hand = cursor(SystemCursor::Hand);
+        let cursor_cross = cursor(SystemCursor::Crosshair);
+        let cursor_arrow = cursor(SystemCursor::Arrow);
+        let cursor_size = cursor(SystemCursor::SizeAll);
+        if let Some(hand) = &cursor_hand {
+            hand.set();
+        }
         Ok(Screen {
             font,
+            label_font,
             canvas,
             screen_width,
             screen_height,
@@ -166,6 +196,11 @@ impl<'ttf> Screen<'ttf> {
             cursor_size,
             appearance: appearance.clone(),
         })
+    }
+
+    /// The window is now `width` x `height`.
+    pub fn resize(&mut self, width: u32, height: u32) {
+        (self.screen_width, self.screen_height) = (width, height);
     }
 
     /// Executes a plan from `overlay::plan`. Decorations (track, handles,
@@ -181,13 +216,27 @@ impl<'ttf> Screen<'ttf> {
                 Draw::Track(points) => {
                     let _ = self.show_track(points);
                 }
-                Draw::Boat { at, course } => {
-                    self.show_boat(at.x, at.y)?;
+                Draw::Boat {
+                    at,
+                    bow,
+                    course,
+                    heading,
+                    fix,
+                } => {
+                    self.show_boat(at.x, at.y, *bow, *fix)?;
                     if let Some(course) = course {
                         self.show_cog(*course, *at)?;
                     }
+                    if let Some(heading) = heading {
+                        self.show_heading(*heading, *at)?;
+                    }
                 }
-                Draw::Ais { at, course } => self.show_ais_target(at.x, at.y, *course)?,
+                Draw::Ais {
+                    at,
+                    course,
+                    heading,
+                    style,
+                } => self.show_ais_target(at.x, at.y, *course, *heading, *style)?,
                 Draw::Collision {
                     at,
                     course,
@@ -197,7 +246,8 @@ impl<'ttf> Screen<'ttf> {
                 Draw::Mark(at) => self.show_mark(at.x, at.y)?,
                 Draw::Line(a, b) => self.show_line(*a, *b)?,
                 Draw::Outline(points) => self.show_outline(points)?,
-                Draw::Text { at, text } => self.show_text(text, at.x, at.y)?,
+                Draw::Text { at, text } => self.show_text(text, at.x, at.y, false)?,
+                Draw::Label { at, text } => self.show_text(text, at.x, at.y, true)?,
             }
         }
         Ok(())
@@ -232,7 +282,28 @@ impl<'ttf> Screen<'ttf> {
             bx,
             by,
             self.appearance.cog_width,
-            configured_color(self.appearance.cog_color),
+            gfx(configured_color(self.appearance.cog_color)),
+        )?;
+        Ok(())
+    }
+
+    /// The heading line: from the boat to its outer circle.
+    fn show_heading(&mut self, mut radians: f64, pos: Point) -> Result<(), String> {
+        radians -= std::f64::consts::PI / 2.0;
+        let length = f64::from(self.appearance.boat_circle_radius);
+        let x1 = pos.x as f64 + radians.cos() * length;
+        let y1 = pos.y as f64 + radians.sin() * length;
+        let end = Point::new(x1.round() as i32, y1.round() as i32);
+        let Some(((ax, ay), (bx, by))) = self.clip().segment_i16(pos, end) else {
+            return Ok(());
+        };
+        self.canvas.thick_line(
+            ax,
+            ay,
+            bx,
+            by,
+            2,
+            gfx(configured_color(self.appearance.boat_color)),
         )?;
         Ok(())
     }
@@ -249,7 +320,7 @@ impl<'ttf> Screen<'ttf> {
                 bx,
                 by,
                 self.appearance.route_width,
-                configured_color(self.appearance.route_color),
+                gfx(configured_color(self.appearance.route_color)),
             );
         }
         self.canvas
@@ -262,7 +333,7 @@ impl<'ttf> Screen<'ttf> {
                 x,
                 y,
                 self.appearance.route_point_size,
-                configured_color(self.appearance.route_color),
+                gfx(configured_color(self.appearance.route_color)),
             );
         }
     }
@@ -311,40 +382,96 @@ impl<'ttf> Screen<'ttf> {
         )
     }
 
-    fn show_boat(&mut self, x: i32, y: i32) -> Result<(), String> {
+    /// The own boat: a hull along `bow` (a screen angle), or a round
+    /// marker when no direction is known; grey without a fix.
+    fn show_boat(&mut self, x: i32, y: i32, bow: Option<f64>, fix: bool) -> Result<(), String> {
         if !self.clip().contains(f64::from(x), f64::from(y)) {
             return Ok(());
         }
-        let boat_color = configured_color(self.appearance.boat_color);
+        let boat_color = configured_color(if fix {
+            self.appearance.boat_color
+        } else {
+            self.appearance.boat_no_fix_color
+        });
+        let outline = configured_color(self.appearance.ais_outline_color);
         self.canvas.set_blend_mode(BlendMode::Blend);
-        self.canvas.set_draw_color(boat_color);
-        draw_filled_circle(
-            &mut self.canvas,
-            x,
-            y,
-            i32::from(self.appearance.boat_size),
-            boat_color,
-        )?;
-        draw_circle(
-            &mut self.canvas,
-            x,
-            y,
-            i32::from(self.appearance.boat_circle_radius),
-            boat_color,
-        )?;
+        let hull = bow.and_then(|angle| {
+            let corners = crate::overlay::ais_hull(
+                Point::new(x, y),
+                angle,
+                f64::from(self.appearance.boat_hull_size),
+                true,
+            );
+            let xs: Option<Vec<i16>> = corners.iter().map(|p| i16::try_from(p.x).ok()).collect();
+            let ys: Option<Vec<i16>> = corners.iter().map(|p| i16::try_from(p.y).ok()).collect();
+            xs.zip(ys)
+        });
+        if let Some((xs, ys)) = hull {
+            self.canvas.filled_polygon(&xs, &ys, gfx(boat_color))?;
+            self.outline(&xs, &ys, outline)?;
+        } else {
+            draw_filled_circle(
+                &mut self.canvas,
+                x,
+                y,
+                i32::from(self.appearance.boat_size),
+                boat_color,
+            )?;
+            draw_circle(
+                &mut self.canvas,
+                x,
+                y,
+                i32::from(self.appearance.boat_size),
+                outline,
+            )?;
+        }
         Ok(())
     }
 
+    /// A closed 2 px outline through the corners `xs`, `ys`, so a hull
+    /// stands out on any chart colour.
+    fn outline(&mut self, xs: &[i16], ys: &[i16], colour: Color) -> Result<(), String> {
+        for i in 0..xs.len() {
+            let j = (i + 1) % xs.len();
+            self.canvas
+                .thick_line(xs[i], ys[i], xs[j], ys[j], 2, gfx(colour))?;
+        }
+        Ok(())
+    }
+
+    /// The colour for an AIS target's category.
+    pub fn ais_colour(&self, category: Category) -> Color {
+        let a = &self.appearance;
+        configured_color(match category {
+            Category::Cargo => a.ais_cargo_color,
+            Category::Tanker => a.ais_tanker_color,
+            Category::Passenger => a.ais_passenger_color,
+            Category::HighSpeed => a.ais_high_speed_color,
+            Category::Service => a.ais_service_color,
+            Category::Fishing => a.ais_fishing_color,
+            Category::Leisure => a.ais_leisure_color,
+            Category::Other => a.ais_other_color,
+        })
+    }
+
+    /// An AIS target: a hull in its category colour along its heading,
+    /// else its course (notched stern for class A, flat for class B); a
+    /// round marker when no direction is known; its COG vector; and its
+    /// day-shape mark to the left.
     fn show_ais_target(
         &mut self,
         x: i32,
         y: i32,
         course_over_ground: Option<f64>,
+        heading: Option<f64>,
+        style: AisStyle,
     ) -> Result<(), String> {
         let clip = self.clip();
         let Some((x16, y16)) = clip.point_i16(Point::new(x, y)) else {
             return Ok(());
         };
+        let colour = self.ais_colour(style.category);
+        let outline = configured_color(self.appearance.ais_outline_color);
         if let Some(course) = course_over_ground.filter(|course| course.is_finite()) {
             let end_x =
                 x + (course.sin() * f64::from(self.appearance.ais_course_length)).round() as i32;
@@ -359,25 +486,95 @@ impl<'ttf> Screen<'ttf> {
                     bx,
                     by,
                     self.appearance.ais_course_width,
-                    configured_color(self.appearance.ais_color),
+                    gfx(colour),
                 );
             }
         }
-        self.canvas.filled_circle(
-            x16,
-            y16,
-            self.appearance.ais_size,
-            configured_color(self.appearance.ais_color),
-        )?;
-        self.canvas.circle(
-            x16,
-            y16,
-            self.appearance.ais_outline_size,
-            configured_color(self.appearance.ais_outline_color),
-        )?;
+        let direction = heading.or(course_over_ground.filter(|c| c.is_finite()));
+        let half_length = 2.0 * f64::from(self.appearance.ais_outline_size);
+        let hull = direction.and_then(|angle| {
+            let corners =
+                crate::overlay::ais_hull(Point::new(x, y), angle, half_length, style.class_b);
+            let xs: Option<Vec<i16>> = corners.iter().map(|p| i16::try_from(p.x).ok()).collect();
+            let ys: Option<Vec<i16>> = corners.iter().map(|p| i16::try_from(p.y).ok()).collect();
+            xs.zip(ys)
+        });
+        if let Some((xs, ys)) = hull {
+            self.canvas.filled_polygon(&xs, &ys, gfx(colour))?;
+            self.outline(&xs, &ys, outline)?;
+        } else {
+            self.canvas
+                .filled_circle(x16, y16, self.appearance.ais_size, gfx(colour))?;
+            self.canvas
+                .circle(x16, y16, self.appearance.ais_outline_size, gfx(outline))?;
+        }
+        if let Some(mark) = style.mark {
+            let left = x16.saturating_sub(half_length as i16 + 8);
+            self.show_day_shape(mark, left, y16)?;
+        }
         Ok(())
     }
 
+    /// A day shape centred on (`x`, `y`), upright on the screen as it
+    /// hangs on a vessel: black, with a white rim so it shows on any chart.
+    fn show_day_shape(&mut self, mark: Mark, x: i16, y: i16) -> Result<(), String> {
+        const R: i16 = 4;
+        let black = Color::RGB(0, 0, 0);
+        let white = Color::RGB(255, 255, 255);
+        let ball = |canvas: &mut WindowCanvas, cy: i16| -> Result<(), String> {
+            canvas.filled_circle(x, cy, R + 1, gfx(white))?;
+            canvas.filled_circle(x, cy, R, gfx(black))
+        };
+        let shape = |canvas: &mut WindowCanvas, xs: &[i16], ys: &[i16]| -> Result<(), String> {
+            canvas.polygon(xs, ys, gfx(white))?;
+            canvas.filled_polygon(xs, ys, gfx(black))?;
+            canvas.polygon(xs, ys, gfx(white))
+        };
+        let step = 2 * R + 2;
+        match mark {
+            Mark::Ball => ball(&mut self.canvas, y)?,
+            Mark::TwoBalls => {
+                ball(&mut self.canvas, y - step / 2)?;
+                ball(&mut self.canvas, y + step / 2)?;
+            }
+            Mark::ThreeBalls => {
+                for cy in [y - step, y, y + step] {
+                    ball(&mut self.canvas, cy)?;
+                }
+            }
+            Mark::BallDiamondBall => {
+                ball(&mut self.canvas, y - step)?;
+                shape(
+                    &mut self.canvas,
+                    &[x, x + R, x, x - R],
+                    &[y - R - 1, y, y + R + 1, y],
+                )?;
+                ball(&mut self.canvas, y + step)?;
+            }
+            Mark::Cylinder => shape(
+                &mut self.canvas,
+                &[x - R + 1, x + R - 1, x + R - 1, x - R + 1],
+                &[y - 2 * R, y - 2 * R, y + 2 * R, y + 2 * R],
+            )?,
+            Mark::Fishing => {
+                // Two cones, points together at the centre.
+                shape(
+                    &mut self.canvas,
+                    &[x - R, x + R, x],
+                    &[y - 2 * R, y - 2 * R, y],
+                )?;
+                shape(
+                    &mut self.canvas,
+                    &[x, x + R, x - R],
+                    &[y, y + 2 * R, y + 2 * R],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Waypoint pin: a triangle under a ringed dot, tip at `point`.
+    /// Off-screen points are culled before the i16 conversion.
     fn show_collision_target(
         &mut self,
         x: i32,
@@ -395,10 +592,9 @@ impl<'ttf> Screen<'ttf> {
             Color::RGBA(255, 0, 0, 255)
         };
         if let Some(course) = course_over_ground.filter(|course| course.is_finite()) {
-            let end_x =
-                x + (course.sin() * f64::from(self.appearance.ais_course_length)).round() as i32;
-            let end_y =
-                y - (course.cos() * f64::from(self.appearance.ais_course_length)).round() as i32;
+            let length = f64::from(self.appearance.ais_course_length);
+            let end_x = x + (course.sin() * length).round() as i32;
+            let end_y = y - (course.cos() * length).round() as i32;
             if let Some(((ax, ay), (bx, by))) =
                 clip.segment_i16(Point::new(x, y), Point::new(end_x, end_y))
             {
@@ -408,21 +604,26 @@ impl<'ttf> Screen<'ttf> {
                     bx,
                     by,
                     self.appearance.ais_course_width.saturating_add(1),
-                    color,
+                    gfx(color),
                 )?;
             }
         }
-        self.canvas
-            .filled_circle(x16, y16, self.appearance.ais_size.saturating_add(2), color)?;
+        self.canvas.filled_circle(
+            x16,
+            y16,
+            self.appearance.ais_size.saturating_add(2),
+            gfx(color),
+        )?;
         self.canvas.circle(
             x16,
             y16,
             self.appearance.ais_outline_size.saturating_add(2),
-            Color::WHITE,
+            gfx(Color::WHITE),
         )?;
         Ok(())
     }
 
+    /// The collision banner, centred above the status bar.
     pub fn show_collision_alarm(&mut self, message: &str, uncertain: bool) -> Result<(), String> {
         const HEIGHT: u32 = 54;
         const BOTTOM_BAR_HEIGHT: u32 = 32;
@@ -464,17 +665,15 @@ impl<'ttf> Screen<'ttf> {
         )
     }
 
-    /// Waypoint pin: a triangle under a ringed dot, tip at `point`.
-    /// Off-screen points are culled before the i16 conversion.
     fn show_waypoint(&mut self, point: Point) -> Result<(), String> {
         let Some((x, y)) = self.clip().point_i16(point) else {
             return Ok(());
         };
         let color = configured_color(self.appearance.waypoint_color);
         self.canvas
-            .filled_trigon(x - 5, y - 9, x + 5, y - 9, x, y, color)?;
-        self.canvas.filled_circle(x, y - 11, 6, color)?;
-        self.canvas.filled_circle(x, y - 11, 2, Color::WHITE)
+            .filled_trigon(x - 5, y - 9, x + 5, y - 9, x, y, gfx(color))?;
+        self.canvas.filled_circle(x, y - 11, 6, gfx(color))?;
+        self.canvas.filled_circle(x, y - 11, 2, gfx(Color::WHITE))
     }
 
     /// The boat's track as a polyline through `pts` (screen pixels).
@@ -549,9 +748,10 @@ impl<'ttf> Screen<'ttf> {
         self.canvas.fill_rect(area)
     }
 
-    fn show_text(&mut self, texte: &str, x: i32, y: i32) -> Result<(), String> {
+    /// Text on a light backing; `small` for the label font.
+    fn show_text(&mut self, texte: &str, x: i32, y: i32, small: bool) -> Result<(), String> {
         let texture_creator = self.canvas.texture_creator();
-        let font = &self.font;
+        let font = if small { &self.label_font } else { &self.font };
 
         let surface = font
             .render(texte)
@@ -575,6 +775,17 @@ impl<'ttf> Screen<'ttf> {
         }
         Ok(())
     }
+}
+
+/// A colour as SDL2_gfx reads it. Its `*Color` functions take a `Uint32`
+/// but read its bytes in memory order as red, green, blue, alpha. The sdl2
+/// crate packs `Color` as the number 0xRRGGBBAA, which on a little-endian
+/// machine (the PC and the Pi) arrives with red and alpha, green and blue
+/// swapped: black and teal came out fully transparent. Every SDL2_gfx call
+/// takes its colour through this.
+pub fn gfx(color: Color) -> u32 {
+    let (red, green, blue, alpha) = color.rgba();
+    u32::from_ne_bytes([red, green, blue, alpha])
 }
 
 fn configured_color([red, green, blue, alpha]: [u8; 4]) -> Color {

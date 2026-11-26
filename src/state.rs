@@ -29,6 +29,9 @@ pub struct State {
     pub display_ais: bool,
     #[serde(default)]
     pub course_up: bool,
+    /// Wins over `course_up`; the two are never both set by an action.
+    #[serde(default)]
+    pub heading_up: bool,
 }
 
 impl State {
@@ -83,6 +86,7 @@ impl State {
             display_track: true,
             display_ais: true,
             course_up: false,
+            heading_up: false,
         }
     }
 

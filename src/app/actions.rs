@@ -32,6 +32,15 @@ impl Session {
                 None if self.showing_photo() => self.choose_layer(self.state.chart_layer.clone()),
                 None => crate::diagnostics::record("INFO", "Aucune photo ici"),
             },
+            AppAction::CentreOnBoat => {
+                if self.boat.fixed_at.is_none() {
+                    crate::diagnostics::record("INFO", "Pas encore de position du bateau");
+                } else {
+                    self.state.follow = true;
+                    self.state.map_offset = (0, 0);
+                    self.state.position = Some(self.boat.position());
+                }
+            }
             AppAction::ToggleFollow => {
                 self.state.follow = !self.state.follow;
                 self.center_map_on_visible_center();
@@ -152,7 +161,14 @@ impl Session {
             AppAction::ShowTrack => self.state.display_track = true,
             AppAction::HideAis => self.state.display_ais = false,
             AppAction::ShowAis => self.state.display_ais = true,
-            AppAction::SetCourseUp(enabled) => self.state.course_up = enabled,
+            AppAction::SetCourseUp(enabled) => {
+                self.state.course_up = enabled;
+                self.state.heading_up = false;
+            }
+            AppAction::SetHeadingUp => {
+                self.state.heading_up = true;
+                self.state.course_up = false;
+            }
         }
 
         self.sync_view();
@@ -292,6 +308,9 @@ mod tests {
             position_valid: true,
             speed_over_ground: 4.0,
             course_over_ground: 0.0,
+            heading: None,
+            fixed_at: Some(std::time::Instant::now()),
+            heading_at: None,
         }
     }
 
@@ -355,6 +374,96 @@ mod tests {
         fx.session.execute_action(AppAction::Pan(30, -10));
         fx.session.execute_action(AppAction::Pan(5, 5));
         assert_eq!(fx.session.state.map_offset, (35, -5));
+        fx.finish();
+    }
+
+    #[test]
+    fn centre_on_boat_follows_the_boat_from_wherever_the_chart_was() {
+        let mut fx = session(&[2]);
+        fx.session.boat = crate::boat::BoatState {
+            longitude: 10.0,
+            latitude: 20.0,
+            ..valid_boat()
+        };
+        fx.session.state.follow = false;
+        fx.session.state.position = Some((0.0, 0.0));
+        fx.session.state.map_offset = (40, -30);
+        assert!(!fx.session.centre_button().centred);
+
+        fx.session.execute_action(AppAction::CentreOnBoat);
+        assert!(fx.session.state.follow);
+        assert_eq!(fx.session.state.map_offset, (0, 0));
+        let (lon, lat) = visible_centre(&fx.session);
+        assert!((lon - 10.0).abs() < 1e-6 && (lat - 20.0).abs() < 1e-6);
+        assert!(fx.session.centre_button().centred);
+        fx.finish();
+    }
+
+    #[test]
+    fn centre_on_boat_with_a_stale_fix_goes_to_the_last_position() {
+        let mut fx = session(&[2]);
+        fx.session.boat = crate::boat::BoatState {
+            longitude: 10.0,
+            latitude: 20.0,
+            position_valid: false,
+            ..valid_boat()
+        };
+        fx.session.state.follow = false;
+        fx.session.state.position = Some((0.0, 0.0));
+        assert!(fx.session.centre_button().enabled);
+        fx.session.execute_action(AppAction::CentreOnBoat);
+        assert!(fx.session.state.follow);
+        let (lon, lat) = visible_centre(&fx.session);
+        assert!((lon - 10.0).abs() < 1e-6 && (lat - 20.0).abs() < 1e-6);
+        fx.finish();
+    }
+
+    #[test]
+    fn centre_on_boat_does_nothing_before_the_first_fix() {
+        let mut fx = session(&[2]);
+        fx.session.boat = crate::boat::BoatState::default();
+        fx.session.state.follow = false;
+        fx.session.state.position = Some((0.0, 0.0));
+        assert!(!fx.session.centre_button().enabled);
+        fx.session.execute_action(AppAction::CentreOnBoat);
+        assert!(!fx.session.state.follow);
+        assert_eq!(fx.session.state.position, Some((0.0, 0.0)));
+        fx.finish();
+    }
+
+    #[test]
+    fn heading_up_turns_the_chart_to_the_heading_and_north_up_without_one() {
+        let mut fx = session(&[2]);
+        fx.session.boat = crate::boat::BoatState {
+            course_over_ground: 0.5,
+            heading: Some(1.2),
+            heading_at: Some(std::time::Instant::now()),
+            ..valid_boat()
+        };
+        // A screen angle of 0 means the chart is turned to that course.
+        let up = |fx: &super::super::session::test_support::Fixture, course: f64| {
+            fx.session.renderer.view().course_to_screen(course).abs() < 1e-9
+        };
+        fx.session.execute_action(AppAction::SetHeadingUp);
+        assert!(fx.session.state.heading_up && !fx.session.state.course_up);
+        assert!(up(&fx, 1.2), "heading up");
+
+        fx.session.execute_action(AppAction::SetCourseUp(true));
+        assert!(!fx.session.state.heading_up && fx.session.state.course_up);
+        assert!(up(&fx, 0.5), "course up");
+
+        fx.session.execute_action(AppAction::SetHeadingUp);
+        fx.session.boat.heading = None;
+        fx.session.sync_view();
+        assert!(up(&fx, 0.0), "no heading: north up");
+
+        fx.session.boat.heading = Some(1.2);
+        fx.session.boat.position_valid = false;
+        fx.session.sync_view();
+        assert!(up(&fx, 0.0), "no fix: north up");
+
+        fx.session.execute_action(AppAction::SetCourseUp(false));
+        assert!(!fx.session.state.heading_up && !fx.session.state.course_up);
         fx.finish();
     }
 
@@ -579,6 +688,11 @@ mod tests {
             .renderer
             .path()
             .ends_with("Ocean_Navionics.mbtiles"));
+        assert_eq!(fx.session.state.zoom, 3, "back at the level it left");
+        assert!(
+            fx.session.state.map.ends_with("Ocean_Navionics.mbtiles"),
+            "the state records the detail chart again"
+        );
         fx.finish();
     }
 

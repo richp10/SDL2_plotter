@@ -68,6 +68,7 @@ impl Plotter<'_> {
                 &collision_positions,
             ));
         }
+        // Collision markers show even with AIS hidden, and blink.
         if self.alarm_blink_on {
             shapes.extend(self.session.collision_risks.iter().map(|risk| {
                 let target = self
@@ -75,19 +76,20 @@ impl Plotter<'_> {
                     .ais_targets
                     .iter()
                     .find(|target| target.position == Some(risk.position));
+                let uncertain = risk.kind == crate::collision::RiskKind::ProximityUncertain;
                 crate::overlay::Shape::Collision {
                     at: risk.position,
                     course: target.and_then(|target| target.course_over_ground),
                     label: format!(
                         "{} {}",
-                        if risk.kind == crate::collision::RiskKind::ProximityUncertain {
+                        if uncertain {
                             "PROXIMITÉ AIS"
                         } else {
                             "COLLISION"
                         },
                         risk.target
                     ),
-                    uncertain: risk.kind == crate::collision::RiskKind::ProximityUncertain,
+                    uncertain,
                 }
             }));
         }
@@ -113,13 +115,13 @@ impl Plotter<'_> {
             .map_err(anyhow::Error::msg)?;
         let chart = self.session.chart_status();
         self.display_buttombar(screen, &chart);
-        if self.session.collision_alarm_active() {
+        if let Some(first) = self.session.collision_risks.first() {
             let risk = self
                 .session
                 .collision_risks
                 .iter()
                 .find(|risk| risk.kind == crate::collision::RiskKind::ProximityUncertain)
-                .unwrap_or(&self.session.collision_risks[0]);
+                .unwrap_or(first);
             let uncertain = risk.kind == crate::collision::RiskKind::ProximityUncertain;
             let message = if uncertain {
                 format!(
@@ -136,10 +138,14 @@ impl Plotter<'_> {
                 .show_collision_alarm(&message, uncertain)
                 .map_err(anyhow::Error::msg)?;
         }
+        // A failed readback (a lost Direct3D device, for one) costs the
+        // stream this frame, never the chart.
         if let Some(streamer) = &self.streamer {
-            streamer
-                .capture(&screen.canvas)
-                .map_err(anyhow::Error::msg)?;
+            self.capture_errors.report(
+                streamer.capture(&screen.canvas),
+                "WARN",
+                "Capture du flux impossible, image sautée",
+            );
         }
         if let Some(button) = self.session.photo_button() {
             let (centre, zoom) = self.session.view_centre_and_zoom();
@@ -158,6 +164,31 @@ impl Plotter<'_> {
                 .night_rect(self.photo_button.area(), NIGHT_OPACITY)
                 .map_err(anyhow::Error::msg)?;
         }
+        self.centre_button
+            .show(&mut screen.canvas, self.session.centre_button())
+            .map_err(anyhow::Error::msg)?;
+        screen
+            .night_rect(self.centre_button.area(), NIGHT_OPACITY)
+            .map_err(anyhow::Error::msg)?;
+        if let Some(target) = self.session.selected_ais_target() {
+            let boat = &self.session.boat;
+            let own = boat.fixed_at.map(|_| boat.position());
+            let rows = crate::ais::details(target, own, std::time::Instant::now());
+            let style = crate::ais::shapes(std::slice::from_ref(target))
+                .first()
+                .and_then(|shape| match shape {
+                    crate::overlay::Shape::Ais { style, .. } => Some(*style),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            let colour = screen.ais_colour(style.category);
+            self.ais_info
+                .show(&mut screen.canvas, &rows, colour)
+                .map_err(anyhow::Error::msg)?;
+            screen
+                .night_rect(self.ais_info.area(rows.len()), NIGHT_OPACITY)
+                .map_err(anyhow::Error::msg)?;
+        }
         self.topbar.show(&mut screen.canvas);
         if let Some(action) = self.session.confirmation.pending() {
             self.confirm_dialog
@@ -174,11 +205,14 @@ impl Plotter<'_> {
     }
 
     pub(super) fn mouse(&mut self, screen: &mut Screen<'_>) {
-        match self.mouse {
-            super::Mouse::Arrow => screen.cursor_arrow.set(),
-            super::Mouse::Cross => screen.cursor_cross.set(),
-            super::Mouse::Hand => screen.cursor_hand.set(),
-            super::Mouse::Move => screen.cursor_size.set(),
+        let cursor = match self.mouse {
+            super::Mouse::Arrow => &screen.cursor_arrow,
+            super::Mouse::Cross => &screen.cursor_cross,
+            super::Mouse::Hand => &screen.cursor_hand,
+            super::Mouse::Move => &screen.cursor_size,
+        };
+        if let Some(cursor) = cursor {
+            cursor.set();
         }
     }
 
@@ -217,7 +251,9 @@ impl Plotter<'_> {
         } else {
             ""
         };
-        message_right += if self.session.state.course_up {
+        message_right += if self.session.state.heading_up {
+            " / Heading Up"
+        } else if self.session.state.course_up {
             " / Course Up"
         } else {
             " / North Up"

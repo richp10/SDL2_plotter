@@ -1,17 +1,21 @@
 use crate::boat::BoatState;
 use crate::catalogue::Catalogue;
 use crate::{
-    ais, buttombar, config::AppConfig, mbtiles_renderer, route, screen, signalk, state, topbar,
-    track, waypoints,
+    buttombar,
+    config::{AppConfig, InputSource},
+    mbtiles_renderer, route, screen, signalk, state, topbar, track, waypoints,
 };
 use mbtiles_renderer::MBTilesRenderer;
 use sdl2::event::Event;
+use sdl2::render::{Texture, TextureCreator};
 use sdl2::ttf::Sdl2TtfContext;
+use sdl2::video::WindowContext;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
-use tokio::sync::watch;
 
 mod actions;
+mod ais_info;
+mod centre_button;
 mod chart_manager;
 mod confirm_dialog;
 mod gesture;
@@ -28,10 +32,7 @@ use gesture::GestureRecognizer;
 use session::Session;
 use tools::Target;
 
-const STATE_FILE: &str = "default/state.json";
-const DEFAULT_TRACK_PATH: &str = "default/track.json";
 /// What the user decided about each chart file; see `catalogue`.
-const CHART_SETTINGS: &str = "settings/charts.json";
 const LONG_CLICK: Duration = Duration::from_millis(500);
 const MOVE_TOLERANCE: i32 = 5;
 const DIAGNOSTICS_INTERVAL: Duration = Duration::from_secs(10);
@@ -59,27 +60,120 @@ pub(crate) struct Plotter<'ttf> {
     grab: Option<Target>,
     /// When the chart was last redrawn during the drag under way.
     drag_redrawn: Instant,
+    /// The size the window changed to, applied before the next frame.
+    resized: Option<(u32, u32)>,
+    /// Where the state is saved when the loop ends.
+    state_file: PathBuf,
+    /// SDL reported that the render device or its targets were reset.
+    device_reset: bool,
+    /// Errors from each step of the main loop, logged without flooding the
+    /// log. None of them ends the loop.
+    render_errors: crate::diagnostics::Repeated,
+    capture_errors: crate::diagnostics::Repeated,
+    event_errors: crate::diagnostics::Repeated,
+    resize_errors: crate::diagnostics::Repeated,
     topbar: topbar::Topbar<'ttf>,
     buttombar: buttombar::Buttombar<'ttf>,
     confirm_dialog: confirm_dialog::ConfirmDialog<'ttf>,
     chart_manager: chart_manager::ChartManager<'ttf>,
     /// The photo button and the thumbnails it shows.
     photo_button: photo_button::PhotoButtonView<'ttf>,
+    /// The button that centres the chart on the boat.
+    centre_button: centre_button::CentreButtonView,
+    /// The details window of the AIS target tapped.
+    ais_info: ais_info::AisInfoView<'ttf>,
     thumbnails: mbtiles_renderer::Thumbnails,
     pending_waypoint: Option<PendingWaypoint>,
     text_input: sdl2::keyboard::TextInputUtil,
     mouse: Mouse,
-    state_rx: watch::Receiver<BoatState>,
-    track_rx: tokio::sync::mpsc::UnboundedReceiver<(f64, f64)>,
-    ais_rx: watch::Receiver<Vec<ais::AisTarget>>,
+    /// The live-data source's channels.
+    live: crate::feed::LiveReceivers,
+    /// The source's boat or AIS channel closed and that was logged.
+    boat_closed: bool,
+    ais_closed: bool,
     streamer: Option<crate::stream::Streamer>,
+    /// The alarm beep; `None` when the machine has no audio.
     alarm_sound: Option<crate::alarm::AlarmSound>,
+    /// The collision markers blink: shown while this is true.
     alarm_blink_on: bool,
     last_alarm_blink: Instant,
+    /// The alarm last announced: `Some(true)` for a target without motion
+    /// data, `Some(false)` for a predicted CPA, `None` for no alarm.
     last_alarm_kind: Option<bool>,
 }
 
+/// Every file the plotter reads and writes, apart from the config and the
+/// charts. `Files::default()` is the app's own layout under the working
+/// directory; a test puts them all in a temp directory.
+pub(crate) struct Files {
+    pub state: PathBuf,
+    pub track: PathBuf,
+    pub route: PathBuf,
+    pub waypoints: PathBuf,
+    /// The catalogue's cache and the chart manager's decisions.
+    pub chart_settings: PathBuf,
+    /// Where GPX exports are written.
+    pub export: PathBuf,
+}
+
+impl Default for Files {
+    fn default() -> Self {
+        Self {
+            state: "default/state.json".into(),
+            track: "default/track.json".into(),
+            route: "default/route.json".into(),
+            waypoints: "default/waypoints.json".into(),
+            chart_settings: "settings/charts.json".into(),
+            export: "export".into(),
+        }
+    }
+}
+
+/// Counters for the loop statistics logged every `DIAGNOSTICS_INTERVAL`.
+struct LoopStats {
+    last_diagnostics: Instant,
+    loop_count: u64,
+    event_count: u64,
+    track_updates: u64,
+    rendered_frames: u64,
+    last_input: Instant,
+}
+
+impl LoopStats {
+    fn new() -> Self {
+        Self {
+            last_diagnostics: Instant::now(),
+            loop_count: 0,
+            event_count: 0,
+            track_updates: 0,
+            rendered_frames: 0,
+            last_input: Instant::now(),
+        }
+    }
+}
+
+/// The streaming texture the chart is drawn into, for a window of
+/// `width` x `height` (room for any rotation).
+pub(crate) fn chart_texture(
+    texture_creator: &TextureCreator<WindowContext>,
+    width: u32,
+    height: u32,
+) -> Result<Texture, String> {
+    let (texture_width, texture_height) = MBTilesRenderer::texture_dimensions(width, height);
+    let mut texture = texture_creator
+        .create_texture_streaming(
+            sdl2::pixels::PixelFormatEnum::RGBA32,
+            texture_width,
+            texture_height,
+        )
+        .map_err(|error| error.to_string())?;
+    texture.set_scale_mode(sdl2::render::ScaleMode::Linear);
+    Ok(texture)
+}
+
 impl<'ttf> Plotter<'ttf> {
+    // Each part comes from main.rs, which builds it with SDL; a struct would only repeat them.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         sdl_context: &sdl2::Sdl,
         ttf_context: &'ttf Sdl2TtfContext,
@@ -88,30 +182,42 @@ impl<'ttf> Plotter<'ttf> {
         config: &AppConfig,
         streamer: Option<crate::stream::Streamer>,
         alarm_sound: Option<crate::alarm::AlarmSound>,
+        files: Files,
     ) -> anyhow::Result<Self> {
         let text_input = sdl_context
             .video()
             .map_err(anyhow::Error::msg)?
             .text_input();
-        let boat = BoatState::default();
-        let (state_tx, state_rx) = watch::channel(boat);
-        let (track_tx, track_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (ais_tx, ais_rx) = watch::channel(Vec::new());
-        tokio::spawn(signalk::signalk_task(
-            state_tx,
-            track_tx,
-            ais_tx,
-            config.signalk.clone(),
-        ));
-
-        let catalogue = Catalogue::load(
-            Path::new(&config.charts.directory),
-            Path::new(CHART_SETTINGS),
+        let (feed, live) = crate::feed::channels();
+        crate::diagnostics::record(
+            "INFO",
+            format!("Source des données bateau: {:?}", config.input.source),
         );
+        // A bad input setting costs the live data, never the start.
+        match (&config.input.source, config.input_error()) {
+            (_, Some(error)) => {
+                tokio::spawn(crate::feed::idle(feed, error));
+            }
+            (InputSource::Signalk, None) => {
+                tokio::spawn(signalk::run(config.signalk.clone(), feed));
+            }
+            (InputSource::Nmea0183, None) => {
+                tokio::spawn(crate::nmea0183::run(config.nmea0183.clone(), feed));
+            }
+            // input_error reports these; this arm only keeps the match whole.
+            (source @ (InputSource::Nmea2k | InputSource::Unknown(_)), None) => {
+                tokio::spawn(crate::feed::idle(
+                    feed,
+                    format!("Source non prise en charge: {source:?}"),
+                ));
+            }
+        }
+
+        let catalogue = Catalogue::load(Path::new(&config.charts.directory), &files.chart_settings);
         for line in catalogue.describe() {
             crate::diagnostics::record("INFO", line);
         }
-        let state = state::State::new(STATE_FILE, config.charts.default.clone())
+        let state = state::State::new(&files.state, config.charts.default.clone())
             .map_err(anyhow::Error::msg)?;
         let renderer =
             MBTilesRenderer::new(&state.map, state.zoom, width, height, &config.rendering)?;
@@ -128,9 +234,11 @@ impl<'ttf> Plotter<'ttf> {
                 .map_err(anyhow::Error::msg)?;
         let photo_button = photo_button::PhotoButtonView::new(ttf_context, height, &config.fonts)
             .map_err(anyhow::Error::msg)?;
-        let route = route::Route::new();
+        let ais_info = ais_info::AisInfoView::new(ttf_context, height, &config.fonts)
+            .map_err(anyhow::Error::msg)?;
+        let route = route::Route::load(&files.route);
         let track = track::Track::with_checkpoint_interval(
-            Path::new(DEFAULT_TRACK_PATH),
+            &files.track,
             Duration::from_secs(config.track.checkpoint_interval_seconds),
         );
         crate::diagnostics::record(
@@ -138,21 +246,21 @@ impl<'ttf> Plotter<'ttf> {
             format!(
                 "Trace initialisée: {} points dans {}",
                 track.point_count(),
-                DEFAULT_TRACK_PATH
+                files.track.display()
             ),
         );
-        let waypoints = waypoints::Waypoints::new();
+        let waypoints = waypoints::Waypoints::load(&files.waypoints);
 
         let session = Session::new(
             renderer,
             state,
-            boat,
+            BoatState::default(),
             route,
             track,
             waypoints,
             catalogue,
             config.charts.default.clone(),
-            PathBuf::from("export"),
+            files.export.clone(),
             config.collision.clone(),
         );
 
@@ -162,24 +270,258 @@ impl<'ttf> Plotter<'ttf> {
             gestures: GestureRecognizer::new(LONG_CLICK, MOVE_TOLERANCE),
             grab: None,
             drag_redrawn: Instant::now(),
+            resized: None,
+            state_file: files.state,
+            device_reset: false,
+            render_errors: crate::diagnostics::Repeated::default(),
+            capture_errors: crate::diagnostics::Repeated::default(),
+            event_errors: crate::diagnostics::Repeated::default(),
+            resize_errors: crate::diagnostics::Repeated::default(),
             topbar,
             buttombar,
             confirm_dialog,
             chart_manager,
             photo_button,
+            centre_button: centre_button::CentreButtonView::new(width, height),
+            ais_info,
             thumbnails: mbtiles_renderer::Thumbnails::new(),
             pending_waypoint: None,
             text_input,
             mouse: Mouse::Hand,
-            state_rx,
-            track_rx,
-            ais_rx,
+            live,
+            boat_closed: false,
+            ais_closed: false,
             streamer,
             alarm_sound,
             alarm_blink_on: true,
             last_alarm_blink: Instant::now(),
             last_alarm_kind: None,
         })
+    }
+
+    /// Beeps and logs when a collision alarm starts or changes kind, and
+    /// blinks the alarm markers every 500 ms while one is active.
+    fn sound_collision_alarm(&mut self, now: Instant) {
+        let active = self.session.collision_alarm_active();
+        let kind = active.then(|| self.session.collision_alarm_is_uncertain());
+        if kind != self.last_alarm_kind {
+            self.last_alarm_kind = kind;
+            if let Some(uncertain) = kind {
+                if let Some(sound) = &mut self.alarm_sound {
+                    sound.beep(uncertain);
+                }
+                crate::diagnostics::record(
+                    "WARN",
+                    if uncertain {
+                        "Proximité AIS sans données de mouvement"
+                    } else {
+                        "Risque de collision détecté"
+                    },
+                );
+            }
+            self.dirty = true;
+        }
+        if active && now.duration_since(self.last_alarm_blink) >= Duration::from_millis(500) {
+            self.last_alarm_blink = now;
+            self.alarm_blink_on = !self.alarm_blink_on;
+            self.dirty = true;
+        }
+    }
+
+    /// The window was resized or maximised: everything that holds its size
+    /// follows, and the chart texture is made again for the new size.
+    fn resize(
+        &mut self,
+        screen: &mut screen::Screen<'_>,
+        texture_creator: &TextureCreator<WindowContext>,
+        texture: &mut Texture,
+        width: u32,
+        height: u32,
+    ) -> anyhow::Result<()> {
+        *texture = chart_texture(texture_creator, width, height).map_err(anyhow::Error::msg)?;
+        screen.resize(width, height);
+        self.session.renderer.resize(width, height);
+        self.session.sync_view();
+        self.topbar.resize(width);
+        self.buttombar.resize(width, height);
+        self.confirm_dialog.resize(width, height);
+        self.chart_manager.resize(width, height);
+        self.photo_button.resize(height);
+        self.centre_button.resize(width, height);
+        self.ais_info.resize(height);
+        self.dirty = true;
+        crate::diagnostics::record("INFO", format!("Fenêtre redimensionnée: {width}x{height}"));
+        Ok(())
+    }
+
+    /// One iteration of the main loop, apart from the sleep: events, live
+    /// data, the frame, the cursor and tile prefetch. No step in it ends
+    /// the loop; see `main_loop`.
+    fn iteration(
+        &mut self,
+        stats: &mut LoopStats,
+        event_pump: &mut sdl2::EventPump,
+        screen: &mut screen::Screen<'_>,
+        texture_creator: &TextureCreator<WindowContext>,
+        texture: &mut Texture,
+    ) {
+        if stats.last_diagnostics.elapsed() >= DIAGNOSTICS_INTERVAL {
+            crate::diagnostics::record(
+					"INFO",
+					format!(
+						"État boucle: iterations={}, événements={}, points ajoutés={}, images rendues={}, points trace={}, sauvegarde en attente={}, dernier événement utilisateur il y a {:?}",
+						stats.loop_count,
+						stats.event_count,
+						stats.track_updates,
+						stats.rendered_frames,
+						self.session.track.point_count(),
+						self.session.track.save_pending(),
+						stats.last_input.elapsed()
+					),
+				);
+            stats.last_diagnostics = Instant::now();
+        }
+
+        /////////////////////   Event /////////////////////////
+        // Input converts clicks with the geometry the renderer holds;
+        // make sure it reflects the current state, not the last frame.
+        self.session.sync_view();
+        for event in event_pump.poll_iter() {
+            stats.event_count += 1;
+            if matches!(
+                &event,
+                Event::KeyDown { .. }
+                    | Event::TextInput { .. }
+                    | Event::MouseButtonDown { .. }
+                    | Event::MouseButtonUp { .. }
+                    | Event::MouseMotion { .. }
+                    | Event::MouseWheel { .. }
+            ) {
+                stats.last_input = Instant::now();
+            }
+            let event_started = Instant::now();
+            // A failed event costs that event, never the app.
+            let handled = self.match_event(event, screen, texture);
+            self.event_errors
+                .report(handled, "ERROR", "Erreur de traitement SDL");
+            let elapsed = event_started.elapsed();
+            if elapsed >= Duration::from_millis(500) {
+                crate::diagnostics::record(
+                    "WARN",
+                    format!("Traitement d'un événement SDL lent: {elapsed:?}"),
+                );
+            }
+        }
+
+        if std::mem::take(&mut self.device_reset) {
+            // The renderer lost its textures: make the chart texture
+            // again, as a resize to the same size does. Without a size,
+            // try again next iteration.
+            let size = screen.canvas.output_size();
+            match self
+                .resize_errors
+                .report(size, "ERROR", "Taille de la fenêtre inconnue")
+            {
+                Some(size) => {
+                    crate::diagnostics::record(
+                        "WARN",
+                        "Périphérique de rendu réinitialisé; texture refaite",
+                    );
+                    self.resized.get_or_insert(size);
+                }
+                None => self.device_reset = true,
+            }
+        }
+        if let Some((width, height)) = self.resized.take() {
+            // A texture that cannot be made yet keeps the old one and
+            // the old size; the resize is tried again next iteration.
+            let resized = self.resize(screen, texture_creator, texture, width, height);
+            if self
+                .resize_errors
+                .report(resized, "ERROR", "Redimensionnement impossible, réessayé")
+                .is_none()
+            {
+                self.resized.get_or_insert((width, height));
+            }
+        }
+
+        // Live data in: drain each channel, hand it to the session, and
+        // redraw when it says so. The rules live on Track and Session.
+        let now = Instant::now();
+        while let Ok(position) = self.live.track.try_recv() {
+            if self.session.track.record(position, now) {
+                stats.track_updates += 1;
+                self.dirty = true;
+            }
+        }
+        self.session.track.tick(now);
+
+        if let Some(boat) =
+            crate::feed::take_change(&mut self.live.boat, &mut self.boat_closed, "bateau")
+        {
+            self.session.on_boat(boat, now);
+            self.dirty = true;
+        }
+        if self.session.expire_boat(now) {
+            self.dirty = true;
+        }
+
+        self.fire_long_press();
+
+        // AIS is read even while hidden: the collision alarm needs it.
+        if let Some(targets) =
+            crate::feed::take_change(&mut self.live.ais, &mut self.ais_closed, "AIS")
+        {
+            self.session.set_ais(targets);
+            self.dirty = true;
+        }
+        if self.session.expire_ais(now) {
+            self.dirty = true;
+        }
+        self.sound_collision_alarm(now);
+        if self.session.renderer.advance_zoom_animation() {
+            self.dirty = true;
+        }
+        //////////////////////   Display /////////////////////////
+        if self.dirty && !self.dragging_chart() {
+            let display_started = Instant::now();
+            // A frame that fails is logged and tried again next
+            // iteration: the chart must keep drawing.
+            let drawn = self.display(screen, texture);
+            if self
+                .render_errors
+                .report(drawn, "ERROR", "Erreur de rendu, image réessayée")
+                .is_some()
+            {
+                stats.rendered_frames += 1;
+                self.dirty = false;
+            }
+            let elapsed = display_started.elapsed();
+            if elapsed >= Duration::from_millis(500) {
+                crate::diagnostics::record("WARN", format!("Rendu lent: {elapsed:?}"));
+            }
+        }
+
+        /////////////////  Mouse //////////////////////////////////
+        self.mouse(screen);
+
+        /////////////// preload tiles on the edge ///////////////////////////
+        let prefetch_started = Instant::now();
+        self.session.renderer.prefetch_step(8);
+        let elapsed = prefetch_started.elapsed();
+        if elapsed >= Duration::from_millis(500) {
+            crate::diagnostics::record(
+                "WARN",
+                format!("Préchargement des tuiles lent: {elapsed:?}"),
+            );
+        }
+    }
+
+    /// After a panic in an iteration: drop the gesture in progress (its
+    /// state may be half changed) and draw the next frame in full.
+    fn after_panic(&mut self) {
+        self.grab = None;
+        self.dirty = true;
     }
 
     /// Runs an action on the session and schedules a redraw. Opening the
@@ -214,150 +556,27 @@ impl<'ttf> Plotter<'ttf> {
         &mut self,
         event_pump: &mut sdl2::EventPump,
         screen: &mut screen::Screen<'_>,
-        texture: &mut sdl2::render::Texture,
+        texture_creator: &TextureCreator<WindowContext>,
+        texture: &mut Texture,
     ) -> anyhow::Result<()> {
-        let mut last_diagnostics = Instant::now();
-        let mut loop_count: u64 = 0;
-        let mut event_count: u64 = 0;
-        let mut track_updates: u64 = 0;
-        let mut rendered_frames: u64 = 0;
-        let mut last_input = Instant::now();
+        let mut stats = LoopStats::new();
         crate::diagnostics::record("INFO", "Boucle SDL démarrée");
         while self.session.running {
             let loop_started = Instant::now();
-            if last_diagnostics.elapsed() >= DIAGNOSTICS_INTERVAL {
-                crate::diagnostics::record(
-					"INFO",
-					format!(
-						"État boucle: iterations={loop_count}, événements={event_count}, points ajoutés={track_updates}, images rendues={rendered_frames}, points trace={}, sauvegarde en attente={}, dernier événement utilisateur il y a {:?}",
-						self.session.track.point_count(),
-						self.session.track.save_pending(),
-						last_input.elapsed()
-					),
-				);
-                last_diagnostics = Instant::now();
-            }
-
-            /////////////////////   Event /////////////////////////
-            // Input converts clicks with the geometry the renderer holds;
-            // make sure it reflects the current state, not the last frame.
-            self.session.sync_view();
-            for event in event_pump.poll_iter() {
-                event_count += 1;
-                if matches!(
-                    &event,
-                    Event::KeyDown { .. }
-                        | Event::TextInput { .. }
-                        | Event::MouseButtonDown { .. }
-                        | Event::MouseButtonUp { .. }
-                        | Event::MouseMotion { .. }
-                        | Event::MouseWheel { .. }
-                ) {
-                    last_input = Instant::now();
-                }
-                let event_started = Instant::now();
-                self.match_event(event, screen, texture).map_err(|error| {
-                    crate::diagnostics::record(
-                        "ERROR",
-                        format!("Erreur de traitement SDL: {error}"),
-                    );
-                    anyhow::Error::msg(error)
-                })?;
-                let elapsed = event_started.elapsed();
-                if elapsed >= Duration::from_millis(500) {
-                    crate::diagnostics::record(
-                        "WARN",
-                        format!("Traitement d'un événement SDL lent: {elapsed:?}"),
-                    );
-                }
-            }
-
-            // Live data in: drain each channel, hand it to the session, and
-            // redraw when it says so. The rules live on Track and Session.
-            let now = Instant::now();
-            while let Ok(position) = self.track_rx.try_recv() {
-                if self.session.track.record(position, now) {
-                    track_updates += 1;
-                    self.dirty = true;
-                }
-            }
-            self.session.track.tick(now);
-
-            if self.state_rx.has_changed()? {
-                let boat = *self.state_rx.borrow_and_update();
-                self.session.on_boat(boat);
-                self.dirty = true;
-            }
-
-            let alarm_active = self.session.collision_alarm_active();
-            let alarm_kind = alarm_active.then(|| self.session.collision_alarm_is_uncertain());
-            if alarm_kind != self.last_alarm_kind {
-                self.last_alarm_kind = alarm_kind;
-                if let Some(uncertain) = alarm_kind {
-                    if let Some(sound) = &mut self.alarm_sound {
-                        sound.beep(uncertain);
-                    }
-                    crate::diagnostics::record(
-                        "WARN",
-                        if uncertain {
-                            "Proximité AIS sans données de mouvement"
-                        } else {
-                            "Risque de collision détecté"
-                        },
-                    );
-                }
-                self.dirty = true;
-            }
-            if alarm_active
-                && now.duration_since(self.last_alarm_blink) >= Duration::from_millis(500)
-            {
-                self.last_alarm_blink = now;
-                self.alarm_blink_on = !self.alarm_blink_on;
-                self.dirty = true;
-            }
-
-            self.fire_long_press();
-
-            if self.ais_rx.has_changed().unwrap_or(false) {
-                self.session
-                    .set_ais(self.ais_rx.borrow_and_update().clone());
-                self.dirty = true;
-            }
-            if self.session.expire_ais(now) {
-                self.dirty = true;
-            }
-            if self.session.renderer.advance_zoom_animation() {
-                self.dirty = true;
-            }
-            //////////////////////   Display /////////////////////////
-            if self.dirty && !self.dragging_chart() {
-                let display_started = Instant::now();
-                self.display(screen, texture).map_err(anyhow::Error::msg)?;
-                rendered_frames += 1;
-                let elapsed = display_started.elapsed();
-                if elapsed >= Duration::from_millis(500) {
-                    crate::diagnostics::record("WARN", format!("Rendu lent: {elapsed:?}"));
-                }
-                self.dirty = false;
-            }
-
-            /////////////////  Mouse //////////////////////////////////
-            self.mouse(screen);
-
-            /////////////// preload tiles on the edge ///////////////////////////
-            let prefetch_started = Instant::now();
-            self.session.renderer.prefetch_step(8);
-            let elapsed = prefetch_started.elapsed();
-            if elapsed >= Duration::from_millis(500) {
-                crate::diagnostics::record(
-                    "WARN",
-                    format!("Préchargement des tuiles lent: {elapsed:?}"),
-                );
+            // A panic costs this iteration, never the app: the hook has
+            // logged it, the next frame is drawn in full, and an input
+            // gesture half done is dropped.
+            let survived = crate::diagnostics::survive(|| {
+                self.iteration(&mut stats, event_pump, screen, texture_creator, texture)
+            });
+            if survived.is_none() {
+                self.after_panic();
             }
 
             /////// Sleep to limit CPU usage /////////////////////////
+            // Outside the guard, so a panic every frame is not a busy loop.
             std::thread::sleep(Duration::from_millis(16));
-            loop_count += 1;
+            stats.loop_count += 1;
             let elapsed = loop_started.elapsed();
             if elapsed >= Duration::from_secs(1) {
                 crate::diagnostics::record(
@@ -369,7 +588,7 @@ impl<'ttf> Plotter<'ttf> {
 
         crate::diagnostics::record("INFO", "Arrêt demandé, sauvegarde finale de la trace");
         self.session.track.close();
-        if let Err(error) = self.session.state.save(STATE_FILE) {
+        if let Err(error) = self.session.state.save(&self.state_file) {
             crate::diagnostics::record("ERROR", format!("Erreur sauvegarde état: {error}"));
         }
         crate::diagnostics::record("INFO", "Boucle SDL terminée");
@@ -381,6 +600,125 @@ impl<'ttf> Plotter<'ttf> {
 mod tests {
     use super::session::valid_boat_position;
     use crate::boat::BoatState;
+
+    /// The real `Plotter` on SDL's dummy video driver (no display needed),
+    /// every file in a temp directory. One test, because SDL is set up
+    /// once per process.
+    #[tokio::test]
+    async fn the_main_loop_survives_a_failing_resize_and_retries_it() {
+        use super::session::test_support::{session, Fixture};
+        sdl2::hint::set("SDL_VIDEODRIVER", "dummy");
+        let Fixture {
+            dir,
+            chart,
+            session,
+        } = session(&[2]);
+        drop(session);
+
+        let mut config = crate::config::AppConfig::default();
+        config.input.source = crate::config::InputSource::Nmea2k;
+        config.charts.directory = dir.join("charts").to_string_lossy().into_owned();
+        config.charts.default = chart.to_string_lossy().into_owned();
+        config.window.width = 640;
+        config.window.height = 480;
+        let files = super::Files {
+            state: dir.join("state.json"),
+            track: dir.join("track.json"),
+            route: dir.join("route.json"),
+            waypoints: dir.join("waypoints.json"),
+            chart_settings: dir.join("charts.json"),
+            export: dir.join("export"),
+        };
+
+        let mut sdl = crate::screen::MoteurSdl::init().unwrap();
+        let mut screen = crate::screen::Screen::new(
+            &sdl.ttf_context,
+            &sdl.context,
+            &config.window,
+            &config.fonts,
+            &config.appearance,
+        )
+        .unwrap();
+        let texture_creator = screen.canvas.texture_creator();
+        let mut texture = super::chart_texture(&texture_creator, 640, 480).unwrap();
+        let mut plotter = super::Plotter::new(
+            &sdl.context,
+            &sdl.ttf_context,
+            640,
+            480,
+            &config,
+            None,
+            None,
+            files,
+        )
+        .unwrap();
+        let mut stats = super::LoopStats::new();
+        let mut step = |plotter: &mut super::Plotter, screen: &mut crate::screen::Screen| {
+            plotter.iteration(
+                &mut stats,
+                &mut sdl.event_pump,
+                screen,
+                &texture_creator,
+                &mut texture,
+            )
+        };
+
+        step(&mut plotter, &mut screen);
+        assert!(plotter.session.running);
+        assert!(!plotter.dirty, "the first frame was drawn");
+
+        // No texture can be this big: the resize fails.
+        let huge = (200_000, 200_000);
+        plotter.resized = Some(huge);
+        step(&mut plotter, &mut screen);
+        assert!(plotter.session.running, "the loop goes on");
+        assert_eq!(plotter.resized, Some(huge), "tried again next iteration");
+        assert_eq!(screen.screen_width, 640, "the old size stays");
+
+        // A size that works is applied.
+        plotter.resized = Some((800, 600));
+        step(&mut plotter, &mut screen);
+        assert_eq!(plotter.resized, None);
+        assert_eq!((screen.screen_width, screen.screen_height), (800, 600));
+
+        // The AIS details window draws with a frame.
+        let centre = plotter.session.state.position.unwrap_or((0.0, 0.0));
+        let mut ship = crate::ais::AisTarget::new("vessels.urn:mrn:imo:mmsi:232001001".into());
+        ship.position = Some(centre);
+        ship.name = Some("SEA SPIRIT".into());
+        ship.ship_type = Some(70);
+        ship.nav_status = Some(7);
+        plotter.session.set_ais(vec![ship]);
+        plotter.session.selected_ais = Some("vessels.urn:mrn:imo:mmsi:232001001".into());
+        plotter.dirty = true;
+        step(&mut plotter, &mut screen);
+        assert!(!plotter.dirty, "the frame with the window was drawn");
+        assert!(plotter.session.selected_ais_target().is_some());
+
+        // SDL2_gfx shapes get the colour asked for: a blue disc reads back
+        // blue (the sdl2 crate's own Color packing came out as 255, 255, 0
+        // with alpha 0 on a little-endian machine).
+        {
+            use sdl2::gfx::primitives::DrawRenderer;
+            let blue = sdl2::pixels::Color::RGB(0, 0, 255);
+            screen
+                .canvas
+                .filled_circle(30, 30, 8, crate::screen::gfx(blue))
+                .unwrap();
+            let pixel = screen
+                .canvas
+                .read_pixels(
+                    Some(sdl2::rect::Rect::new(30, 30, 1, 1)),
+                    sdl2::pixels::PixelFormatEnum::RGB24,
+                )
+                .unwrap();
+            assert_eq!(pixel, vec![0, 0, 255], "SDL2_gfx colour channels");
+        }
+
+        drop(plotter);
+        drop(screen);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn accepts_received_positions_within_gps_bounds() {

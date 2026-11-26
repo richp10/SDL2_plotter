@@ -1,3 +1,7 @@
+[input]
+# "signalk", "nmea0183" or "nmea2k" (not supported yet)
+source = "signalk"
+
 [signalk]
 url = "ws://192.168.3.2/signalk/v1/stream?subscribe=none"
 
@@ -5,10 +9,20 @@ url = "ws://192.168.3.2/signalk/v1/stream?subscribe=none"
 position = "navigation.position"
 course_over_ground = "navigation.courseOverGroundLastMinute"
 speed_over_ground = "navigation.speedOverGroundLastMinute"
+heading = "navigation.headingTrue"
 ais_position = "navigation.position"
 ais_name = "name"
 ais_course_over_ground = "navigation.courseOverGroundTrue"
 ais_speed_over_ground = "navigation.speedOverGround"
+ais_ship_type = "design.aisShipType"
+ais_nav_state = "navigation.state"
+
+[nmea0183]
+# "tcp": connect to address; "udp": bind address and listen
+transport = "tcp"
+address = "127.0.0.1:10110"
+# position sentences (RMC, GGA, GLL, VTG) from this talker only (for example "GN"); empty: every talker
+talker = ""
 
 [charts]
 directory = "map"
@@ -24,29 +38,39 @@ height = 800
 file = "assets/Montserrat-Regular.ttf"
 window_size = 28
 ui_size = 16
+label_size = 14              # AIS target names
 
 [appearance]
 # Sizes and line widths are in pixels.
-boat_size = 6
-boat_circle_radius = 50
+boat_size = 9                 # round marker radius, when no direction is known
+boat_circle_radius = 50       # heading line length
+boat_hull_size = 27           # hull, centre to bow
 mark_size = 6
 route_point_size = 6
 route_width = 3
 cog_length = 250.0
 cog_width = 4
 ais_course_length = 28
-ais_course_width = 3
+ais_course_width = 2
 ais_size = 7
 ais_outline_size = 9
 # Colors use [red, green, blue, alpha], with values from 0 to 255.
-boat_color = [0, 0, 255, 255]
+boat_color = [255, 0, 0, 255]
+boat_no_fix_color = [128, 128, 128, 255]
 measure_color = [0, 0, 255, 255]
 route_color = [255, 0, 0, 255]
 track_color = [255, 0, 0, 255]
 waypoint_color = [220, 30, 30, 255]
 coverage_color = [255, 140, 0, 255]
 cog_color = [0, 0, 255, 255]
-ais_color = [255, 140, 0, 255]
+ais_cargo_color = [0, 125, 0, 255]        # ship types 70-79
+ais_tanker_color = [150, 0, 150, 255]     # 80-89
+ais_passenger_color = [0, 70, 200, 255]  # 60-69
+ais_high_speed_color = [185, 150, 0, 255] # 40-49
+ais_service_color = [0, 130, 140, 255]    # 50-59: pilot, SAR, tug, law
+ais_fishing_color = [215, 85, 0, 255]    # 30
+ais_leisure_color = [105, 45, 175, 255]  # 36-37: sailing, pleasure
+ais_other_color = [95, 95, 95, 255]    # any other, or not known yet
 ais_outline_color = [0, 0, 0, 255]
 map_background_color = [250, 250, 250, 255]
 line_color = [0, 0, 255, 255]

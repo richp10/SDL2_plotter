@@ -6,8 +6,6 @@ use crate::mbtiles_renderer::ChartView;
 use crate::overlay::Shape;
 use sdl2::rect::Point;
 
-const WAYPOINTS_FILE: &str = "default/waypoints.json";
-
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 struct Waypoint {
     longitude: f64,
@@ -39,10 +37,6 @@ pub struct Waypoints {
 }
 
 impl Waypoints {
-    pub fn new() -> Self {
-        Self::load(Path::new(WAYPOINTS_FILE))
-    }
-
     /// Loads the list saved at `path`. A missing file is an empty list, a
     /// damaged one is set aside, and the old bare-array shape is migrated
     /// once (see `geo_data::GeoFile`). `save` writes back to the same path.

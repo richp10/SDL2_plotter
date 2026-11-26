@@ -23,6 +23,15 @@ use crate::track::Track;
 use crate::waypoints::Waypoints;
 use crate::Mode;
 
+/// What the centre button shows. See `Session::centre_button`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CentreButton {
+    /// A tap centres on the boat; greyed and inert before the first fix.
+    pub enabled: bool,
+    /// The view follows the boat with no pan offset: the button is filled.
+    pub centred: bool,
+}
+
 pub(crate) struct Session {
     pub renderer: MBTilesRenderer,
     pub state: State,
@@ -32,9 +41,13 @@ pub(crate) struct Session {
     /// The AIS targets currently shown, as last published by the Signal K
     /// task and thinned by `expire_ais`.
     pub ais_targets: Vec<AisTarget>,
+    last_ais_expiry: Instant,
+    /// The AIS target whose details window is open, by context.
+    pub selected_ais: Option<String>,
+    /// The AIS targets inside the collision limits, from the last fix and
+    /// AIS list.
     pub collision_risks: Vec<CollisionRisk>,
     collision_config: CollisionConfig,
-    last_ais_expiry: Instant,
     pub route: Route,
     pub mesure: Mesure,
     pub track: Track,
@@ -82,6 +95,7 @@ impl Session {
             running: true,
             boat,
             ais_targets: Vec::new(),
+            selected_ais: None,
             collision_risks: Vec::new(),
             collision_config,
             last_ais_expiry: Instant::now(),
@@ -119,20 +133,14 @@ impl Session {
         session
     }
 
-    /// A new fix from the Signal K task. While following, the view moves
-    /// with a valid fix; an invalid fix is kept (the marker hides) but never
-    /// followed. Logs when the fix becomes valid or invalid.
-    pub fn on_boat(&mut self, boat: BoatState) {
-        if self.boat.position_valid != boat.position_valid {
-            crate::diagnostics::record(
-                "INFO",
-                if boat.position_valid {
-                    "Position du bateau reçue; marqueur activé"
-                } else {
-                    "Position du bateau invalide; marqueur masqué"
-                },
-            );
-        }
+    /// A new boat state from the source task, received at `now`. While
+    /// following, the view moves with a valid fix; an invalid fix is kept
+    /// (the marker goes grey) but never followed. Logs when the fix becomes valid or invalid.
+    pub fn on_boat(&mut self, boat: BoatState, now: Instant) {
+        // The source does not clear an old fix itself: apply the timeouts
+        // first, so an update with no new position cannot revive it.
+        let boat = boat.expired(now);
+        log_fix_change(self.boat.position_valid, boat.position_valid);
         self.boat = boat;
         self.update_collision_risks();
         if self.state.follow && valid_boat_position(&boat) {
@@ -140,12 +148,30 @@ impl Session {
         }
     }
 
+    /// Applies the fix and heading timeouts (`BoatState::expired`) to the
+    /// boat. Returns true when the fix or the heading was lost, so the
+    /// frame is redrawn.
+    pub fn expire_boat(&mut self, now: Instant) -> bool {
+        let expired = self.boat.expired(now);
+        let changed = expired.position_valid != self.boat.position_valid
+            || expired.heading.is_some() != self.boat.heading.is_some();
+        log_fix_change(self.boat.position_valid, expired.position_valid);
+        self.boat = expired;
+        if changed {
+            self.update_collision_risks();
+        }
+        changed
+    }
+
     /// The AIS list as the Signal K task last published it.
     pub fn set_ais(&mut self, targets: Vec<AisTarget>) {
         self.ais_targets = targets;
+        self.forget_missing_selection();
         self.update_collision_risks();
     }
 
+    /// Recomputes `collision_risks` from the boat and the AIS list. With no
+    /// valid fix there is no risk to compute.
     fn update_collision_risks(&mut self) {
         self.collision_risks = if self.collision_config.enabled {
             crate::collision::risks(
@@ -166,10 +192,36 @@ impl Session {
         !self.collision_risks.is_empty()
     }
 
+    /// True when a risk is a target close by with no motion data.
     pub fn collision_alarm_is_uncertain(&self) -> bool {
         self.collision_risks
             .iter()
             .any(|risk| risk.kind == RiskKind::ProximityUncertain)
+    }
+
+    /// The AIS target within a tap of `pixel` (20 px), by context.
+    pub fn ais_at(&self, pixel: sdl2::rect::Point) -> Option<String> {
+        let placed: Vec<&AisTarget> = self
+            .ais_targets
+            .iter()
+            .filter(|target| target.position.is_some())
+            .collect();
+        let view = self.renderer.view();
+        let index = view.nearest(placed.iter().filter_map(|t| t.position), pixel, 20)?;
+        Some(placed[index].context.clone())
+    }
+
+    /// The target whose details window is open, while it is still heard.
+    pub fn selected_ais_target(&self) -> Option<&AisTarget> {
+        let context = self.selected_ais.as_deref()?;
+        self.ais_targets.iter().find(|t| t.context == context)
+    }
+
+    /// A target that expired closes its details window.
+    fn forget_missing_selection(&mut self) {
+        if self.selected_ais.is_some() && self.selected_ais_target().is_none() {
+            self.selected_ais = None;
+        }
     }
 
     /// Drops targets silent for longer than `ais::TARGET_TIMEOUT`, checking
@@ -184,6 +236,7 @@ impl Session {
         }
         self.last_ais_expiry = now;
         let changed = crate::ais::expire(&mut self.ais_targets, now);
+        self.forget_missing_selection();
         if changed {
             self.update_collision_risks();
         }
@@ -272,6 +325,16 @@ impl Session {
             None => 0,
         };
         sources.get(next).map(|f| f.layer.clone())
+    }
+
+    /// The centre button: usable once the boat has had a fix; shown as
+    /// centred while the view follows the boat with no pan offset.
+    pub fn centre_button(&self) -> CentreButton {
+        let enabled = self.boat.fixed_at.is_some();
+        CentreButton {
+            enabled,
+            centred: enabled && self.state.follow && self.state.map_offset == (0, 0),
+        }
     }
 
     /// The photo button, while a photo source is available here or a photo
@@ -426,13 +489,15 @@ impl Session {
         } else {
             saved
         };
-        let rotation = if self.state.course_up
-            && self.boat.position_valid
-            && self.boat.course_over_ground.is_finite()
-        {
-            self.boat.course_over_ground
-        } else {
-            0.0
+        // Heading up or course up only with a valid fix (and a heading);
+        // otherwise north up.
+        let heading = self.boat.heading.filter(|h| h.is_finite());
+        let rotation = match (self.boat.position_valid, heading) {
+            (true, Some(heading)) if self.state.heading_up => heading,
+            (true, _) if self.state.course_up && self.boat.course_over_ground.is_finite() => {
+                self.boat.course_over_ground
+            }
+            _ => 0.0,
         };
         self.renderer.set_rotation(rotation);
         self.renderer.look_at(lon, lat, self.state.map_offset);
@@ -595,6 +660,20 @@ pub(in crate::app) mod test_support {
     }
 }
 
+/// Logs when the boat's fix is gained or lost.
+fn log_fix_change(was_valid: bool, is_valid: bool) {
+    if was_valid != is_valid {
+        crate::diagnostics::record(
+            "INFO",
+            if is_valid {
+                "Position du bateau reçue; marqueur activé"
+            } else {
+                "Position du bateau invalide; marqueur grisé"
+            },
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::test_support::session;
@@ -609,7 +688,124 @@ mod tests {
             position_valid: true,
             speed_over_ground: 5.0,
             course_over_ground: 1.0,
+            heading: None,
+            fixed_at: Some(Instant::now()),
+            heading_at: None,
         }
+    }
+
+    #[test]
+    fn an_update_without_a_new_position_does_not_revive_a_stale_fix() {
+        let mut fx = session(&[2]);
+        let now = Instant::now();
+        let mut boat = boat_at(10.0, 20.0);
+        boat.fixed_at = Some(now);
+        fx.session.on_boat(boat, now);
+        assert!(fx.session.expire_boat(now + Duration::from_secs(11)));
+        // A heading arrives; the source still says the old fix is valid.
+        boat.heading = Some(1.0);
+        boat.heading_at = Some(now + Duration::from_secs(12));
+        fx.session.on_boat(boat, now + Duration::from_secs(12));
+        assert!(!fx.session.boat.position_valid, "the old fix stays lost");
+        assert_eq!(fx.session.boat.heading, Some(1.0));
+        assert!(!fx.session.expire_boat(now + Duration::from_secs(12)));
+        fx.finish();
+    }
+
+    #[test]
+    fn a_tap_on_an_ais_target_finds_it_and_a_tap_elsewhere_does_not() {
+        let mut fx = session(&[2]);
+        fx.session.state.position = Some((0.0, 0.0));
+        fx.session.sync_view();
+        let mut ship = AisTarget::new("vessels.urn:mrn:imo:mmsi:232001001".to_string());
+        ship.position = Some((0.0, 0.0));
+        let mut far = AisTarget::new("vessels.urn:mrn:imo:mmsi:232002002".to_string());
+        far.position = Some((60.0, 0.0));
+        let mut unplaced = AisTarget::new("vessels.urn:mrn:imo:mmsi:232003003".to_string());
+        unplaced.position = None;
+        fx.session.set_ais(vec![far, unplaced, ship]);
+        let view = fx.session.renderer.view();
+        let on = view.to_pixel((0.0, 0.0));
+        assert_eq!(
+            fx.session
+                .ais_at(sdl2::rect::Point::new(on.x + 10, on.y - 8))
+                .as_deref(),
+            Some("vessels.urn:mrn:imo:mmsi:232001001")
+        );
+        assert_eq!(
+            fx.session.ais_at(sdl2::rect::Point::new(on.x + 80, on.y)),
+            None
+        );
+        fx.finish();
+    }
+
+    #[test]
+    fn a_converging_target_raises_the_alarm_and_a_lost_fix_clears_it() {
+        let mut fx = session(&[2]);
+        let start = Instant::now();
+        let mut boat = BoatState::default();
+        boat.longitude = 0.0;
+        boat.latitude = 0.0;
+        boat.position_valid = true;
+        boat.speed_over_ground = 5.0 * 1852.0 / 3600.0;
+        boat.course_over_ground = 0.0;
+        boat.fixed_at = Some(start);
+        fx.session.on_boat(boat, start);
+        // Dead ahead, 0.5 NM, stopped: CPA 0 in 6 minutes.
+        let mut ship = AisTarget::new("vessels.urn:mrn:imo:mmsi:232001001".to_string());
+        ship.position = Some((0.0, 0.5 / 60.0));
+        ship.course_over_ground = Some(0.0);
+        ship.speed_over_ground = Some(0.0);
+        fx.session.set_ais(vec![ship]);
+        assert!(fx.session.collision_alarm_active());
+        assert!(!fx.session.collision_alarm_is_uncertain());
+        let tcpa = fx.session.collision_risks[0].tcpa_minutes;
+        assert!((tcpa - 6.0).abs() < 0.05, "{tcpa}");
+
+        fx.session
+            .expire_boat(start + crate::boat::FIX_TIMEOUT + Duration::from_secs(1));
+        assert!(
+            !fx.session.collision_alarm_active(),
+            "no CPA from a position that is no longer known"
+        );
+        fx.finish();
+    }
+
+    #[test]
+    fn the_selected_target_closes_when_it_expires() {
+        let mut fx = session(&[2]);
+        let mut ship = AisTarget::new("vessels.urn:mrn:imo:mmsi:232001001".to_string());
+        ship.position = Some((0.0, 0.0));
+        fx.session.set_ais(vec![ship]);
+        fx.session.selected_ais = Some("vessels.urn:mrn:imo:mmsi:232001001".to_string());
+        assert!(fx.session.selected_ais_target().is_some());
+        fx.session.set_ais(Vec::new());
+        assert!(fx.session.selected_ais_target().is_none());
+        assert_eq!(
+            fx.session.selected_ais, None,
+            "closed, not left pointing at nothing"
+        );
+        fx.finish();
+    }
+
+    #[test]
+    fn the_boat_goes_grey_once_when_its_fix_is_stale() {
+        let mut fx = session(&[2]);
+        let now = Instant::now();
+        let mut boat = boat_at(10.0, 20.0);
+        boat.fixed_at = Some(now);
+        fx.session.on_boat(boat, now);
+        assert!(!fx.session.expire_boat(now + Duration::from_secs(5)));
+        assert!(
+            fx.session.expire_boat(now + Duration::from_secs(10)),
+            "changed: redraw"
+        );
+        assert!(!fx.session.boat.position_valid);
+        assert!(
+            !fx.session.expire_boat(now + Duration::from_secs(11)),
+            "already grey"
+        );
+        fx.finish();
     }
 
     #[test]
@@ -617,17 +813,17 @@ mod tests {
         let mut fx = session(&[2]);
         fx.session.state.follow = false;
         fx.session.state.position = Some((0.0, 0.0));
-        fx.session.on_boat(boat_at(10.0, 20.0));
+        fx.session.on_boat(boat_at(10.0, 20.0), Instant::now());
         assert_eq!(fx.session.boat.longitude, 10.0);
         assert_eq!(fx.session.state.position, Some((0.0, 0.0)), "not following");
 
         fx.session.state.follow = true;
-        fx.session.on_boat(boat_at(11.0, 21.0));
+        fx.session.on_boat(boat_at(11.0, 21.0), Instant::now());
         assert_eq!(fx.session.state.position, Some((11.0, 21.0)));
 
         let mut invalid = boat_at(12.0, 22.0);
         invalid.position_valid = false;
-        fx.session.on_boat(invalid);
+        fx.session.on_boat(invalid, Instant::now());
         assert_eq!(
             fx.session.state.position,
             Some((11.0, 21.0)),

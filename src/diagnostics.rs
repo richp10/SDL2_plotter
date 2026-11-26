@@ -135,9 +135,157 @@ pub fn record(level: &str, message: impl std::fmt::Display) {
     }
 }
 
+/// Runs `step`, turning a panic into `None` so the caller carries on. The
+/// panic hook has already logged it. State the step was changing may be
+/// half done; callers use it only where going on beats stopping (the main
+/// loop of a safety instrument, one line of input).
+pub fn survive<T>(step: impl FnOnce() -> T) -> Option<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(step)).ok()
+}
+
+/// Panics seen so far, so one that repeats every frame cannot fill the log.
+static PANICS: Mutex<Repeated> = Mutex::new(Repeated {
+    last: None,
+    count: 0,
+});
+
+/// The log line for a panic, by the `Repeated` rule.
+pub fn panic_line(panics: &mut Repeated, text: &str) -> Option<String> {
+    panics.note(text)
+}
+
+/// For the panic hook: logs the panic (message and place) as PANIC, once,
+/// then every thousandth time it repeats.
+pub fn record_panic(text: &str) {
+    let mut panics = PANICS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(line) = panic_line(&mut panics, text) {
+        drop(panics);
+        record("PANIC", line);
+    }
+}
+
+/// An error that can repeat every frame: the first time it is logged, then
+/// only every thousandth time, so a lasting fault cannot fill the log.
+#[derive(Default)]
+pub struct Repeated {
+    last: Option<String>,
+    count: u64,
+}
+
+impl Repeated {
+    /// The line to log for this error, if any.
+    pub fn note(&mut self, message: &str) -> Option<String> {
+        if self.last.as_deref() != Some(message) {
+            self.last = Some(message.to_string());
+            self.count = 1;
+            return Some(message.to_string());
+        }
+        self.count += 1;
+        self.count
+            .is_multiple_of(1000)
+            .then(|| format!("{message} ({} fois)", self.count))
+    }
+
+    /// The result of one step of the main loop: its value, or `None` after
+    /// logging the error (`level`, prefixed with `context`) the way `note`
+    /// allows. A success clears the error. The caller carries on either
+    /// way: the chart must keep drawing.
+    pub fn report<T, E: std::fmt::Display>(
+        &mut self,
+        result: Result<T, E>,
+        level: &str,
+        context: &str,
+    ) -> Option<T> {
+        match result {
+            Ok(value) => {
+                self.clear();
+                Some(value)
+            }
+            Err(error) => {
+                if let Some(line) = self.note(&error.to_string()) {
+                    record(level, format!("{context}: {line}"));
+                }
+                None
+            }
+        }
+    }
+
+    /// The operation worked again: the next error is logged at once.
+    pub fn clear(&mut self) {
+        self.last = None;
+        self.count = 0;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn survive_turns_a_panic_into_none_and_passes_a_value_through() {
+        assert_eq!(survive(|| 5), Some(5));
+        let mut data = vec![1, 2, 3];
+        let index = data.len() + 4;
+        assert_eq!(survive(|| data[index]), None, "an index out of range");
+        data.push(4);
+        assert_eq!(data.len(), 4, "the caller carries on");
+    }
+
+    #[test]
+    fn a_repeated_panic_is_logged_once_then_every_thousandth_time() {
+        let mut panics = Repeated::default();
+        assert!(panic_line(&mut panics, "boom at a.rs:1").is_some());
+        for _ in 2..1000 {
+            assert!(panic_line(&mut panics, "boom at a.rs:1").is_none());
+        }
+        assert!(panic_line(&mut panics, "boom at a.rs:1").is_some());
+    }
+
+    #[test]
+    fn report_passes_a_value_through_and_turns_an_error_into_none() {
+        let mut repeated = Repeated::default();
+        assert_eq!(
+            repeated.report(Ok::<_, String>(5), "ERROR", "étape"),
+            Some(5)
+        );
+        assert_eq!(
+            repeated.report(Err::<i32, _>("lost"), "ERROR", "étape"),
+            None
+        );
+        assert_eq!(repeated.note("lost"), None, "the error was noted");
+        assert_eq!(
+            repeated.report(Ok::<_, String>(6), "ERROR", "étape"),
+            Some(6)
+        );
+        assert_eq!(
+            repeated.note("lost"),
+            Some("lost".to_string()),
+            "a success cleared it"
+        );
+    }
+
+    #[test]
+    fn a_repeated_error_is_logged_once_then_every_thousandth_time() {
+        let mut repeated = Repeated::default();
+        assert_eq!(repeated.note("lost"), Some("lost".to_string()));
+        for _ in 2..1000 {
+            assert_eq!(repeated.note("lost"), None);
+        }
+        assert_eq!(repeated.note("lost"), Some("lost (1000 fois)".to_string()));
+        assert_eq!(
+            repeated.note("other"),
+            Some("other".to_string()),
+            "a new message"
+        );
+        repeated.clear();
+        assert_eq!(
+            repeated.note("other"),
+            Some("other".to_string()),
+            "after a success"
+        );
+    }
 
     fn temp_log(tag: &str) -> std::path::PathBuf {
         let unique = std::time::SystemTime::now()

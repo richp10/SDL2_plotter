@@ -184,6 +184,11 @@ impl Plotter<'_> {
             let fast = keymod.intersects(Mod::LSHIFTMOD | Mod::RSHIFTMOD);
             let distance = if fast { 1000 } else { 100 };
             let action = match *keycode {
+                sdl2::keyboard::Keycode::Escape if self.session.selected_ais.is_some() => {
+                    self.session.selected_ais = None;
+                    self.dirty = true;
+                    None
+                }
                 sdl2::keyboard::Keycode::Escape => match self.session.mode {
                     Mode::Measurement => {
                         self.session.mesure.clear();
@@ -322,11 +327,22 @@ impl Plotter<'_> {
                 crate::diagnostics::record("INFO", "Événement SDL Quit reçu");
                 self.session.running = false;
             }
+            Event::RenderTargetsReset { .. } | Event::RenderDeviceReset { .. } => {
+                self.device_reset = true;
+                self.dirty = true;
+            }
             Event::Window { win_event, .. } => {
                 crate::diagnostics::record(
                     "DEBUG",
                     format!("Événement fenêtre SDL: {win_event:?}"),
                 );
+                // Maximised, restored or dragged to a new size; a minimised
+                // window reports nothing worth drawing for.
+                if let sdl2::event::WindowEvent::SizeChanged(width, height) = *win_event {
+                    if width > 0 && height > 0 {
+                        self.resized = Some((width as u32, height as u32));
+                    }
+                }
             }
             _ => {}
         }
@@ -378,6 +394,11 @@ impl Plotter<'_> {
     }
 
     fn handle_mouse_down(&mut self, x: u32, y: u32) {
+        // An open AIS details window takes the next tap, anywhere, to close.
+        if self.session.selected_ais.take().is_some() {
+            self.dirty = true;
+            return;
+        }
         if self.topbar.mouse(x, y) {
             self.handle_topbar_event(x, y);
             // Opening, switching or closing a menu changes the frame even
@@ -387,6 +408,15 @@ impl Plotter<'_> {
         } else if self.topbar.is_open() {
             self.topbar.close();
             self.dirty = true;
+        } else if self
+            .centre_button
+            .area()
+            .contains_point((x as i32, y as i32))
+        {
+            // The button takes the tap even while greyed (no fix yet).
+            if self.session.centre_button().enabled {
+                self.execute_action(AppAction::CentreOnBoat);
+            }
         } else if self
             .photo_button
             .area()
@@ -403,6 +433,12 @@ impl Plotter<'_> {
     fn handle_mouse_up(&mut self, at: Point) {
         match self.gestures.release(at) {
             Some(Gesture::Click(at)) => {
+                // A tap on an AIS target opens its details, in any mode.
+                if let Some(context) = self.session.ais_at(at) {
+                    self.session.selected_ais = Some(context);
+                    self.dirty = true;
+                    return;
+                }
                 if let Some(ClickRequest::NameWaypoint(position)) = self.session.click(at) {
                     self.pending_waypoint = Some(PendingWaypoint {
                         position,

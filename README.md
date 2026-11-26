@@ -85,6 +85,15 @@ cargo build --release
 
 At first launch, `default/plotter.toml` is created with default values. It can then be edited without recompiling the application.
 
+### Input
+
+```toml
+[input]
+source = "signalk"   # "signalk", "nmea0183" or "nmea2k" (not supported yet)
+```
+
+The app reads live boat data from one source, chosen at start. With no `[input]` table, it reads Signal K. With `nmea2k`, an unknown word, or a bad setting in the chosen source's table (URL, address, talker), it logs an ERROR and runs with no live data: an input setting never stops the start.
+
 ### Signal K
 
 ```toml
@@ -95,13 +104,27 @@ url = "ws://192.168.3.2/signalk/v1/stream?subscribe=none"
 position = "navigation.position"
 course_over_ground = "navigation.courseOverGroundLastMinute"
 speed_over_ground = "navigation.speedOverGroundLastMinute"
+heading = "navigation.headingTrue"
 ais_position = "navigation.position"
 ais_name = "name"
 ais_course_over_ground = "navigation.courseOverGroundTrue"
 ais_speed_over_ground = "navigation.speedOverGround"
+ais_ship_type = "design.aisShipType"
+ais_nav_state = "navigation.state"
 ```
 
 The subscription uses these configured paths for vessel data and AIS targets.
+
+### NMEA 0183
+
+```toml
+[nmea0183]
+transport = "tcp"            # "tcp": connect to address; "udp": bind address and listen
+address = "127.0.0.1:10110"  # host:port or IP:port; for UDP, for example "0.0.0.0:10110"
+talker = ""                  # position sentences from this talker only, for example "GN"; empty: every talker
+```
+
+Used when `source = "nmea0183"`. To test with `go-gps-simulator`: run `gps-simulator -tcp` with `transport = "tcp"`, `address = "127.0.0.1:10110"`, or `gps-simulator -udp -host 127.0.0.1` with `transport = "udp"`, `address = "0.0.0.0:10110"`. The app reads RMC (position, speed, course), HDT and HDG (heading; HDG only with a magnetic variation). When no RMC comes for 5 s, it uses GGA or GLL for the position and VTG for speed and course. It also reads AIS targets from `!AIVDM` (message types 1, 2, 3, 5, 18, 19 and 24).
 
 ### Charts
 
@@ -129,9 +152,11 @@ Symbol sizes are expressed in pixels. Colors use `[red, green, blue, alpha]`, wi
 
 ```toml
 [appearance]
-boat_size = 6
-boat_circle_radius = 50
-boat_color = [0, 0, 255, 255]
+boat_size = 9                 # round marker radius, when no direction is known
+boat_circle_radius = 50       # heading line length
+boat_hull_size = 27           # own-boat hull, centre to bow
+boat_color = [255, 0, 0, 255]
+boat_no_fix_color = [128, 128, 128, 255]   # no position for 10 s
 mark_size = 6
 measure_color = [0, 0, 255, 255]
 route_width = 3
@@ -139,6 +164,14 @@ route_color = [255, 0, 0, 255]
 track_color = [255, 0, 0, 255]
 waypoint_color = [220, 30, 30, 255]
 coverage_color = [255, 140, 0, 255]
+ais_cargo_color = [0, 125, 0, 255]        # ship types 70-79
+ais_tanker_color = [150, 0, 150, 255]     # 80-89
+ais_passenger_color = [0, 70, 200, 255]  # 60-69
+ais_high_speed_color = [185, 150, 0, 255] # 40-49
+ais_service_color = [0, 130, 140, 255]    # 50-59: pilot, SAR, tug, law
+ais_fishing_color = [215, 85, 0, 255]    # 30
+ais_leisure_color = [105, 45, 175, 255]  # 36-37: sailing, pleasure
+ais_other_color = [95, 95, 95, 255]    # any other, or not known yet
 ```
 
 ### Rendering
@@ -176,8 +209,8 @@ tcpa_minutes = 15.0
 proximity_nm = 2.0
 ```
 
-`proximity_nm` déclenche une alerte distincte lorsqu’une cible a une position
-AIS proche mais pas de SOG ou de COG fiables.
+`proximity_nm` starts a separate, orange alarm when a target is this close and
+sends no valid SOG (speed over ground) or COG (course over ground).
 
 ### Network streaming
 
@@ -229,6 +262,8 @@ Only `default/plotter.toml` is part of the repository. Everything else below is 
 - `src/app/render.rs`: chart and overlay assembly
 - `src/mbtiles_renderer.rs`: projection, tiles, zoom and cache
 - `src/signalk.rs`: Signal K connection and decoding
+- `src/nmea0183.rs`, `src/nmea0183/transport.rs`: NMEA 0183 decoding, TCP and UDP input
+- `src/feed.rs`: the channels every input source publishes on
 - `src/screen.rs`: SDL2 rendering
 - `src/stream.rs`: network MJPEG server
 - `src/config.rs`: `plotter.toml` loading and validation

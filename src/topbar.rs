@@ -116,6 +116,7 @@ impl MenuBar {
                 entries: vec![
                     entry("North Up", AppAction::SetCourseUp(false)),
                     entry("Course Up", AppAction::SetCourseUp(true)),
+                    entry("Heading Up", AppAction::SetHeadingUp),
                 ],
             },
             Menu {
@@ -227,6 +228,11 @@ impl<'ttf> Topbar<'ttf> {
             width,
             bar: MenuBar::new(),
         })
+    }
+
+    /// The window is now `width` wide.
+    pub fn resize(&mut self, width: u32) {
+        self.width = width;
     }
 
     pub fn event(&mut self, x: u32, y: u32) -> Option<AppAction> {

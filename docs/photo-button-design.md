@@ -47,3 +47,20 @@ from the screen whether a photo of this spot exists.
    the chart. (Night mode currently passes opacity 0 everywhere; the button
    follows the same value.)
 9. **Course-up.** The thumbnail stays north-up and unrotated.
+
+## In the code
+
+- `Session::choose_layer` is the one way a layer is chosen (the chart
+  manager's "Where" and the button): it releases the lock and remembers
+  `chart_layer` / `imagery_layer` (the last Satellite or Map layer). A
+  chosen layer that hiding empties is dropped (`Catalogue::switchable_layers`);
+  with none chosen the best chart layer shows.
+- `state.lock` (key L, `ToggleLock`) freezes the file shown.
+- `NextPhoto` (key I, or a tap) steps chart, then each source here, then
+  chart. A round keeps the order it started in (`photo_round`), the last
+  photo used first.
+- `show_chosen_chart` drops back to the chart layer when the photo layer has
+  nothing under the centre (INFO "Photo hors couverture").
+- `Session::chart_status()` is the bottom-bar centre text (layer, file or
+  "Overview map", OVERSCALE xN, fallback, more detail, LOCKED, outside
+  locked chart, NO DEPTHS for a Satellite or Map), streamed with the chart.
